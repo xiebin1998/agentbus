@@ -56,7 +56,7 @@
 - **验证**：八类异常消息（白名单外/重复/超hop/control/限速溢出…）路由单测全绿
 - **DoD**：路由决策全部有日志原因
 
-### TASK-06 注册表 + 队列 + 生命周期（T4 下）
+### TASK-06 注册表 + 队列 + 生命周期（T4 下）【✅ 已完成 2026-08-09：28 单测 + 5 集成测试（aedes 进程内 broker）全绿，分支 feat/task-06】
 - **目标**：sessions.json 原子写（tmp+rename）、每工具 FIFO 队列、daemon.pid stale 检测、日志轮转、daemon start/stop/status。
 - **验证**：kill -9 后文件无损坏单测；stale pid 接管测试；`agentbus daemon start/stop` 实测
 - **DoD**：崩溃恢复零数据损坏
