@@ -65,6 +65,142 @@ MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
 # ─── Topic ────────────────────────────────────────────────────────────────────
 TOPIC_MESSAGE = "/phnix/ai/channel/{client_id}/message"
 
+# 消息体上限（架构 11.8 缺陷 5）：防止异常大包占满 broker 与内存
+MAX_TEXT_BYTES = 64 * 1024
+
+
+# ─── 纯逻辑层（TASK-01 提取，可单测；行为规则见架构 3.1 兼容规则） ────────────────
+
+def build_sub_topic(client_id: str, ns: Optional[str] = None) -> str:
+    """构造订阅/推送 topic。ns=None → 旧 flat topic（兼容存量）；显式 ns → ns topic"""
+    if ns is None:
+        return TOPIC_MESSAGE.format(client_id=client_id)
+    return f"/phnix/ai/channel/{ns}/{client_id}/message"
+
+
+def resolve_target(t: str) -> tuple:
+    """解析单个目标 → (ns_or_None, client_id, tool_or_None)。
+
+    支持 "cid" / "ns/cid" / "cid@tool" / "ns/cid@tool"；
+    无 ns/ 前缀时 ns=None，由 build_pub_topics 按发件人 ns 解释。
+    @tool 后缀仅供 daemon 选择承接工具，不进 topic。
+    """
+    s = (t or "").strip()
+    if not s:
+        raise ValueError("空的目标")
+    ns = None
+    if "/" in s:
+        ns, s = s.split("/", 1)
+    tool = None
+    if "@" in s:
+        s, tool = s.split("@", 1)
+    cid = s.strip()
+    if not cid or (ns is not None and not ns.strip()):
+        raise ValueError(f"非法目标格式: {t!r}")
+    return (ns.strip() if ns else ns), cid, tool
+
+
+def split_targets(to: Union[str, List[str]]) -> List[str]:
+    """将 to（字符串/逗号分隔/列表）规整为目标字符串列表"""
+    if isinstance(to, str):
+        items = [s.strip() for s in to.split(",") if s.strip()]
+    elif isinstance(to, list):
+        items = [s.strip() for s in to if isinstance(s, str) and s.strip()]
+    else:
+        raise ValueError(f"不支持的 to 类型: {type(to).__name__}")
+    if not items:
+        raise ValueError("未指定消息接收方")
+    return items
+
+
+def build_pub_topics(to: Union[str, List[str]], sender_ns: Optional[str]) -> List[str]:
+    """将 to（字符串/逗号分隔/列表）展开为 publish topic 列表，去重保序。
+
+    目标无 ns/ 前缀时继承发件人 ns（sender_ns=None 时为 flat，兼容存量）。
+    """
+    topics: List[str] = []
+    seen = set()
+    for item in split_targets(to):
+        ns, cid, _tool = resolve_target(item)
+        topic = build_sub_topic(cid, ns if ns is not None else sender_ns)
+        if topic not in seen:
+            seen.add(topic)
+            topics.append(topic)
+    return topics
+
+
+def check_text_size(text: Optional[str]) -> None:
+    """消息体上限校验，超限抛 ValueError（TASK-02 接入调用点）"""
+    if text is not None and len(text.encode("utf-8")) > MAX_TEXT_BYTES:
+        raise ValueError(f"消息体超过 {MAX_TEXT_BYTES} 字节上限")
+
+
+def can_ack(stored: Optional[dict], caller: str) -> bool:
+    """ack 归属校验（架构 11.8 缺陷 4）：仅发送方/接收方可标记已读"""
+    if not stored:
+        return False
+    if stored.get("from") == caller:
+        return True
+    to = stored.get("to")
+    if isinstance(to, list):
+        return caller in to
+    return to == caller
+
+
+# ─── ns 接入与内存治理（TASK-02） ────────────────────────────────────────
+
+# 消息存储容量与保留时长（架构 11.8 缺陷 1）
+MESSAGE_STORE_MAX = 10000
+MESSAGE_TTL_SECONDS = 24 * 3600
+
+
+def normalize_ns(raw: Optional[str]) -> Optional[str]:
+    """SSE ns 参数归一化：None/空串 → None（flat 兼容），其余去空白"""
+    if raw is None:
+        return None
+    s = raw.strip()
+    return s or None
+
+
+def session_key(client_id: str, ns: Optional[str]) -> str:
+    """会话/注册表键：未传 ns → 旧键（client_id）；显式 ns → <ns>/<client_id>"""
+    if ns is None:
+        return client_id
+    return f"{ns}/{client_id}"
+
+
+def store_message(store: dict, msg_id: str, payload: dict, max_len: int = MESSAGE_STORE_MAX) -> None:
+    """存入消息并打时间戳；超容量时淘汰最旧（架构 11.8 缺陷 1）"""
+    payload["_stored_at"] = datetime.now(timezone.utc)
+    store[msg_id] = payload
+    while len(store) > max_len:
+        del store[next(iter(store))]
+
+
+def sweep_messages(store: dict, now: datetime, ttl_seconds: int = MESSAGE_TTL_SECONDS) -> int:
+    """清理 TTL 过期消息，返回清理条数"""
+    expired = [
+        mid for mid, p in store.items()
+        if (now - p.get("_stored_at", now)).total_seconds() > ttl_seconds
+    ]
+    for mid in expired:
+        del store[mid]
+    return len(expired)
+
+
+def filter_offline(targets: List[str], online_keys: set) -> tuple:
+    """群发部分送达（架构 11.8 缺陷 7）：拆分为 (在线目标, 离线目标)，保序"""
+    online = [t for t in targets if t in online_keys]
+    offline = [t for t in targets if t not in online_keys]
+    return online, offline
+
+
+def resolve_agent_key(target: str, caller_ns: Optional[str]) -> str:
+    """get_agent_info 键解析：带 ns/ 前缀直接用；否则继承调用方 ns"""
+    if "/" in target:
+        return target
+    return session_key(target, caller_ns)
+
 
 # ─── Agent 信息结构 ──────────────────────────────────────────────────────────
 
@@ -124,16 +260,18 @@ _agent_info: Dict[str, AgentInfo] = {}
 class AgentSession:
     """单个 Agent 的会话"""
     
-    def __init__(self, client_id: str, event_loop: asyncio.AbstractEventLoop):
+    def __init__(self, client_id: str, event_loop: asyncio.AbstractEventLoop, ns: Optional[str] = None):
         self.client_id = client_id
+        self.ns = ns
+        self.key = session_key(client_id, ns)
         self.loop = event_loop
         self.connected = False
         self.mcp_server: Optional[Server] = None
         self.mcp_session: Optional[ServerSession] = None
-        self.sub_topic = TOPIC_MESSAGE.format(client_id=client_id)
+        self.sub_topic = build_sub_topic(client_id, ns)
         
-        self.info = AgentInfo(client_id)
-        _agent_info[client_id] = self.info
+        self.info = AgentInfo(self.key)
+        _agent_info[self.key] = self.info
         
         mqtt_id = f"agent-{client_id}-{uuid.uuid4().hex[:8]}"
         self.mqtt = mqtt.Client(
@@ -220,28 +358,29 @@ class AgentSession:
         msg_id = f"msg-{uuid.uuid4().hex[:12]}"
         timestamp = datetime.now(timezone.utc).isoformat()
         
-        targets = [to] if isinstance(to, str) else to
-        
         # ★ 构建消息格式（兼容 qwenpaw）★
+        # from 用总线身份 self.key（ns 客户端为 <ns>/<cid>，flat 客户端即 cid，兼容不变）
         payload = {
             "id": msg_id,
-            "from": self.client_id,                    # 标准字段
-            "redirect_client_id": self.client_id,      # 兼容 qwenpaw
+            "from": self.key,                          # 标准字段
+            "redirect_client_id": self.key,            # 兼容 qwenpaw
             "to": to,
             "text": text,
             "type": msg_type,
             "timestamp": timestamp,
         }
         
-        sent_to = []
-        for target in targets:
-            pub_topic = TOPIC_MESSAGE.format(client_id=target)
-            self.mqtt.publish(pub_topic, json.dumps(payload, ensure_ascii=False), qos=2)
-            sent_to.append(target)
+        sent_to = split_targets(to)
+        pub_topics = build_pub_topics(to, self.ns)
+        message_json = json.dumps(payload, ensure_ascii=False)
+        for pub_topic in pub_topics:
+            self.mqtt.publish(pub_topic, message_json, qos=2)
             logger.info(f"[{self.client_id}] Published to {pub_topic}")
         
         self.info.last_active = datetime.now(timezone.utc)
-        _messages[msg_id] = payload
+        # 容量/TTL 治理（11.8 缺陷 1）：存入时顺手清过期，避免额外定时任务
+        sweep_messages(_messages, datetime.now(timezone.utc))
+        store_message(_messages, msg_id, payload)
         
         return {
             "status": "sent",
@@ -257,21 +396,22 @@ class AgentSession:
 
 # ─── MCP Server 创建 ──────────────────────────────────────────────────────────
 
-def create_mcp_server(client_id: str) -> Server:
-    server = Server(f"agent-{client_id}")
+def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
+    key = session_key(client_id, ns)
+    server = Server(f"agent-{key}")
     
-    loop = asyncio.get_event_loop()
-    if client_id not in _sessions:
-        session = AgentSession(client_id, loop)
+    loop = asyncio.get_running_loop()
+    if key not in _sessions:
+        session = AgentSession(client_id, loop, ns)
         session.start()
-        _sessions[client_id] = session
+        _sessions[key] = session
     else:
-        session = _sessions[client_id]
+        session = _sessions[key]
     
     session.mcp_server = server
-    _servers[client_id] = server
+    _servers[key] = server
     
-    logger.info(f"[{client_id}] MCP Server created")
+    logger.info(f"[{key}] MCP Server created")
     
     @server.list_tools()
     async def list_tools() -> List[Tool]:
@@ -395,25 +535,40 @@ def create_mcp_server(client_id: str) -> Server:
             to = arguments["to"]
             msg_type = arguments.get("type", "text")
             
-            targets = [to] if isinstance(to, str) else to
-            offline = [t for t in targets if t not in _sessions]
-            if offline:
+            try:
+                check_text_size(text)
+                targets = split_targets(to)
+            except ValueError as e:
+                return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))]
+            
+            # 目标键解析（无前缀继承发件人 ns）后做在线判定，支持部分送达（11.8 缺陷 7）
+            target_keys = []
+            for t in targets:
+                t_ns, cid, _tool = resolve_target(t)
+                target_keys.append(session_key(cid, t_ns if t_ns is not None else session.ns))
+            online_targets, offline = filter_offline(target_keys, set(_sessions.keys()))
+            if not online_targets:
                 return [TextContent(type="text", text=json.dumps({
                     "error": f"Agents not online: {offline}",
                     "online_agents": list(_sessions.keys()),
                 }, ensure_ascii=False, indent=2))]
             
-            result = session.send_message(text, to, msg_type)
+            result = session.send_message(text, online_targets, msg_type)
+            if offline:
+                result["failed"] = offline
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
         
         elif name == "ack_message":
             msg_id = arguments["id"]
-            if msg_id in _messages:
-                _messages[msg_id]["acknowledged"] = True
-                _messages[msg_id]["acknowledged_at"] = datetime.now(timezone.utc).isoformat()
-                logger.info(f"[{client_id}] Acknowledged: {msg_id}")
-                return [TextContent(type="text", text=json.dumps({"status": "acknowledged", "id": msg_id}, indent=2))]
-            return [TextContent(type="text", text=json.dumps({"error": "Unknown message id"}, indent=2))]
+            stored = _messages.get(msg_id)
+            if stored is None:
+                return [TextContent(type="text", text=json.dumps({"error": "Unknown message id"}, indent=2))]
+            if not can_ack(stored, session.key):
+                return [TextContent(type="text", text=json.dumps({"error": "无权确认该消息（仅发送方/接收方可 ack）"}, ensure_ascii=False, indent=2))]
+            stored["acknowledged"] = True
+            stored["acknowledged_at"] = datetime.now(timezone.utc).isoformat()
+            logger.info(f"[{session.key}] Acknowledged: {msg_id}")
+            return [TextContent(type="text", text=json.dumps({"status": "acknowledged", "id": msg_id}, indent=2))]
         
         elif name == "list_agents":
             agents = []
@@ -424,7 +579,7 @@ def create_mcp_server(client_id: str) -> Server:
             return [TextContent(type="text", text=json.dumps(agents, ensure_ascii=False, indent=2))]
         
         elif name == "get_agent_info":
-            target = arguments["client_id"]
+            target = resolve_agent_key(arguments["client_id"], session.ns)
             if target in _agent_info:
                 info = _agent_info[target].to_dict()
                 if target in _sessions:
@@ -476,6 +631,10 @@ sse_transport = SseServerTransport("/messages/")
 
 
 async def health(request: Request):
+    ns_summary: Dict[str, int] = {}
+    for key in _sessions.keys():
+        ns_name = key.split("/", 1)[0] if "/" in key else "flat"
+        ns_summary[ns_name] = ns_summary.get(ns_name, 0) + 1
     return JSONResponse({
         "status": "ok",
         "service": "agentbus-hub",
@@ -483,31 +642,36 @@ async def health(request: Request):
         "online_agents": list(_sessions.keys()),
         "registered_agents": [cid for cid, info in _agent_info.items() if info.registered],
         "total_messages": len(_messages),
+        "namespaces": ns_summary,
     })
 
 
 async def sse_endpoint(request: Request):
     client_id = request.query_params.get("client_id") or request.headers.get("x-client-id", "")
+    ns = normalize_ns(request.query_params.get("ns"))
     
     if not client_id:
         return JSONResponse({"error": "client_id required"}, status_code=400)
     
-    logger.info(f"[{client_id}] SSE connecting...")
+    key = session_key(client_id, ns)
+    logger.info(f"[{key}] SSE connecting...")
     
-    mcp_server = create_mcp_server(client_id)
+    mcp_server = create_mcp_server(client_id, ns)
     
     try:
         async with sse_transport.connect_sse(request.scope, request.receive, request._send) as streams:
-            logger.info(f"[{client_id}] SSE connected")
+            logger.info(f"[{key}] SSE connected")
             await mcp_server.run(streams[0], streams[1], mcp_server.create_initialization_options())
     except Exception as e:
-        logger.error(f"[{client_id}] SSE error: {e}")
+        logger.error(f"[{key}] SSE error: {e}")
     finally:
-        if client_id in _sessions:
-            _sessions[client_id].close()
-            del _sessions[client_id]
-        _servers.pop(client_id, None)
-        logger.info(f"[{client_id}] SSE disconnected")
+        if key in _sessions:
+            _sessions[key].close()
+            del _sessions[key]
+        _servers.pop(key, None)
+        # 断线清理（11.8 缺陷 2）：会话消失后同步移除元信息，防止 _agent_info 泄漏
+        _agent_info.pop(key, None)
+        logger.info(f"[{key}] SSE disconnected")
     
     # SSE 流已在 connect_sse 内发送完毕，返回空响应避免 starlette 报 TypeError
     return Response(status_code=204)
