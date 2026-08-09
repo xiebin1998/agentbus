@@ -76,7 +76,7 @@
 - **验证**：入站→只读回合→代回全链路实测；readonly 回合禁写实测；expect_reply=false 不回传测试
 - **DoD**：代回消息三字段（reply_to/hop+1/expect_reply=false）正确
 
-### TASK-10 Skill 契约 + AGENTS.md 兜底（T7 上）
+### TASK-10 Skill 契约 + AGENTS.md 兜底（T7 上）【✅ 已完成 2026-08-09：16 单测全绿（安装幂等/卸载保留用户文件/托管块无损三操作），分支 feat/task-10；待补人工验证：各工具会话识别 skill（需 CLI 登录）】
 - **目标**：SKILL.md 模板 + skill 安装器 + AGENTS.md 托管块工具库（插入/更新/删除幂等）。
 - **验证**：托管块对已有 AGENTS.md 无损测试；Qoder/Kilo 会话识别 skill 人工验证
 - **DoD**：uninstall 可整块移除
