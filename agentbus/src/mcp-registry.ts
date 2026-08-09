@@ -189,3 +189,84 @@ export function registerMcpFile(plan: McpPlan): { written: boolean; verified: bo
   writeFileSync(plan.path, content, "utf-8");
   return { written: true, verified: verifyMcpFile(plan.path, plan.sectionKey, MCP_NAME) };
 }
+
+// ─── TASK-14: 卸载侧（红线 1：uninstall 只删 agentbus 这一个键）────────────────
+
+/**
+ * 从 JSON 内容中移除指定 section 下的注册键（纯函数）。
+ * 返回新内容；键不存在/内容为空 → null（调用方判定无需改动）。
+ * section 删空后整个 section 一并移除；非法 JSON 抛错（绝不静默覆盖用户数据）。
+ */
+export function removeMcpJsonEntry(
+  existingContent: string | undefined,
+  sectionKey: string,
+  name: string,
+): string | null {
+  if (existingContent === undefined || existingContent.replace(/^\uFEFF/, "").trim() === "") {
+    return null;
+  }
+  let doc: Record<string, unknown>;
+  try {
+    doc = JSON.parse(existingContent.replace(/^\uFEFF/, "")) as Record<string, unknown>;
+  } catch {
+    throw new Error("目标文件不是合法 JSON，为避免覆盖用户数据已中止写入");
+  }
+  const section = doc[sectionKey];
+  if (!section || typeof section !== "object" || Array.isArray(section)) return null;
+  if (!(name in (section as Record<string, unknown>))) return null;
+  delete (section as Record<string, unknown>)[name];
+  if (Object.keys(section as Record<string, unknown>).length === 0) {
+    delete doc[sectionKey];
+  }
+  return `${JSON.stringify(doc, null, 2)}\n`;
+}
+
+export interface McpUninstallTarget {
+  /** 候选配置文件（项目级 + 全局，存在哪个就清哪个） */
+  files: Array<{ path: string; sectionKey: "mcpServers" | "mcp" }>;
+  /** CLI 型全局注册的兜底移除命令（<binary> mcp remove agentbus） */
+  cliBinary?: string;
+}
+
+/** 卸载计划：不依赖 init 时选的 scope，候选位置全部扫一遍（幂等） */
+export function planMcpUninstall(tool: string, projectRoot: string, homeDir: string): McpUninstallTarget {
+  switch (tool) {
+    case "claude":
+      return {
+        files: [
+          { path: join(projectRoot, ".mcp.json"), sectionKey: "mcpServers" },
+          { path: join(homeDir, ".claude.json"), sectionKey: "mcpServers" },
+        ],
+      };
+    case "qoder":
+      return {
+        files: [
+          { path: join(projectRoot, ".mcp.json"), sectionKey: "mcpServers" },
+          { path: join(homeDir, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
+        ],
+      };
+    case "kilo":
+      // 项目级直写文件 + 全局 CLI 兜底（init 时 global 走 kilo mcp add）
+      return {
+        files: [{ path: join(projectRoot, ".kilo", "kilo.json"), sectionKey: "mcp" }],
+        cliBinary: "kilo",
+      };
+    case "opencode":
+      return {
+        files: [
+          { path: join(projectRoot, "opencode.json"), sectionKey: "mcp" },
+          { path: join(homeDir, ".config", "opencode", "opencode.json"), sectionKey: "mcp" },
+        ],
+      };
+    case "codex":
+      // 红线 6：agentbus 不手写 config.toml，仅 CLI 移除
+      return { files: [], cliBinary: "codex" };
+    case "hermes":
+      return { files: [] };
+    default:
+      return { files: [] };
+  }
+}
+
+/** CLI 型移除参数：<binary> mcp remove agentbus */
+export const cliRemoveArgs = (): string[] => ["mcp", "remove", MCP_NAME];

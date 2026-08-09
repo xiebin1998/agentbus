@@ -63,14 +63,20 @@ export function installSkill(projectDir: string, tool: string): { changed: boole
   return { changed: true, path };
 }
 
-/** 幂等卸载：只删 SKILL.md；目录非空（用户文件）时保留目录 */
+/** 幂等卸载：只删 SKILL.md；目录非空（用户文件）时保留目录；
+ * 随后顺清空父目录链（TASK-14 零残留），遇非空目录即止，绝不出 projectDir */
 export function uninstallSkill(projectDir: string, tool: string): { changed: boolean } {
   const path = skillPath(projectDir, tool);
   if (!existsSync(path)) return { changed: false };
   unlinkSync(path);
-  const dir = dirname(path);
-  if (existsSync(dir) && readdirSync(dir).length === 0) {
+  let dir = dirname(path);
+  while (existsSync(dir)) {
+    if (readdirSync(dir).length > 0) break;
     rmSync(dir, { recursive: true, force: true });
+    const parent = dirname(dir);
+    // 到项目根即止，不得向上越界
+    if (parent === dir || parent === projectDir) break;
+    dir = parent;
   }
   return { changed: true };
 }

@@ -70,4 +70,18 @@ describe("uninstallSkill", () => {
   it("未安装时卸载为无害幂等（changed=false）", () => {
     expect(uninstallSkill(dir, "kilo").changed).toBe(false);
   });
+
+  it("卸载顺清空父目录链（TASK-14 零残留）：.qoder 整体消失", () => {
+    installSkill(dir, "qoder");
+    uninstallSkill(dir, "qoder");
+    expect(existsSync(join(dir, ".qoder"))).toBe(false);
+  });
+
+  it("父目录有用户其他内容时不误删，只清空链", () => {
+    installSkill(dir, "qoder");
+    writeFileSync(join(dir, ".qoder", "settings.json"), "{}");
+    uninstallSkill(dir, "qoder");
+    expect(existsSync(join(dir, ".qoder", "settings.json"))).toBe(true);
+    expect(existsSync(join(dir, ".qoder", "skills"))).toBe(false);
+  });
 });

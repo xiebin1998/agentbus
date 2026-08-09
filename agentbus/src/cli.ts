@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * agentbus CLI 入口（架构 6.1）
- * TASK-12：init/doctor/status 落地；uninstall → TASK-14；daemon → TASK-06
+ * TASK-12：init/doctor/status 落地；TASK-14：uninstall 落地；daemon → TASK-06
  */
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -16,6 +16,7 @@ import { runDoctor } from "./doctor.js";
 import { runInit, type Prompter } from "./init.js";
 import type { McpScope } from "./mcp-registry.js";
 import { readDaemonStatus, readSessionsSummary } from "./status.js";
+import { runUninstall } from "./uninstall.js";
 
 const pkg = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf-8"),
@@ -123,10 +124,26 @@ export function buildProgram(): Command {
 
   program
     .command("uninstall")
-    .description("完整卸载本项目接入（停 daemon、移除 MCP 注册/skill/托管块）")
-    .action(() => {
-      console.error("agentbus uninstall 尚未实现（TASK-14）");
-      process.exitCode = 1;
+    .description("完整卸载本项目接入（停 daemon、移除 MCP 注册/skill/托管块、清 .agentbus/）")
+    .option("--yes", "非交互模式，直接执行")
+    .action(async (opts: { yes?: boolean }) => {
+      if (!opts.yes) {
+        const { confirm } = await import("@inquirer/prompts");
+        const go = await confirm({
+          message: "将移除本项目的 AgentBus 接入（MCP 注册/skill/.agentbus/），继续？",
+          default: false,
+        });
+        if (!go) {
+          console.log("已取消");
+          return;
+        }
+      }
+      const report = await runUninstall({
+        projectRoot: process.cwd(),
+        homeDir: process.env.USERPROFILE ?? process.env.HOME ?? "",
+      });
+      for (const line of report.lines) console.log(line);
+      if (!report.ok) process.exit(1);
     });
 
   program

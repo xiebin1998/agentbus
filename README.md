@@ -60,13 +60,16 @@ npm run build
 # 在你的项目目录里一条命令接入（非交互）：
 # 探测已装 CLI → 生成 .agentbus/config.json → 安装 Skill/AGENTS.md 兜底块
 # → 注册 MCP（回写验证）→ 拉起 daemon
-node <agentbus包路径>/dist/cli.js init --yes
+node <agentbus包路径>/dist/bin.js init --yes --tools qoder kilo
 
 # 体检（配置/broker/SSE/CLI/MCP 注册/daemon 六项）
-node <agentbus包路径>/dist/cli.js doctor
+node <agentbus包路径>/dist/bin.js doctor
 
 # 查看 daemon 状态与会话摘要
-node <agentbus包路径>/dist/cli.js status
+node <agentbus包路径>/dist/bin.js status
+
+# 完整卸载（停 daemon、移除 MCP 注册/skill/.agentbus/，doctor 零残留）
+node <agentbus包路径>/dist/bin.js uninstall --yes
 ```
 
 接入后，支持 MCP 的 CLI 会话即可通过 `agentbus` MCP 服务器使用总线：`list_agents` 查在线同伴、`send_message` 跨 Agent 发消息，收到的 `[AgentBus]` 信封消息按 Skill 约定回复。完整设计见 `ARCHITECTURE.md`，一期验收见 `docs/acceptance-phase1.md`。

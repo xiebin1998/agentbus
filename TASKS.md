@@ -106,7 +106,7 @@
 
 | 卡号 | 任务 | 对应 | 关键验证 |
 |---|---|---|---|
-| TASK-14 | uninstall 全链路 | T10 | 卸载后 doctor 零残留 |
+| TASK-14 | uninstall 全链路【✅ 已完成 2026-08-09：216 TS 全绿 + 真实冒烟零残留，分支 feat/task-14】 | T10 | 卸载后 doctor 零残留 |
 | TASK-15 | Claude 适配器（含 plan 只读实测） | T11 | plan 禁写实测 |
 | TASK-16 | Codex 适配器（JSONL 解析会话 id） | T12 | 20 次解析正确率 100% |
 | TASK-17 | OpenCode 适配器 | T13 | 与 Kilo 共用用例全过 |

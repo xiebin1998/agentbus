@@ -34,7 +34,8 @@ export interface DetectResult {
   reason?: string;
 }
 
-const defaultRunner: CliRunner = async (bin, args) => {
+/** 默认执行器（生产路径）：init/uninstall 未注入 runner 时回退到此，避免 cli 型注册悬空 */
+export const defaultCliRunner: CliRunner = async (bin, args) => {
   const r = await runCommand({ cmd: bin, args, timeoutMs: 10_000 });
   if (r.error) throw new Error(r.error);
   return r;
@@ -46,7 +47,7 @@ function firstLine(text: string): string | undefined {
 }
 
 /** 探测一组工具；未知工具名返回 installed=false 并注明原因，不影响其余探测 */
-export async function detectClis(tools: string[], runner: CliRunner = defaultRunner): Promise<DetectResult[]> {
+export async function detectClis(tools: string[], runner: CliRunner = defaultCliRunner): Promise<DetectResult[]> {
   const results: DetectResult[] = [];
   for (const tool of tools) {
     const binary = TOOL_BINARIES[tool];

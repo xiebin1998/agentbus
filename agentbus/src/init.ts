@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { detectClis, type CliRunner } from "./detect.js";
+import { detectClis, defaultCliRunner, type CliRunner } from "./detect.js";
 import { planMcpRegistration, registerMcpFile, type McpScope } from "./mcp-registry.js";
 import { installSkill, SKILL_DIRS } from "./skill.js";
 import { AGENTBUS_BLOCK, upsertAgentsMdBlock } from "./agents-md.js";
@@ -190,8 +190,14 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
         return { ok: false, lines };
       }
     } else if (plan.method === "cli") {
-      const runner = deps.runner;
-      const r = runner ? await runner(plan.binary!, plan.cliArgs!) : { exitCode: 1, stdout: "", stderr: "no runner" };
+      // 生产 CLI 入口不注入 runner，回退默认执行器（否则 cli 型注册恒失败）
+      const runner = deps.runner ?? defaultCliRunner;
+      let r;
+      try {
+        r = await runner(plan.binary!, plan.cliArgs!);
+      } catch (e) {
+        r = { exitCode: 1, stdout: "", stderr: (e as Error).message };
+      }
       if (r.exitCode === 0) {
         lines.push(`✓ 已注册 MCP: ${plan.binary} ${plan.cliArgs!.join(" ")}`);
       } else {
