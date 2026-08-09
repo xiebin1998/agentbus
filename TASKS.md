@@ -81,10 +81,12 @@
 - **验证**：托管块对已有 AGENTS.md 无损测试；Qoder/Kilo 会话识别 skill 人工验证
 - **DoD**：uninstall 可整块移除
 
-### TASK-11 server.py 描述强化 + readOnlyHint（T7 下）
+### TASK-11 server.py 描述强化 + readOnlyHint（T7 下）【✅ 已完成 2026-08-09：53 Python + 148 TS 全绿，分支 feat/task-11】
 - **目标**：工具 description 写使用边界；查询/回复类工具 ToolAnnotations(readOnlyHint=true)（先验证 mcp 1.2.0 兼容性）。
 - **验证**：`mcp list` 可见；只读模式客户端免确认调用实测
 - **DoD**：mcp 1.2.0 下无异常
+- **实测结论**：mcp 1.2.0 无 ToolAnnotations（实测 ImportError）→ 升级 `mcp>=1.6.0,<2.0`（装到 1.29.0），ToolAnnotations 可导入且 SseServerTransport 兼容。工具清单抽为模块级纯函数 `build_tools()`（8 测试覆盖）；send_message/ack_message/list_agents/get_agent_info/find_agents_by_capability/get_status 声明 readOnlyHint=True，描述按架构 5.6-C 写使用边界。
+- **待补实测**：`mcp list` 可见性与只读客户端免确认调用（需真实 hub + 登录态客户端）。
 
 ### TASK-12 init/doctor/status + MCP 注册器（T8）
 - **目标**：inquirer 交互流 + CLI 探测 + MCP 注册器（6.5-D 七红线）+ doctor/status + `init --yes`。

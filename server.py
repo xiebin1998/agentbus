@@ -40,7 +40,7 @@ import paho.mqtt.client as mqtt
 from mcp.server import Server
 from mcp.server.session import ServerSession
 from mcp.server.sse import SseServerTransport
-from mcp.types import Tool, TextContent
+from mcp.types import Tool, TextContent, ToolAnnotations
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
 from starlette.requests import Request
@@ -394,6 +394,113 @@ class AgentSession:
         logger.info(f"[{self.client_id}] Session closed")
 
 
+# ─── MCP 工具清单（架构 5.6-C：描述写使用边界 + readOnlyHint）──────────────────
+
+def build_tools() -> List[Tool]:
+    """构建 MCP 工具列表（纯函数，便于单测）。
+
+    描述是 agent 的第一识别入口，写明触发条件与使用边界；
+    查询/回复类工具声明 ToolAnnotations(readOnlyHint=True)，
+    使只读/plan 模式客户端免确认可调（否则只读回合连回复都做不了）。
+    """
+    readonly = ToolAnnotations(readOnlyHint=True)
+    return [
+        Tool(
+            name="register_agent",
+            description="向 AgentBus hub 注册本 Agent 的信息（名称/描述/能力）。"
+                        "必须先注册才能发送消息与被其他 Agent 按能力发现；仅写注册信息，不发送消息。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Agent 名称"},
+                    "description": {"type": "string", "description": "Agent 描述"},
+                    "capabilities": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Agent 能力列表",
+                    },
+                    "metadata": {"type": "object", "description": "额外元信息"},
+                },
+                "required": ["name", "description", "capabilities"],
+            },
+        ),
+        Tool(
+            name="update_agent",
+            description="更新本 Agent 在 AgentBus hub 上已注册的能力与元信息。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "capabilities": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "新的能力列表",
+                    },
+                    "metadata": {"type": "object", "description": "更新的元信息"},
+                },
+            },
+        ),
+        Tool(
+            name="send_message",
+            description="通过 AgentBus 总线发送消息给指定 Agent。"
+                        "仅在用户明确要求跨 Agent 协作、或回复 [AgentBus] 入站消息时使用；"
+                        "回复入站消息需携带 reply_to（取信封中的消息 id）。"
+                        "需先调用 register_agent 注册自身。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "消息内容"},
+                    "to": {"type": ["string", "array"], "description": "目标 Agent 的 client_id"},
+                    "type": {"type": "string", "default": "text"},
+                },
+                "required": ["text", "to"],
+            },
+            annotations=readonly,
+        ),
+        Tool(
+            name="ack_message",
+            description="对消息 ID 回执确认（确认收到入站消息）；仅用于回应 [AgentBus] 入站信封，不发送任何内容。",
+            inputSchema={
+                "type": "object",
+                "properties": {"id": {"type": "string", "description": "消息 ID"}},
+                "required": ["id"],
+            },
+            annotations=readonly,
+        ),
+        Tool(
+            name="list_agents",
+            description="查询所有在线 Agent 及其能力列表（只读查询，不修改任何状态）。",
+            inputSchema={"type": "object", "properties": {}},
+            annotations=readonly,
+        ),
+        Tool(
+            name="get_agent_info",
+            description="查询指定 Agent 的注册详细信息（只读查询）。",
+            inputSchema={
+                "type": "object",
+                "properties": {"client_id": {"type": "string"}},
+                "required": ["client_id"],
+            },
+            annotations=readonly,
+        ),
+        Tool(
+            name="find_agents_by_capability",
+            description="按能力查找声明了该能力的 Agent（只读查询）。",
+            inputSchema={
+                "type": "object",
+                "properties": {"capability": {"type": "string", "description": "要查找的能力"}},
+                "required": ["capability"],
+            },
+            annotations=readonly,
+        ),
+        Tool(
+            name="get_status",
+            description="查询本 Agent 当前总线状态（注册/连接信息，只读查询）。",
+            inputSchema={"type": "object", "properties": {}},
+            annotations=readonly,
+        ),
+    ]
+
+
 # ─── MCP Server 创建 ──────────────────────────────────────────────────────────
 
 def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
@@ -418,91 +525,7 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
         # 首次请求时捕获会话，供 MQTT 线程跨上下文推送使用
         if session.mcp_session is None:
             session.mcp_session = server.request_context.session
-        return [
-            Tool(
-                name="register_agent",
-                description="注册 Agent 信息。必须先注册才能发送消息。",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string", "description": "Agent 名称"},
-                        "description": {"type": "string", "description": "Agent 描述"},
-                        "capabilities": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Agent 能力列表",
-                        },
-                        "metadata": {"type": "object", "description": "额外元信息"},
-                    },
-                    "required": ["name", "description", "capabilities"],
-                },
-            ),
-            Tool(
-                name="update_agent",
-                description="更新 Agent 能力信息",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "capabilities": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "新的能力列表",
-                        },
-                        "metadata": {"type": "object", "description": "更新的元信息"},
-                    },
-                },
-            ),
-            Tool(
-                name="send_message",
-                description="发送消息给指定 Agent。需要先调用 register_agent 注册。",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "text": {"type": "string", "description": "消息内容"},
-                        "to": {"type": ["string", "array"], "description": "目标 Agent 的 client_id"},
-                        "type": {"type": "string", "default": "text"},
-                    },
-                    "required": ["text", "to"],
-                },
-            ),
-            Tool(
-                name="ack_message",
-                description="确认收到消息",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"id": {"type": "string", "description": "消息 ID"}},
-                    "required": ["id"],
-                },
-            ),
-            Tool(
-                name="list_agents",
-                description="列出所有在线 Agent 及其能力",
-                inputSchema={"type": "object", "properties": {}},
-            ),
-            Tool(
-                name="get_agent_info",
-                description="查询指定 Agent 的详细信息",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"client_id": {"type": "string"}},
-                    "required": ["client_id"],
-                },
-            ),
-            Tool(
-                name="find_agents_by_capability",
-                description="按能力查找 Agent",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"capability": {"type": "string", "description": "要查找的能力"}},
-                    "required": ["capability"],
-                },
-            ),
-            Tool(
-                name="get_status",
-                description="获取当前 Agent 状态",
-                inputSchema={"type": "object", "properties": {}},
-            ),
-        ]
+        return build_tools()
     
     async def handle_tool(name: str, arguments: dict) -> List[TextContent]:
         
