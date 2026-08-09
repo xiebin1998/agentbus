@@ -1,30 +1,46 @@
 /**
- * TASK-06: Daemon 主体装配（架构 4.2 / 4.3 / 5.3）
+ * TASK-06/09: Daemon 主体装配（架构 4.2 / 4.3 / 4.6 / 4.7 / 5.3）
  *
  * 数据流：listener → JSON 解析 → router（八步）→ ack 回发 → touchSession + 注册表原子写
- *        → inject 回调（TASK-07 起由适配器实现）/ 限速进 FIFO 队列
+ *        → 信任判定 + 信封包装 → inject 适配器回合 → 捕获 output
+ *        → expect_reply=true 时 makeReply 代回 / 失败发 control 通知（4.6 兜底）
  *
- * 注入点：inject 为依赖注入钩子 —— 单元测试与集成测试可用假实现，
- * TASK-07 接入真实适配器后不需要改动本文件。
+ * 注入点：inject 为依赖注入钩子 —— 集成测试用假实现；缺省走真实适配器（qoder/kilo 族）。
  */
 import { join } from "node:path";
-import type { AgentBusConfig } from "../config.js";
-import { makeAck, type BusMessage } from "../protocol.js";
+import { randomUUID } from "node:crypto";
+import type { AgentBusConfig, InboundMode } from "../config.js";
+import { newMsgId, makeReply, type BusMessage } from "../protocol.js";
+import { OpenCodeKiloAdapter } from "../adapters/opencode-kilo.js";
+import { QoderAdapter } from "../adapters/qoder.js";
 import { createListener, type Listener } from "./listener.js";
 import { RotatingLogger } from "./logger.js";
 import { acquirePidLock, releasePidLock } from "./pid.js";
 import { QueueManager } from "./queue.js";
 import { knownSenders, loadRegistry, saveRegistry, touchSession, type RegistryData } from "./registry.js";
 import { Router, type RouterConfig } from "./router.js";
+import { buildEnvelope } from "./envelope.js";
+import { resolveTrust } from "./trust.js";
 
-/** 适配器注入钩子（TASK-07 起替换为真实 spawn CLI） */
-export type InjectHandler = (tool: string, sessionId: string, msg: BusMessage) => Promise<void> | void;
+/** 注入上下文：信封已按信任级别包装；注入器返回回合输出（代回的原料） */
+export interface InjectContext {
+  tool: string;
+  sessionId: string;
+  envelope: string;
+  msg: BusMessage;
+  mode: InboundMode;
+  senderName: string;
+  /** 该发件人在此工具的首条消息（适配器可据此建会话） */
+  isNew: boolean;
+}
+
+export type InjectHandler = (ctx: InjectContext) => Promise<{ output: string; sessionId?: string }>;
 
 export interface DaemonOptions {
   config: AgentBusConfig;
   /** 工作目录：daemon.pid / sessions.json / daemon.log 所在处（默认 ~/.agentbus） */
   workDir: string;
-  /** 注入钩子；缺省仅记日志（适配器尚未接入时的占位） */
+  /** 注入钩子；缺省按工具名走真实适配器 */
   inject?: InjectHandler;
 }
 
@@ -40,12 +56,15 @@ interface QueueItem {
   msg: BusMessage;
 }
 
-/** ack 回发 topic：ns 形态身份 → ns topic；纯 client_id → flat topic */
+/** ack/回复回发 topic：ns 形态身份 → ns topic；纯 client_id → flat topic */
 export function senderTopic(from: string): string {
   const slash = from.indexOf("/");
   if (slash < 0) return `/phnix/ai/channel/${from}/message`;
   return `/phnix/ai/channel/${from.slice(0, slash)}/${from.slice(slash + 1)}/message`;
 }
+
+/** OpenCode/Kilo 同族：会话 id 由 CLI 侧生成（事件流提取），非 daemon 预生成 */
+const KILO_FAMILY = new Set(["kilo", "opencode"]);
 
 export class Daemon {
   private router: Router | null = null;
@@ -66,6 +85,10 @@ export class Daemon {
     });
   }
 
+  private get selfIdentity(): string {
+    return `${this.opts.config.ns}/${this.opts.config.client_id}`;
+  }
+
   start(): { started: boolean; reason: string } {
     if (this.started) return { started: false, reason: "daemon 已在运行（本进程）" };
 
@@ -84,7 +107,7 @@ export class Daemon {
     // 3. 路由器（会话判定用注册表快照）
     const cfg = this.opts.config;
     const routerCfg: RouterConfig = {
-      selfIdentity: `${cfg.ns}/${cfg.client_id}`,
+      selfIdentity: this.selfIdentity,
       allowedSenders: cfg.allowed_senders,
       hopLimit: cfg.hop_limit,
       rateLimit: cfg.rate_limit,
@@ -112,7 +135,7 @@ export class Daemon {
     );
 
     this.started = true;
-    this.logger.info(`daemon started: ${cfg.ns}/${cfg.client_id} 订阅 ${topic}`);
+    this.logger.info(`daemon started: ${this.selfIdentity} 订阅 ${topic}`);
     return { started: true, reason: `daemon 已启动（pid ${process.pid}）` };
   }
 
@@ -147,16 +170,16 @@ export class Daemon {
       void this.publishAck(ack).catch((e: Error) => this.logger.warn(`ack 发送失败: ${e.message}`));
     }
 
-    // 会话查询/创建 + 注册表原子落盘（步骤 6/7）
-    const { entry } = touchSession(
+    // 会话查询/创建 + 注册表原子落盘（步骤 6/7）；会话 id 统一 UUID（qoder 硬约束）
+    const { entry, isNew } = touchSession(
       this.registry!,
       message!.from,
       decision.tool,
-      () => `sess-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      () => randomUUID(),
       Date.now(),
     );
     saveRegistry(this.regPath, this.registry!);
-    if (decision.isNewSender) {
+    if (isNew) {
       this.logger.info(`新发件人 ${message!.from}，创建 ${decision.tool} 会话 ${entry.sessionId}`);
     }
 
@@ -168,32 +191,123 @@ export class Daemon {
       return;
     }
 
-    void this.injectAndDrain(decision.tool, entry.sessionId, message!);
+    void this.injectAndDrain(decision.tool, entry.sessionId, message!, isNew);
   }
 
-  private async injectAndDrain(tool: string, sessionId: string, msg: BusMessage): Promise<void> {
+  private async injectAndDrain(tool: string, sessionId: string, msg: BusMessage, isNew: boolean): Promise<void> {
+    const cfg = this.opts.config;
+    // 信任分级 + 信封（4.6/4.7）：参数层与提示层一致
+    const mode = resolveTrust(msg.from, cfg.inbound_mode, cfg.trust_map);
+    const envelope = buildEnvelope(msg, mode);
+    const senderName = msg.from.includes("/") ? msg.from.slice(msg.from.indexOf("/") + 1) : msg.from;
+
+    let output = "";
+    let failed = false;
+    let failReason = "";
     try {
-      await (this.opts.inject ?? (async () => this.logger.info(`[占位注入] ${tool} <- ${msg.from}`)))(
-        tool,
-        sessionId,
-        msg,
-      );
+      const handler = this.opts.inject ?? this.defaultInject();
+      const turn = await handler({ tool, sessionId, envelope, msg, mode, senderName, isNew });
+      output = turn.output;
+      // kilo 族会话 id 由 CLI 侧生成：回写注册表保持续接正确
+      if (turn.sessionId && turn.sessionId !== sessionId) {
+        const perTool = this.registry!.senders[msg.from];
+        if (perTool?.[tool]) {
+          perTool[tool]!.sessionId = turn.sessionId;
+          saveRegistry(this.regPath, this.registry!);
+          sessionId = turn.sessionId;
+        }
+      }
     } catch (e) {
-      this.logger.error(`注入 ${tool} 失败: ${(e as Error).message}`);
+      failed = true;
+      failReason = (e as Error).message;
+      this.logger.error(`注入 ${tool} 失败: ${failReason}`);
     }
+
+    // 回复通道（4.6）：expect_reply=true 时代回输出；失败发 control 通知防对方干等
+    if (msg.expect_reply) {
+      if (failed) {
+        void this.publishFailure(msg, failReason).catch((e: Error) =>
+          this.logger.warn(`失败通知发送失败: ${e.message}`),
+        );
+      } else if (output.trim()) {
+        void this.publishReply(msg, output).catch((e: Error) =>
+          this.logger.warn(`代回发送失败: ${e.message}`),
+        );
+      } else {
+        this.logger.warn(`注入 ${tool} 成功但输出为空，不代回（msg ${msg.id}）`);
+      }
+    }
+
     // 消费后按 FIFO 续排下一条
     this.router!.dequeue(msg.from);
     const next = this.queues.pop(tool);
-    if (next) void this.injectAndDrain(next.tool, next.sessionId, next.msg);
+    if (next) void this.injectAndDrain(next.tool, next.sessionId, next.msg, false);
+  }
+
+  /** 缺省注入器：按工具名选适配器执行真实回合 */
+  private defaultInject(): InjectHandler {
+    return async (ctx) => {
+      const toolCfg = this.opts.config.tools[ctx.tool] ?? {};
+      const workspace = typeof toolCfg.workspace === "string" ? toolCfg.workspace : process.cwd();
+      if (KILO_FAMILY.has(ctx.tool)) {
+        const adapter = new OpenCodeKiloAdapter({
+          binary: typeof toolCfg.binary === "string" ? toolCfg.binary : ctx.tool,
+          workspace,
+        });
+        const turn = ctx.isNew
+          ? await adapter.createSession(ctx.envelope, ctx.senderName)
+          : await adapter.inject(ctx.envelope, ctx.sessionId);
+        if (turn.error) throw new Error(turn.error);
+        return { output: turn.output, sessionId: turn.sessionId ?? undefined };
+      }
+      // qoder 族（含未来 claude/codex 的同类 --session-id UUID 语义）
+      const adapter = new QoderAdapter({
+        binary: typeof toolCfg.binary === "string" ? toolCfg.binary : ctx.tool === "qoder" ? "qodercli" : ctx.tool,
+        workspace,
+        sessionName: ctx.senderName,
+      });
+      const turn = await adapter.injectWith(ctx.envelope, ctx.sessionId, ctx.mode);
+      if (turn.error) throw new Error(turn.error);
+      return { output: turn.output };
+    };
   }
 
   private async publishAck(ack: BusMessage): Promise<void> {
+    const to = Array.isArray(ack.to) ? ack.to[0] : ack.to;
+    await this.publish(senderTopic(to), ack);
+    this.logger.info(`ack 已回发 → ${to}（原消息 ${ack.reply_to}）`);
+  }
+
+  /** 代回（4.6 步骤 3）：reply_to=原消息 / hop+1 / expect_reply=false 终止互询 */
+  private async publishReply(original: BusMessage, output: string): Promise<void> {
+    const reply = makeReply(this.selfIdentity, original, output);
+    await this.publish(senderTopic(original.from), reply);
+    this.logger.info(`代回已发送 → ${original.from}（原消息 ${original.id}，${output.length} 字符）`);
+  }
+
+  /** 注入失败通知（4.6 兜底）：control 类型不触发对方回合 */
+  private async publishFailure(original: BusMessage, reason: string): Promise<void> {
+    const notice: BusMessage = {
+      id: newMsgId(),
+      from: this.selfIdentity,
+      redirect_client_id: this.selfIdentity,
+      to: original.from,
+      text: `注入失败：${reason}`,
+      type: "control",
+      reply_to: original.id,
+      hop: original.hop + 1,
+      expect_reply: false,
+      timestamp: new Date().toISOString(),
+    };
+    await this.publish(senderTopic(original.from), notice);
+    this.logger.warn(`失败通知已发送 → ${original.from}: ${reason}`);
+  }
+
+  private async publish(topic: string, msg: BusMessage): Promise<void> {
     if (!this.listener || !this.listener.isConnected()) {
       throw new Error("MQTT 未连接");
     }
-    const to = Array.isArray(ack.to) ? ack.to[0] : ack.to;
-    await this.listener.publish(senderTopic(to), JSON.stringify(ack));
-    this.logger.info(`ack 已回发 → ${to}（原消息 ${ack.reply_to}）`);
+    await this.listener.publish(topic, JSON.stringify(msg));
   }
 
   stop(): void {
@@ -212,6 +326,3 @@ export class Daemon {
     };
   }
 }
-
-// makeAck 在本文件未直接使用（ack 由 router 生成），保留导出供外部复用 senderTopic
-void makeAck;

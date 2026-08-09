@@ -71,7 +71,7 @@
 - **验证**：本机 kilo 建会话+续接实测；`--format json` 末条事件提取单测
 - **DoD**：与 Qoder 同用例矩阵通过
 
-### TASK-09 信封 + 信任分级 + 代回通道（T6）
+### TASK-09 信封 + 信任分级 + 代回通道（T6）【✅ 已完成 2026-08-09：132 测试全绿（含 10 集成用例：代回三字段/expect_reply=false 不回传/失败 control 通知/trust_map 覆盖），分支 feat/task-09；待补实测：只读回合禁写（需 CLI 登录）】
 - **目标**：envelope.ts、trust 判定器（inbound_mode/trust_map）、inject output 捕获 → makeReply → publish、失败 control 通知。
 - **验证**：入站→只读回合→代回全链路实测；readonly 回合禁写实测；expect_reply=false 不回传测试
 - **DoD**：代回消息三字段（reply_to/hop+1/expect_reply=false）正确

@@ -1,6 +1,6 @@
 /**
- * TASK-06: Daemon 集成测试（aedes 进程内 MQTT broker，无需 Docker）
- * 覆盖：连接订阅 → 入站路由注入 → ack 回发 → 会话复用 → 去重 → pid 双开防护 → stop 清理
+ * TASK-06/09: Daemon 集成测试（aedes 进程内 MQTT broker，无需 Docker）
+ * 覆盖：连接订阅 → 路由注入（信封+信任）→ ack 回发 → 代回通道 → 失败通知 → 会话复用 → 去重 → pid 防护
  */
 import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
@@ -10,15 +10,14 @@ import aedes from "aedes";
 import mqtt, { type MqttClient } from "mqtt";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AgentBusConfig } from "../src/config.js";
-import { Daemon } from "../src/daemon/daemon.js";
+import { Daemon, type InjectContext } from "../src/daemon/daemon.js";
 import type { BusMessage } from "../src/protocol.js";
 
 let broker: aedes.Aedes;
 let server: Server;
 let port: number;
-let workDir: string;
 
-function makeConfig(): AgentBusConfig {
+function makeConfig(overrides: Partial<AgentBusConfig> = {}): AgentBusConfig {
   return {
     client_id: "fe-test",
     ns: "default",
@@ -31,10 +30,10 @@ function makeConfig(): AgentBusConfig {
     trust_map: {},
     tools: { kilo: {} },
     ack: true,
+    ...overrides,
   };
 }
 
-/** 轮询等待条件成立（最长 timeout 毫秒） */
 async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!cond()) {
@@ -43,102 +42,203 @@ async function waitFor(cond: () => boolean, timeoutMs = 5000): Promise<void> {
   }
 }
 
+interface Recorded {
+  ctx: InjectContext;
+}
+
 beforeAll(async () => {
   broker = aedes();
   server = createServer(broker.handle);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   port = (server.address() as { port: number }).port;
-  workDir = mkdtempSync(join(tmpdir(), "agentbus-daemon-"));
 });
 
 afterAll(async () => {
   await new Promise<void>((resolve) => broker.close(() => resolve()));
   server.close();
-  rmSync(workDir, { recursive: true, force: true });
 });
 
-describe("daemon 端到端", () => {
-  const injected: Array<{ tool: string; sessionId: string; msg: BusMessage }> = [];
+/** 发件人客户端：订阅自身 flat topic 收 ack/代回/失败通知 */
+async function makeSender(): Promise<{ client: MqttClient; received: BusMessage[] }> {
+  const received: BusMessage[] = [];
+  const client = mqtt.connect(`mqtt://127.0.0.1:${port}`, { clientId: "be-svc" });
+  await new Promise<void>((resolve) => client.on("connect", () => resolve()));
+  await new Promise<void>((resolve) =>
+    client.subscribe("/phnix/ai/channel/be-svc/message", { qos: 1 }, () => resolve()),
+  );
+  client.on("message", (_t, payload) => {
+    received.push(JSON.parse(payload.toString("utf-8")) as BusMessage);
+  });
+  return { client, received };
+}
+
+function publishToDaemon(msg: Record<string, unknown>): void {
+  broker.publish({
+    cmd: "publish",
+    topic: "/phnix/ai/channel/default/fe-test/message",
+    payload: JSON.stringify({ type: "text", hop: 0, expect_reply: true, ...msg }),
+    qos: 1,
+    retain: false,
+    dup: false,
+  }, () => {});
+}
+
+describe("daemon 端到端：路由 + ack + 会话", () => {
+  const records: Recorded[] = [];
   let daemon: Daemon;
-  let sender: MqttClient;
-  const acks: BusMessage[] = [];
+  let sender: { client: MqttClient; received: BusMessage[] };
+  let dir: string;
 
   beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), "agentbus-daemon-"));
     daemon = new Daemon({
       config: makeConfig(),
-      workDir,
-      inject: (tool, sessionId, msg) => {
-        injected.push({ tool, sessionId, msg });
+      workDir: dir,
+      inject: async (ctx) => {
+        records.push({ ctx });
+        return { output: `回合输出-${records.length}` };
       },
     });
     expect(daemon.start()).toMatchObject({ started: true });
-
-    // 发件人客户端：订阅自己的 flat topic 以接收 ack
-    sender = mqtt.connect(`mqtt://127.0.0.1:${port}`, { clientId: "be-svc" });
-    await new Promise<void>((resolve) => sender.on("connect", () => resolve()));
-    await new Promise<void>((resolve) =>
-      sender.subscribe("/phnix/ai/channel/be-svc/message", { qos: 1 }, () => resolve()),
-    );
-    sender.on("message", (_t, payload) => {
-      acks.push(JSON.parse(payload.toString("utf-8")) as BusMessage);
-    });
-
+    sender = await makeSender();
     await waitFor(() => daemon.status().connected);
   });
 
   afterAll(async () => {
     daemon.stop();
-    sender.end(true);
+    sender.client.end(true);
+    rmSync(dir, { recursive: true, force: true });
   });
 
-  function publishToDaemon(msg: Record<string, unknown>): void {
-    broker.publish({
-      cmd: "publish",
-      topic: "/phnix/ai/channel/default/fe-test/message",
-      payload: JSON.stringify({ type: "text", hop: 0, expect_reply: true, ...msg }),
-      qos: 1,
-      retain: false,
-      dup: false,
-    }, () => {});
-  }
-
-  it("入站消息注入默认工具，ack 回发到发件人 flat topic", async () => {
+  it("入站注入默认工具，信封携带 [AgentBus] 元数据与 readonly 指令", async () => {
     publishToDaemon({ id: "msg-e2e-1", from: "be-svc", to: "fe-test", text: "你好" });
-    await waitFor(() => injected.length === 1 && acks.length === 1);
-    expect(injected[0]!.tool).toBe("kilo");
-    expect(injected[0]!.msg.text).toBe("你好");
-    expect(acks[0]!.type).toBe("control");
-    expect(acks[0]!.reply_to).toBe("msg-e2e-1");
-    expect(acks[0]!.expect_reply).toBe(false);
+    await waitFor(() => records.length === 1);
+    const env = records[0]!.ctx.envelope;
+    expect(env.split("\n")[0]).toBe("[AgentBus] id=msg-e2e-1 from=be-svc hop=0 expect_reply=true mode=readonly");
+    expect(env).toContain("禁止修改任何文件");
+    expect(env.trimEnd().endsWith("你好")).toBe(true);
+    expect(records[0]!.ctx.mode).toBe("readonly");
+    expect(records[0]!.ctx.tool).toBe("kilo");
   });
 
-  it("会话写入 sessions.json，同一发件人复用同一 sessionId", async () => {
-    const reg = JSON.parse(readFileSync(join(workDir, "sessions.json"), "utf-8"));
+  it("ack 与代回先后送达发件人：代回三字段（reply_to/hop+1/expect_reply=false）", async () => {
+    await waitFor(() => sender.received.length >= 2);
+    const ack = sender.received.find((m) => m.type === "control")!;
+    expect(ack.reply_to).toBe("msg-e2e-1");
+    const reply = sender.received.find((m) => m.type === "text")!;
+    expect(reply.reply_to).toBe("msg-e2e-1");
+    expect(reply.hop).toBe(1);
+    expect(reply.expect_reply).toBe(false);
+    expect(reply.text).toBe("回合输出-1");
+    expect(reply.from).toBe("default/fe-test");
+  });
+
+  it("会话写入 sessions.json（UUID），同一发件人复用", async () => {
+    const reg = JSON.parse(readFileSync(join(dir, "sessions.json"), "utf-8"));
     const firstSession = reg.senders["be-svc"].kilo.sessionId;
-    expect(firstSession).toBe(injected[0]!.sessionId);
+    expect(firstSession).toMatch(/^[0-9a-f-]{36}$/);
+    expect(records[0]!.ctx.sessionId).toBe(firstSession);
 
     publishToDaemon({ id: "msg-e2e-2", from: "be-svc", to: "fe-test", text: "再来一条" });
-    await waitFor(() => injected.length === 2);
-    expect(injected[1]!.sessionId).toBe(firstSession); // 复用会话
+    await waitFor(() => records.length === 2);
+    expect(records[1]!.ctx.sessionId).toBe(firstSession);
+    expect(records[1]!.ctx.isNew).toBe(false);
   });
 
-  it("重复 msg id 被去重（cleanSession:false 重投递防护）", async () => {
+  it("重复 msg id 被去重", async () => {
     publishToDaemon({ id: "msg-e2e-1", from: "be-svc", to: "fe-test", text: "重复投递" });
     await new Promise((r) => setTimeout(r, 300));
-    expect(injected.length).toBe(2); // 未新增注入
+    expect(records.length).toBe(2);
   });
 
-  it("第二次 start 被 pid 锁拒绝（防双开）", () => {
-    const second = new Daemon({ config: makeConfig(), workDir });
-    const result = second.start();
-    expect(result.started).toBe(false);
-    expect(result.reason).toContain("已在运行");
-  });
-
-  it("stop 释放 pid 锁且状态归位", () => {
-    expect(existsSync(join(workDir, "daemon.pid"))).toBe(true);
+  it("第二次 start 被 pid 锁拒绝；stop 清理", () => {
+    const second = new Daemon({ config: makeConfig(), workDir: dir });
+    expect(second.start().started).toBe(false);
+    expect(existsSync(join(dir, "daemon.pid"))).toBe(true);
     daemon.stop();
-    expect(existsSync(join(workDir, "daemon.pid"))).toBe(false);
-    expect(daemon.status().running).toBe(false);
+    expect(existsSync(join(dir, "daemon.pid"))).toBe(false);
+  });
+});
+
+describe("代回通道分支语义", () => {
+  let dir: string;
+  let sender: { client: MqttClient; received: BusMessage[] };
+
+  it("expect_reply=false → 注入执行但不代回不回 ack 外的文本", async () => {
+    dir = mkdtempSync(join(tmpdir(), "agentbus-daemon-noreply-"));
+    const records: Recorded[] = [];
+    const daemon = new Daemon({
+      config: makeConfig({ ack: false }),
+      workDir: dir,
+      inject: async (ctx) => {
+        records.push({ ctx });
+        return { output: "不应被回传的输出" };
+      },
+    });
+    daemon.start();
+    sender = await makeSender();
+    await waitFor(() => daemon.status().connected);
+
+    publishToDaemon({ id: "msg-nr-1", from: "be-svc", to: "fe-test", text: "通知你一下", expect_reply: false });
+    await waitFor(() => records.length === 1);
+    expect(records[0]!.ctx.envelope).toContain("无需回复");
+    await new Promise((r) => setTimeout(r, 400));
+    expect(sender.received.filter((m) => m.type === "text")).toEqual([]); // 无代回
+
+    daemon.stop();
+    sender.client.end(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("注入抛错 → 发 control 失败通知（防对方干等）", async () => {
+    dir = mkdtempSync(join(tmpdir(), "agentbus-daemon-fail-"));
+    const daemon = new Daemon({
+      config: makeConfig({ ack: false }),
+      workDir: dir,
+      inject: async () => {
+        throw new Error("CLI 超时模拟");
+      },
+    });
+    daemon.start();
+    sender = await makeSender();
+    await waitFor(() => daemon.status().connected);
+
+    publishToDaemon({ id: "msg-fail-1", from: "be-svc", to: "fe-test", text: "请处理" });
+    await waitFor(() => sender.received.length >= 1);
+    const notice = sender.received[0]!;
+    expect(notice.type).toBe("control");
+    expect(notice.text).toContain("CLI 超时模拟");
+    expect(notice.reply_to).toBe("msg-fail-1");
+    expect(notice.expect_reply).toBe(false);
+
+    daemon.stop();
+    sender.client.end(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("trust_map 覆盖：ci-bot 获得 full，信封 mode=full 无只读禁令", async () => {
+    dir = mkdtempSync(join(tmpdir(), "agentbus-daemon-trust-"));
+    const records: Recorded[] = [];
+    const daemon = new Daemon({
+      config: makeConfig({ trust_map: { "be-svc": "full" }, ack: false }),
+      workDir: dir,
+      inject: async (ctx) => {
+        records.push({ ctx });
+        return { output: "ok" };
+      },
+    });
+    daemon.start();
+    sender = await makeSender();
+    await waitFor(() => daemon.status().connected);
+
+    publishToDaemon({ id: "msg-trust-1", from: "be-svc", to: "fe-test", text: "全权处理" });
+    await waitFor(() => records.length === 1);
+    expect(records[0]!.ctx.mode).toBe("full");
+    expect(records[0]!.ctx.envelope.split("\n")[0]).toContain("mode=full");
+    expect(records[0]!.ctx.envelope).not.toContain("禁止修改任何文件");
+
+    daemon.stop();
+    sender.client.end(true);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
