@@ -21,6 +21,7 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
+    "@inquirer/prompts": "^7.10.1",
     "commander": "^15.0.0",
     "mqtt": "^5.15.2"
   }

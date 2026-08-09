@@ -88,10 +88,12 @@
 - **实测结论**：mcp 1.2.0 无 ToolAnnotations（实测 ImportError）→ 升级 `mcp>=1.6.0,<2.0`（装到 1.29.0），ToolAnnotations 可导入且 SseServerTransport 兼容。工具清单抽为模块级纯函数 `build_tools()`（8 测试覆盖）；send_message/ack_message/list_agents/get_agent_info/find_agents_by_capability/get_status 声明 readOnlyHint=True，描述按架构 5.6-C 写使用边界。
 - **待补实测**：`mcp list` 可见性与只读客户端免确认调用（需真实 hub + 登录态客户端）。
 
-### TASK-12 init/doctor/status + MCP 注册器（T8）
+### TASK-12 init/doctor/status + MCP 注册器（T8）【✅ 已完成 2026-08-09：194 TS + 53 Python 全绿，分支 feat/task-12】
 - **目标**：inquirer 交互流 + CLI 探测 + MCP 注册器（6.5-D 七红线）+ doctor/status + `init --yes`。
 - **验证**：干净项目一条 init 全绿；doctor 故障注入测试（断 broker/缺 CLI）
 - **DoD**：七红线逐条有对应实现注释与测试
+- **落地**：mcp-registry.ts（七红线逐条注释 + 15 测试）、detect.ts（6 测试）、init.ts 五步编排（15 测试，含交互 prompter 注入）、doctor.ts 六检查项（9 测试，TCP/HTTP 探测可注入）、status.ts；cli.ts 接线 init（--yes + @inquirer/prompts 交互）/doctor/status。实测冒烟：干净目录 init --yes 全绿（qodercli 探测成功、.mcp.json/.kilo/kilo.json 回写验证、daemon detached 拉起），status/doctor/daemon stop 正常；doctor 对断 broker/缺 CLI 正确报黑。顺修：daemon 日志对齐架构 6.2 落 .agentbus/logs/daemon.log（自建目录）。
+- **待补实测**：交互式 init（inquirer 真实终端体验）；kilo/codex global CLI 注册（本机当前 shell 未探到 kilo）；hermes 注册语法。
 
 ### TASK-13 一期集成验收（T9）
 - **目标**：执行架构第 10 章一期全部验收项 + 24h 长跑 + 验收报告 + README 快速上手。

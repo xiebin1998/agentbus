@@ -7,7 +7,8 @@
  *
  * 注入点：inject 为依赖注入钩子 —— 集成测试用假实现；缺省走真实适配器（qoder/kilo 族）。
  */
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { AgentBusConfig, InboundMode } from "../config.js";
 import { newMsgId, makeReply, type BusMessage } from "../protocol.js";
@@ -38,7 +39,7 @@ export type InjectHandler = (ctx: InjectContext) => Promise<{ output: string; se
 
 export interface DaemonOptions {
   config: AgentBusConfig;
-  /** 工作目录：daemon.pid / sessions.json / daemon.log 所在处（默认 ~/.agentbus） */
+  /** 工作目录：daemon.pid / sessions.json / logs/daemon.log 所在处（默认 ~/.agentbus） */
   workDir: string;
   /** 注入钩子；缺省按工具名走真实适配器 */
   inject?: InjectHandler;
@@ -79,7 +80,10 @@ export class Daemon {
   constructor(private opts: DaemonOptions) {
     this.pidFile = join(opts.workDir, "daemon.pid");
     this.regPath = join(opts.workDir, "sessions.json");
-    this.logger = new RotatingLogger(join(opts.workDir, "daemon.log"), {
+    // 架构 6.2：日志落 .agentbus/logs/daemon.log，目录不存在时自建（手动 daemon start 不依赖 init）
+    const logPath = join(opts.workDir, "logs", "daemon.log");
+    mkdirSync(dirname(logPath), { recursive: true });
+    this.logger = new RotatingLogger(logPath, {
       maxBytes: 1024 * 1024,
       keep: 5,
     });

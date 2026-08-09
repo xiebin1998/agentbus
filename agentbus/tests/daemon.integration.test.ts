@@ -242,3 +242,19 @@ describe("代回通道分支语义", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("daemon 日志路径（架构 6.2：.agentbus/logs/daemon.log）", () => {
+  it("日志写入 logs/daemon.log 且 logs 目录不存在时自动创建", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-logpath-"));
+    const daemon = new Daemon({
+      config: makeConfig(),
+      workDir: dir,
+      inject: async () => ({ output: "" }),
+    });
+    expect(daemon.start()).toMatchObject({ started: true });
+    await waitFor(() => daemon.status().connected);
+    daemon.stop();
+    expect(existsSync(join(dir, "logs", "daemon.log"))).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
