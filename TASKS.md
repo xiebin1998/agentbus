@@ -40,13 +40,13 @@
 - **验证**：`python -m pytest tests/ -v`；`docker compose up -d` 后 `/health` 正常
 - **DoD**：架构 3.1 兼容规则通过；11.8 缺陷 1/2/3/4/5/7 修复有对应测试
 
-### TASK-03 协议类型层（T2，Node）
+### TASK-03 协议类型层（T2，Node）【✅ 已完成 2026-08-09：17 单测全绿 + tsc 类型检查通过，分支 feat/task-03】
 - **目标**：`agentbus/` Node 包初始化 + `src/protocol.ts`（BusMessage 类型、normalize/makeAck/makeReply、msg id 生成器）。
 - **步骤**：① 建分支 ② `npm init` + tsconfig + vitest ③ 先写协议单测（缺省值/边界）④ 实现 ⑤ 测试
 - **验证**：`npm test` 全绿
 - **DoD**：非法/缺字段输入不抛异常按缺省处理
 
-### TASK-04 CLI 骨架与配置系统（T3）
+### TASK-04 CLI 骨架与配置系统（T3）【✅ 已完成 2026-08-09：33 单测全绿 + CLI 冒烟通过，分支 feat/task-04】
 - **目标**：commander 六命令骨架 + config.json 读写校验 + `${ENV_VAR}` 解析。
 - **验证**：`node dist/cli.js --version`；config 校验单测全绿；env 缺失报错指明字段
 - **DoD**：合法/非法 config 行为正确
