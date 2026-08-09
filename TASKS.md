@@ -66,7 +66,7 @@
 - **验证**：本机 qodercli 建会话+续接实测；超时 kill 测试
 - **DoD**：实测通过并记录输出样例
 
-### TASK-08 Kilo 适配器（T5 下）
+### TASK-08 Kilo 适配器（T5 下）【✅ 已完成 2026-08-09：12 单测全绿，分支 feat/task-08；实测 kilo 7.4.17 参数面（run/--title/-s/--format json/--auto/--dir 均存在）；待补实测：事件流格式与建会话+续接（本机 kilo 未配 API key，run 挂起无输出）】
 - **目标**：opencode-kilo.ts（二进制名参数化），先落 kilo。
 - **验证**：本机 kilo 建会话+续接实测；`--format json` 末条事件提取单测
 - **DoD**：与 Qoder 同用例矩阵通过
