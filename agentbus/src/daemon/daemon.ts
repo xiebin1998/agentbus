@@ -14,6 +14,7 @@ import type { AgentBusConfig, InboundMode } from "../config.js";
 import { newMsgId, makeReply, type BusMessage } from "../protocol.js";
 import { OpenCodeKiloAdapter } from "../adapters/opencode-kilo.js";
 import { QoderAdapter } from "../adapters/qoder.js";
+import { ClaudeAdapter } from "../adapters/claude.js";
 import { createListener, type Listener } from "./listener.js";
 import { RotatingLogger } from "./logger.js";
 import { acquirePidLock, releasePidLock } from "./pid.js";
@@ -264,7 +265,20 @@ export class Daemon {
         if (turn.error) throw new Error(turn.error);
         return { output: turn.output, sessionId: turn.sessionId ?? undefined };
       }
-      // qoder 族（含未来 claude/codex 的同类 --session-id UUID 语义）
+      // claude：create（--session-id）与 inject（-r）不同命令形态，readonly 走 plan 实测档（TASK-15）
+      if (ctx.tool === "claude") {
+        const adapter = new ClaudeAdapter({
+          binary: typeof toolCfg.binary === "string" ? toolCfg.binary : "claude",
+          workspace,
+          sessionName: ctx.senderName,
+        });
+        const turn = ctx.isNew
+          ? await adapter.createSession(ctx.envelope, ctx.sessionId, ctx.mode)
+          : await adapter.injectWith(ctx.envelope, ctx.sessionId, ctx.mode);
+        if (turn.error) throw new Error(turn.error);
+        return { output: turn.output };
+      }
+      // qoder 族（含未来 codex 的同类 --session-id UUID 语义）
       const adapter = new QoderAdapter({
         binary: typeof toolCfg.binary === "string" ? toolCfg.binary : ctx.tool === "qoder" ? "qodercli" : ctx.tool,
         workspace,

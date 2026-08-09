@@ -30,6 +30,8 @@ export interface Listener {
 
 export function createListener(opts: ListenerOptions): Listener {
   let client: MqttClient | null = null;
+  // 就绪门控：SUBACK 未到前报 connected 会丢早到消息（首连无持久会话可补投）
+  let subscribed = false;
 
   const buildUrl = (): string => {
     const proto = opts.broker.tls ? "mqtts" : "mqtt";
@@ -52,16 +54,20 @@ export function createListener(opts: ListenerOptions): Listener {
 
         let firstConnect = true;
         client.on("connect", () => {
-          opts.onStatus?.("connected");
+          subscribed = false;
           client!.subscribe(opts.topic, { qos: 2 }, (err) => {
             if (err) {
               opts.onStatus?.("error", `订阅失败: ${err.message}`);
+            } else {
+              subscribed = true;
+              opts.onStatus?.("connected");
+            }
+            // 无论成败都解阻塞 start()：连接已建立，订阅失败仅降级为未就绪（日志已记）
+            if (firstConnect) {
+              firstConnect = false;
+              resolve();
             }
           });
-          if (firstConnect) {
-            firstConnect = false;
-            resolve();
-          }
         });
         client.on("reconnect", () => opts.onStatus?.("reconnecting"));
         client.on("offline", () => opts.onStatus?.("offline"));
@@ -80,6 +86,7 @@ export function createListener(opts: ListenerOptions): Listener {
 
     stop() {
       return new Promise<void>((resolve) => {
+        subscribed = false;
         if (!client) return resolve();
         client.end(false, () => resolve());
         client = null;
@@ -96,7 +103,7 @@ export function createListener(opts: ListenerOptions): Listener {
     },
 
     isConnected() {
-      return client?.connected ?? false;
+      return subscribed && (client?.connected ?? false);
     },
   };
 }

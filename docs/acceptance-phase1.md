@@ -69,6 +69,9 @@
   5. `mcp list` 可见性与只读客户端免确认调用（TASK-11）
   6. 交互式 init 真实终端体验、kilo/codex global CLI 注册、hermes 注册语法（TASK-12）
   7. Qoder ↔ Kilo 真实互发（一期验收项 11 的剩余段）
+  8. claude `--permission-mode plan` 禁写实测（TASK-15）：本机 claude 代理（10.1.5.104:3000）不可达无法跑真实回合；参数语义已经 `claude 2.1.220 --help` 实测，适配器/接线单测全覆盖
+
+> 补充（TASK-15 顺修）：冒烟阶段修复的就绪竞态同款问题在 daemon listener 侧也存在（connect 即报 connected，早于 SUBACK），已按同一门控模式修复（listener-ready 测试覆盖）。
 
 ## 6. 结论
 
