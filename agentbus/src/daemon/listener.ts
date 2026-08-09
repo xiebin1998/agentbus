@@ -1,0 +1,102 @@
+/**
+ * TASK-05: Daemon MQTT 层（架构 5.3）
+ *
+ * 连接语义红线：
+ * - cleanSession:false —— 掉线期间 broker 保留 QoS>0 消息，重连后补发（与去重 LRU 配合）
+ * - 固定 clientId（agentbus-<ns>-<client_id>）—— 防多实例互踢；重连复用同一身份
+ * - 订阅 QoS 2 —— 与 hub publish 对齐，至少一次投递由去重兜底
+ */
+import mqtt, { type MqttClient } from "mqtt";
+import type { BrokerConfig } from "../config.js";
+
+export interface ListenerOptions {
+  broker: BrokerConfig;
+  /** 连接 clientId：agentbus-<ns>-<client_id> */
+  clientId: string;
+  /** 订阅 topic：/phnix/ai/channel/<ns>/<client_id>/message */
+  topic: string;
+  /** 收到消息（原始 JSON 字符串）；解析与路由在 daemon 侧 */
+  onMessage: (payloadJson: string, topic: string) => void;
+  /** 状态回调（日志用） */
+  onStatus?: (status: "connecting" | "connected" | "reconnecting" | "offline" | "error", detail?: string) => void;
+}
+
+export interface Listener {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  publish(topic: string, payloadJson: string): Promise<void>;
+  isConnected(): boolean;
+}
+
+export function createListener(opts: ListenerOptions): Listener {
+  let client: MqttClient | null = null;
+
+  const buildUrl = (): string => {
+    const proto = opts.broker.tls ? "mqtts" : "mqtt";
+    return `${proto}://${opts.broker.host}:${opts.broker.port}`;
+  };
+
+  return {
+    start() {
+      return new Promise<void>((resolve, reject) => {
+        opts.onStatus?.("connecting", buildUrl());
+        client = mqtt.connect(buildUrl(), {
+          clientId: opts.clientId,
+          clean: false,
+          username: opts.broker.username || undefined,
+          password: opts.broker.password || undefined,
+          reconnectPeriod: 2000,
+          connectTimeout: 10_000,
+          rejectUnauthorized: opts.broker.tls, // TLS 时校验证书
+        });
+
+        let firstConnect = true;
+        client.on("connect", () => {
+          opts.onStatus?.("connected");
+          client!.subscribe(opts.topic, { qos: 2 }, (err) => {
+            if (err) {
+              opts.onStatus?.("error", `订阅失败: ${err.message}`);
+            }
+          });
+          if (firstConnect) {
+            firstConnect = false;
+            resolve();
+          }
+        });
+        client.on("reconnect", () => opts.onStatus?.("reconnecting"));
+        client.on("offline", () => opts.onStatus?.("offline"));
+        client.on("error", (err) => {
+          opts.onStatus?.("error", err.message);
+          if (firstConnect) {
+            firstConnect = false;
+            reject(err);
+          }
+        });
+        client.on("message", (topic, payload) => {
+          opts.onMessage(payload.toString("utf-8"), topic);
+        });
+      });
+    },
+
+    stop() {
+      return new Promise<void>((resolve) => {
+        if (!client) return resolve();
+        client.end(false, () => resolve());
+        client = null;
+      });
+    },
+
+    publish(topic, payloadJson) {
+      return new Promise<void>((resolve, reject) => {
+        if (!client || !client.connected) {
+          return reject(new Error("MQTT 未连接，无法 publish"));
+        }
+        client.publish(topic, payloadJson, { qos: 2 }, (err) => (err ? reject(err) : resolve()));
+      });
+    },
+
+    isConnected() {
+      return client?.connected ?? false;
+    },
+  };
+}

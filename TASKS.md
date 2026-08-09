@@ -51,7 +51,7 @@
 - **验证**：`node dist/cli.js --version`；config 校验单测全绿；env 缺失报错指明字段
 - **DoD**：合法/非法 config 行为正确
 
-### TASK-05 Daemon MQTT 层 + 路由管线（T4 上）
+### TASK-05 Daemon MQTT 层 + 路由管线（T4 上）【✅ 已完成 2026-08-09：21 路由单测全绿（含八类异常），分支 feat/task-05；broker 集成冒烟顺延 TASK-13（本机 Docker Desktop 未启动）】
 - **目标**：mqtt.js 连接（cleanSession:false/固定 id/重连退避）+ 订阅 + 4.2 步骤 0–8 路由管线（纯逻辑可单测）。
 - **验证**：八类异常消息（白名单外/重复/超hop/control/限速溢出…）路由单测全绿
 - **DoD**：路由决策全部有日志原因
