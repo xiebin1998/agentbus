@@ -5,6 +5,7 @@
  * status：daemon pid 状态 + sessions.json 摘要
  */
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -161,5 +162,20 @@ describe("status 摘要", () => {
     expect(readSessionsSummary(workDir).senderCount).toBe(1);
     writeFileSync(join(workDir, "sessions.json"), "{corrupt");
     expect(readSessionsSummary(workDir).senderCount).toBe(0);
+  });
+});
+
+describe("默认探测：localhost 不可达时回退 127.0.0.1（TASK-22：Windows 上 localhost 优先 ::1 脑裂）", () => {
+  it("服务仅监听 127.0.0.1 时，localhost 探测仍判可达（HTTP 与 TCP）", async () => {
+    const { defaultCheckHttp, defaultCheckTcp } = await import("../src/doctor.js");
+    const server = createServer((_req, res) => res.end("ok"));
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+    const port = (server.address() as { port: number }).port;
+    try {
+      expect(await defaultCheckHttp(`http://localhost:${port}/`, 3000)).toBe(true);
+      expect(await defaultCheckTcp("localhost", port, 3000)).toBe(true);
+    } finally {
+      await new Promise<void>((r) => server.close(() => r()));
+    }
   });
 });

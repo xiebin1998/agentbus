@@ -158,6 +158,28 @@ describe("runInit --yes 全链路（非交互）", () => {
     expect(parsed.mcpServers.keep).toBeDefined();
     expect(parsed.mcpServers.agentbus).toBeDefined();
   });
+
+  it("cli 型注册幂等：add 前先行 remove（重复注册不报错，TASK-22 回归发现）", async () => {
+    // 模拟 codex 真实行为：已注册时 mcp add 返回非零；remove 后才可 add 成功
+    const calls: Array<{ bin: string; args: string[] }> = [];
+    const runner = async (bin: string, args: string[]) => {
+      if (args.includes("--version")) return { exitCode: 0, stdout: `${bin} 1.0.0`, stderr: "" };
+      calls.push({ bin, args });
+      if (args[0] === "mcp" && args[1] === "remove") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "mcp" && args[1] === "add") {
+        const removed = calls.some((c) => c.args[0] === "mcp" && c.args[1] === "remove");
+        return { exitCode: removed ? 0 : 1, stdout: "", stderr: removed ? "" : "already exists" };
+      }
+      return { exitCode: 0, stdout: "", stderr: "" };
+    };
+    const report = await runInit(
+      { yes: true, tools: ["codex"], scope: "project" },
+      { projectRoot: root, homeDir: home, runner, spawnDaemon: () => {} },
+    );
+    expect(report.ok).toBe(true);
+    const mcpCalls = calls.filter((c) => c.args[0] === "mcp").map((c) => c.args[1]);
+    expect(mcpCalls).toEqual(["remove", "add"]);
+  });
 });
 
 describe("runInit 交互路径", () => {

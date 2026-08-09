@@ -27,9 +27,9 @@ export interface RunnerResult {
 /**
  * Windows 命令解析（TASK-16 实测：codex/qodercli/kilo 均为 npm .cmd shim，spawn 裸名 EINVAL/ENOENT）：
  * - 无扩展名：where.exe 按 PATHEXT 解析全路径（用调用方 env，兼容 PATH 注入）
- * - .cmd/.bat：经 cmd.exe /d /s /c 执行（cross-spawn 同款），参数仍由 node 逐个引用传递
+ * - .cmd/.bat：经 cmd.exe /d /s /c 执行（cross-spawn 同款），参数逐引号转义后原样传递
  */
-function resolveWindowsCmd(cmd: string, env: Record<string, string | undefined>): { cmd: string; prefix: string[] } {
+function resolveWindowsCmd(cmd: string, env: Record<string, string | undefined>): { cmd: string; prefix: string[]; verbatim: boolean } {
   let resolved = cmd;
   if (!extname(cmd)) {
     const found = spawnSync("where.exe", [cmd], { encoding: "utf-8", windowsHide: true, env });
@@ -40,9 +40,23 @@ function resolveWindowsCmd(cmd: string, env: Record<string, string | undefined>)
     if (first) resolved = first;
   }
   if (/\.(cmd|bat)$/i.test(resolved)) {
-    return { cmd: "cmd.exe", prefix: ["/d", "/s", "/c", resolved] };
+    return { cmd: "cmd.exe", prefix: ["/d", "/s", "/c", escapeCmdArg(resolved)], verbatim: true };
   }
-  return { cmd: resolved, prefix: [] };
+  return { cmd: resolved, prefix: [], verbatim: false };
+}
+
+/** cmd 元字符：未引用时会被 cmd.exe 解析（分隔/重定向/变量展开） */
+const CMD_META = /[ \t&|<>^%!()"]/;
+
+/**
+ * cmd.exe 参数引用转义（TASK-22 实测：sse_url 中 & 被当命令分隔符导致 codex mcp add 恒失败）：
+ * 含元字符时整体加引号（引号内 & 等为字面量），内部引号与尾部反斜杠按 Windows argv 规则翻倍转义；
+ * 无元字符不加引号（避免破坏 echo %1 类 shim 的既有行为）。配合 windowsVerbatimArguments 防 libuv 二次加引号。
+ */
+export function escapeCmdArg(arg: string): string {
+  if (!CMD_META.test(arg)) return arg;
+  const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1");
+  return `"${escaped}"`;
 }
 
 /** spawn + stdout/stderr 收集 + 超时 kill；一切异常收敛进返回值 */
@@ -56,14 +70,18 @@ export function runCommand(spec: SpawnSpec): Promise<RunnerResult> {
     const env = spec.env ? { ...process.env, ...spec.env } : process.env;
     let cmd = spec.cmd;
     let prefix: string[] = [];
+    let verbatim = false;
     if (process.platform === "win32") {
-      ({ cmd, prefix } = resolveWindowsCmd(spec.cmd, env));
+      ({ cmd, prefix, verbatim } = resolveWindowsCmd(spec.cmd, env));
     }
+    // cmd.exe 路径下参数已自行引号转义；非 cmd 路径仍由 libuv 默认加引号
+    const args = verbatim ? spec.args.map(escapeCmdArg) : spec.args;
 
-    const child = spawn(cmd, [...prefix, ...spec.args], {
+    const child = spawn(cmd, [...prefix, ...args], {
       cwd: spec.cwd,
       env,
       windowsHide: true,
+      windowsVerbatimArguments: verbatim,
     });
 
     const finish = (result: RunnerResult) => {

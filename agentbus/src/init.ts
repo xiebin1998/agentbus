@@ -12,7 +12,7 @@ import { basename, dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { detectClis, defaultCliRunner, type CliRunner } from "./detect.js";
-import { planMcpRegistration, registerMcpFile, type McpScope } from "./mcp-registry.js";
+import { cliRemoveArgs, planMcpRegistration, registerMcpFile, type McpScope } from "./mcp-registry.js";
 import { installSkill, SKILL_DIRS } from "./skill.js";
 import { AGENTBUS_BLOCK, upsertAgentsMdBlock } from "./agents-md.js";
 
@@ -192,6 +192,12 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
     } else if (plan.method === "cli") {
       // 生产 CLI 入口不注入 runner，回退默认执行器（否则 cli 型注册恒失败）
       const runner = deps.runner ?? defaultCliRunner;
+      // 幂等（TASK-22 回归发现）：codex mcp add 对已注册同名项返回非零，先 remove 再 add（remove 失败忽略：未注册时可直接 add）
+      try {
+        await runner(plan.binary!, cliRemoveArgs());
+      } catch {
+        /* remove 失败不阻断 */
+      }
       let r;
       try {
         r = await runner(plan.binary!, plan.cliArgs!);

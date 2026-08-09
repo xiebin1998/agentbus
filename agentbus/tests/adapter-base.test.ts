@@ -142,4 +142,20 @@ describe("runCommand", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform !== "win32")("Windows：.cmd 参数含 cmd 特殊字符不被分割（TASK-22 实测：sse_url 中 & 被当命令分隔符）", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-amp-"));
+    const shim = join(dir, "amp-shim.cmd");
+    writeFileSync(shim, "@echo %*\r\n", "utf-8");
+    try {
+      const url = "http://localhost:8000/sse?client_id=accept&ns=default";
+      const result = await runCommand({ cmd: shim, args: ["mcp", "add", "agentbus", "--url", url], timeoutMs: 10_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.trim()).toBe(`mcp add agentbus --url "${url}"`);
+      expect(result.stderr.trim()).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

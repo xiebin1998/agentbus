@@ -32,7 +32,7 @@ export interface DoctorDeps {
   checkHttp?: (url: string, timeoutMs: number) => Promise<boolean>;
 }
 
-const defaultCheckTcp = (host: string, port: number, timeoutMs: number) =>
+const tcpOnce = (host: string, port: number, timeoutMs: number) =>
   new Promise<boolean>((resolve) => {
     const socket = connect({ host, port });
     const done = (ok: boolean) => {
@@ -45,10 +45,31 @@ const defaultCheckTcp = (host: string, port: number, timeoutMs: number) =>
     socket.once("error", () => done(false));
   });
 
-const defaultCheckHttp = async (url: string, timeoutMs: number) => {
+/** Windows 上 localhost 可能优先解析到 ::1（旧 relay/无监听脑裂，TASK-20/22 实测）；不可达时回退 127.0.0.1 重试 */
+const ipv4Fallback = (host: string) => (host.toLowerCase() === "localhost" ? "127.0.0.1" : undefined);
+
+export const defaultCheckTcp = async (host: string, port: number, timeoutMs: number) => {
+  if (await tcpOnce(host, port, timeoutMs)) return true;
+  const fb = ipv4Fallback(host);
+  return fb ? tcpOnce(fb, port, timeoutMs) : false;
+};
+
+const httpOnce = async (url: string, timeoutMs: number) => {
   try {
     await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
     return true; // 任意 HTTP 响应都说明服务可达
+  } catch {
+    return false;
+  }
+};
+
+export const defaultCheckHttp = async (url: string, timeoutMs: number) => {
+  if (await httpOnce(url, timeoutMs)) return true;
+  try {
+    const u = new URL(url);
+    if (u.hostname.toLowerCase() !== "localhost") return false;
+    u.hostname = "127.0.0.1";
+    return await httpOnce(u.toString(), timeoutMs);
   } catch {
     return false;
   }
