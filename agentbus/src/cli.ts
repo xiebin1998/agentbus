@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { checkbox, input, select } from "@inquirer/prompts";
 import { Command } from "commander";
 import { ConfigError, loadConfig } from "./config.js";
+import { runAutostartInstall, runAutostartStatus, runAutostartUninstall } from "./autostart.js";
 import { Daemon } from "./daemon/daemon.js";
 import { isProcessAlive } from "./daemon/pid.js";
 import { detectClis, TOOL_BINARIES } from "./detect.js";
@@ -263,6 +264,50 @@ export function buildProgram(): Command {
         console.log(`daemon 未运行（stale pid 文件: ${raw}）`);
         process.exit(1);
       }
+    });
+
+  // TASK-23：开机自启（架构 4.5 三期：Windows HKCU Run / Linux systemd 用户单元）
+  const autostart = program.command("autostart").description("开机自启管理（登录时自动拉起 daemon）");
+  const autostartSpec = (opts: { config?: string }) => {
+    const workDir = resolveWorkDir(opts.config);
+    const { config } = loadOrExit(opts.config);
+    return {
+      platform: (process.platform === "win32" ? "win32" : "linux") as "win32" | "linux",
+      projectRoot: dirname(workDir),
+      binPath: join(dirname(fileURLToPath(import.meta.url)), "bin.js"),
+      configPath: join(workDir, "config.json"),
+      clientId: config.client_id,
+      ns: config.ns,
+      nodePath: process.execPath,
+      homeDir: process.env.HOME ?? process.env.USERPROFILE ?? "",
+    };
+  };
+  autostart
+    .command("install")
+    .description("注册开机自启（Windows 计划任务 ONLOGON / Linux systemd --user，幂等覆盖）")
+    .option("-c, --config <path>", "config.json 路径（默认 .agentbus/config.json）")
+    .action(async (opts: { config?: string }) => {
+      const report = await runAutostartInstall(autostartSpec(opts));
+      for (const line of report.lines) console.log(line);
+      if (!report.ok) process.exit(1);
+    });
+  autostart
+    .command("uninstall")
+    .description("移除开机自启注册")
+    .option("-c, --config <path>", "config.json 路径（默认 .agentbus/config.json）")
+    .action(async (opts: { config?: string }) => {
+      const report = await runAutostartUninstall(autostartSpec(opts));
+      for (const line of report.lines) console.log(line);
+      if (!report.ok) process.exit(1);
+    });
+  autostart
+    .command("status")
+    .description("查看开机自启是否已注册")
+    .option("-c, --config <path>", "config.json 路径（默认 .agentbus/config.json）")
+    .action(async (opts: { config?: string }) => {
+      const s = await runAutostartStatus(autostartSpec(opts));
+      console.log(`${s.registered ? "✓" : "✗"} ${s.detail}`);
+      if (!s.registered) process.exit(1);
     });
 
   return program;

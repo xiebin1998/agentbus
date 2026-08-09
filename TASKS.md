@@ -120,7 +120,7 @@
 
 | 卡号 | 任务 | 对应 | 关键验证 |
 |---|---|---|---|
-| TASK-23 | 开机自启 | T19 | 重启后自动在线 |
+| TASK-23 | 开机自启【✅ 已完成 2026-08-09：297 TS 全绿（新增 autostart 8 例，tsc 无错）；planAutostart 纯函数（Windows HKCU Run reg 键 / Linux systemd 用户单元）+ autostart install/uninstall/status 三子命令；真机实测 schtasks ONLOGON 需管理员拒绝访问，改 HKCU Run 方案；真机冒烟全链路：install 写键→reg query 键值正确→status 已注册→daemon stop 后手动执行 Run 键启动命令等价拉起成功→uninstall 删键→status 未注册；待补实测：真实重启验收（已等价触发替代）、Linux systemd 分支（本机无 Linux 环境），分支 feat/task-23】 | T19 | 重启后自动在线 |
 | TASK-24 | 共享 MQTT 连接扩容 | T20 | 500 会话压测内存增量<20% |
 | TASK-25 | 安全基线（鉴权/TLS/SSE） | T21 | 匿名被拒、TLS 端到端 |
 | TASK-26 | 账号/团队管理 | T22 | 跨团队 publish 被 ACL 拒 |
@@ -151,3 +151,4 @@ TASK-10/11 可并行   │                      └→ TASK-09 ─────�
 - v1.6（2026-08-09）：TASK-20 完成标记；Web 控制台后端 API（/api/console/* 八接口：ns 清单/声明、身份检索、权限档案读写+control 下发、指标与汇总）；真机冒烟确认下发全链路（顺带排查出 hub 连 broker 需显式 127.0.0.1，避免 localhost→::1 旧 relay 脑裂）
 - v1.7（2026-08-09）：TASK-21 完成标记；Web 控制台前端三页（web/index.html 单页应用，GET /console 直出）；浏览器实测 ns 声明/身份检索/权限保存下发（daemon.log 收到 control）/指标实时表全通
 - v1.8（2026-08-09）：TASK-22 完成标记，★ 二期里程碑；六工具矩阵回归（289 TS + 88 Python 全绿 + 真机 init/doctor/status/uninstall 全链路），回归发现并 TDD 修复三缺陷（.cmd 参数 & 分割/doctor localhost 脑裂/cli 注册幂等）；验收报告 docs/acceptance-phase2.md
+- v1.9（2026-08-09）：TASK-23 完成标记；开机自启 autostart 三子命令（297 TS 全绿）；真机实测 schtasks ONLOGON 需管理员拒绝访问，改 HKCU Run 注册表键方案；真机冒烟 install/query/status/等价拉起/uninstall 全链路通过
