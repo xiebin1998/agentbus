@@ -98,6 +98,26 @@ describe("runDoctor", () => {
     expect(report.checks.find((c) => c.name.includes("CLI"))?.ok).toBe(false);
   });
 
+  it("配 remote 段的工具（hermes 远端）跳过本机探测，不报未安装（TASK-18）", async () => {
+    writeFileSync(join(workDir, "config.json"), JSON.stringify({
+      ...CONFIG,
+      default_tool: "hermes",
+      tools: { hermes: { remote: { host: "10.1.5.200", user: "root" }, workspace: "~/agent-home" } },
+    }));
+    const seen: string[] = [];
+    const report = await runDoctor(baseDeps({
+      runner: async (bin) => {
+        seen.push(bin);
+        return { exitCode: 127, stdout: "", stderr: "" };
+      },
+    }));
+    const cli = report.checks.find((c) => c.name.includes("CLI"));
+    expect(cli?.ok).toBe(true);
+    expect(cli?.detail).toContain("hermes");
+    expect(cli?.detail).toContain("远端");
+    expect(seen).not.toContain("hermes"); // 本机不探测远端工具
+  });
+
   it("红线 7：MCP 注册回验 —— file 型读文件键；未注册则失败", async () => {
     // 未写 .mcp.json → 注册验证失败
     const missing = await runDoctor(baseDeps());

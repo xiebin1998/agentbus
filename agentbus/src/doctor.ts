@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { connect } from "node:net";
 import { ConfigError, loadConfig, type AgentBusConfig } from "./config.js";
-import { detectClis, type CliRunner } from "./detect.js";
+import { detectClis, isRemoteTool, type CliRunner } from "./detect.js";
 import { MCP_NAME, planMcpRegistration, verifyMcpFile } from "./mcp-registry.js";
 import { isProcessAlive } from "./daemon/pid.js";
 
@@ -125,15 +125,20 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       checks.push({ name: "SSE", ok: true, detail: "未配置 sse_url，跳过" });
     }
 
-    // 4. CLI 探测
-    const detected = await detectClis(Object.keys(config.tools), deps.runner);
+    // 4. CLI 探测；配 remote 段的工具（如 hermes 远端，架构 4.4/5.5）不在本机，跳过本机探测
+    const toolNames = Object.keys(config.tools);
+    const localTools = toolNames.filter((t) => !isRemoteTool(config.tools[t]));
+    const remoteTools = toolNames.filter((t) => isRemoteTool(config.tools[t]));
+    const detected = await detectClis(localTools, deps.runner);
     const missing = detected.filter((d) => !d.installed);
+    const remoteNote = remoteTools.map((t) => `${t} ✓（远端 SSH 工具，跳过本机探测）`).join("；");
+    const localNote = missing.length === 0
+      ? detected.map((d) => `${d.binary} ✓`).join("；")
+      : missing.map((d) => `${d.binary} ✗ ${d.reason}`).join("；");
     checks.push({
       name: "CLI",
       ok: missing.length === 0,
-      detail: missing.length === 0
-        ? detected.map((d) => `${d.binary} ✓`).join("；")
-        : missing.map((d) => `${d.binary} ✗ ${d.reason}`).join("；"),
+      detail: [localNote, remoteNote].filter(Boolean).join("；"),
     });
 
     // 5. MCP 注册回验（红线 7）

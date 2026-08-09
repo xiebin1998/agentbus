@@ -15,6 +15,7 @@ import { newMsgId, makeReply, type BusMessage } from "../protocol.js";
 import { OpenCodeKiloAdapter } from "../adapters/opencode-kilo.js";
 import { QoderAdapter } from "../adapters/qoder.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
+import { HermesAdapter, type HermesRemoteConfig } from "../adapters/hermes.js";
 import { CodexAdapter } from "../adapters/codex.js";
 import { createListener, type Listener } from "./listener.js";
 import { RotatingLogger } from "./logger.js";
@@ -68,6 +69,19 @@ export function senderTopic(from: string): string {
 
 /** OpenCode/Kilo 同族：会话 id 由 CLI 侧生成（事件流提取），非 daemon 预生成 */
 const KILO_FAMILY = new Set(["kilo", "opencode"]);
+
+/** 解析 tools.hermes.remote 配置段（架构 4.4）；非法/缺失返回 undefined（本机直连形态） */
+function parseHermesRemote(raw: unknown): HermesRemoteConfig | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.host !== "string" || !r.host.trim()) return undefined;
+  const cfg: HermesRemoteConfig = { host: r.host };
+  if (typeof r.user === "string") cfg.user = r.user;
+  // 配置面用 ssh_key（架构 4.4 示例），适配器内部驼峰 sshKey
+  if (typeof r.ssh_key === "string") cfg.sshKey = r.ssh_key;
+  if (typeof r.port === "number") cfg.port = r.port;
+  return cfg;
+}
 
 export class Daemon {
   private router: Router | null = null;
@@ -290,6 +304,19 @@ export class Daemon {
           : await adapter.injectWith(ctx.envelope, ctx.sessionId, ctx.mode);
         if (turn.error) throw new Error(turn.error);
         return { output: turn.output, sessionId: turn.sessionId ?? undefined };
+      }
+      // hermes：按名建/续同一命令形态（会话名 = 发件人）；remote 段经 SSH 注入远端（TASK-18，架构 5.5）
+      if (ctx.tool === "hermes") {
+        const adapter = new HermesAdapter({
+          binary: typeof toolCfg.binary === "string" ? toolCfg.binary : "hermes",
+          workspace,
+          remote: parseHermesRemote(toolCfg.remote),
+        });
+        const turn = ctx.isNew
+          ? await adapter.createSession(ctx.envelope, ctx.senderName, ctx.mode)
+          : await adapter.inject(ctx.envelope, ctx.senderName, ctx.mode);
+        if (turn.error) throw new Error(turn.error);
+        return { output: turn.output };
       }
       // qoder 族（--session-id UUID 幂等语义）
       const adapter = new QoderAdapter({

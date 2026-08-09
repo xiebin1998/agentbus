@@ -46,6 +46,15 @@ function firstLine(text: string): string | undefined {
   return line?.trim();
 }
 
+/** 远端工具判定（架构 4.4）：配了合法 remote 段（host 非空）的工具不在本机，CLI 探测应跳过 */
+export function isRemoteTool(toolCfg: unknown): boolean {
+  if (!toolCfg || typeof toolCfg !== "object" || Array.isArray(toolCfg)) return false;
+  const remote = (toolCfg as Record<string, unknown>).remote;
+  if (!remote || typeof remote !== "object" || Array.isArray(remote)) return false;
+  const host = (remote as Record<string, unknown>).host;
+  return typeof host === "string" && host.trim().length > 0;
+}
+
 /** 探测一组工具；未知工具名返回 installed=false 并注明原因，不影响其余探测 */
 export async function detectClis(tools: string[], runner: CliRunner = defaultCliRunner): Promise<DetectResult[]> {
   const results: DetectResult[] = [];

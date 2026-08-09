@@ -72,6 +72,7 @@
   8. claude `--permission-mode plan` 禁写实测（TASK-15）：本机 claude 代理（10.1.5.104:3000）不可达无法跑真实回合；参数语义已经 `claude 2.1.220 --help` 实测，适配器/接线单测全覆盖
   9. codex 20 回合实跑（TASK-16）：后端同代理不可达；已真机解析出真实 thread_id 两次（thread.started 事件），20 样本单测 100%；另实测发现 0.146.0 已移除 `-a/--ask-for-approval`，full 档免确认语义同步待补
   10. opencode 真实回合与事件流格式（TASK-17）：后端同代理不可达；参数已经 opencode 1.18.8 `run --help` 实测与 kilo 7.4.17 同族（run/--title/-s/--format json/--dir/--auto），共用用例双二进制 24 例全过；真机 spawn 链路（超时杀树/错误信息）已验证
+  11. hermes 远端真实建/续/代回回合（TASK-18）：无 hermes 服务器无法实跑；适配器/接线/转义防注入单测全覆盖，真机 ssh.exe 链路冒烟通过（BatchMode+ConnectTimeout，不可达主机 10.2s 快速失败退出码 255 错误透传）；`-c` 对不存在会话名是新建还是报错同架构 5.5 待远端验证（报错则回退 --resume <id>）
 
 > 补充（TASK-15 顺修）：冒烟阶段修复的就绪竞态同款问题在 daemon listener 侧也存在（connect 即报 connected，早于 SUBACK），已按同一门控模式修复（listener-ready 测试覆盖）。
 
