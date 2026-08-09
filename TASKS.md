@@ -61,7 +61,7 @@
 - **验证**：kill -9 后文件无损坏单测；stale pid 接管测试；`agentbus daemon start/stop` 实测
 - **DoD**：崩溃恢复零数据损坏
 
-### TASK-07 Adapter 框架 + Qoder 适配器（T5 上）
+### TASK-07 Adapter 框架 + Qoder 适配器（T5 上）【✅ 已完成 2026-08-09：18 适配器单测全绿（base 5 + qoder 13），分支 feat/task-07；实测发现：--session-id 仅收 UUID、未登录时 exit 0 + is_error=true 陷阱；待补实测：qodercli 登录后建会话+续接（本机未登录）】
 - **目标**：base.ts spawn 执行器（超时 kill/stdout 收集）+ qoder.ts（建会话/注入/json 输出提取/fullArgs/readonlyArgs）。
 - **验证**：本机 qodercli 建会话+续接实测；超时 kill 测试
 - **DoD**：实测通过并记录输出样例
