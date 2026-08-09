@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgentBus 控制台</title>
+<style>
+  :root { --bg:#0f1420; --panel:#171e2e; --line:#26304a; --fg:#dce3f2; --dim:#8b96ad;
+          --acc:#4f8cff; --ok:#3ecf8e; --warn:#e0b04b; --err:#e06c5b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.6 "Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; align-items:center; gap:16px; padding:12px 24px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; }
+  header .broker { color:var(--dim); font-size:12px; }
+  nav { display:flex; gap:4px; margin-left:auto; }
+  nav button { background:none; border:1px solid transparent; color:var(--dim); padding:6px 14px;
+               border-radius:6px; cursor:pointer; font-size:14px; }
+  nav button.active { color:var(--fg); border-color:var(--line); background:var(--panel); }
+  main { padding:20px 24px; max-width:1100px; margin:0 auto; }
+  section.page { display:none; }
+  section.page.show { display:block; }
+  h2 { font-size:15px; margin:18px 0 8px; color:var(--dim); font-weight:600; }
+  table { width:100%; border-collapse:collapse; background:var(--panel); border-radius:8px; overflow:hidden; }
+  th,td { text-align:left; padding:8px 12px; border-bottom:1px solid var(--line); font-size:13px; }
+  th { color:var(--dim); font-weight:600; }
+  tr:last-child td { border-bottom:none; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; }
+  .tag.on { background:rgba(62,207,142,.15); color:var(--ok); }
+  .tag.off { background:rgba(139,150,173,.12); color:var(--dim); }
+  .tag.decl { background:rgba(79,140,255,.15); color:var(--acc); }
+  input,select,textarea { background:#0d1220; border:1px solid var(--line); color:var(--fg);
+                          border-radius:6px; padding:6px 10px; font-size:13px; }
+  button.act { background:var(--acc); border:none; color:#fff; padding:7px 16px; border-radius:6px;
+               cursor:pointer; font-size:13px; }
+  button.act:hover { filter:brightness(1.1); }
+  .row { display:flex; gap:8px; margin:10px 0; flex-wrap:wrap; align-items:center; }
+  .cards { display:flex; gap:12px; flex-wrap:wrap; margin:12px 0; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px 18px; min-width:130px; }
+  .card .num { font-size:22px; font-weight:700; }
+  .card .lbl { color:var(--dim); font-size:12px; }
+  .hint { color:var(--dim); font-size:12px; margin:4px 0 10px; }
+  #msg { position:fixed; bottom:20px; right:20px; background:var(--panel); border:1px solid var(--line);
+         padding:10px 16px; border-radius:8px; display:none; max-width:420px; }
+  #msg.ok { border-color:var(--ok); } #msg.err { border-color:var(--err); }
+  .empty { color:var(--dim); padding:14px; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AgentBus 控制台</h1>
+  <span class="broker" id="brokerInfo"></span>
+  <nav>
+    <button data-page="namespaces" class="active">命名空间</button>
+    <button data-page="permissions">权限</button>
+    <button data-page="metrics">指标</button>
+  </nav>
+</header>
+<main>
+
+  <!-- ── 页 1：命名空间 ─────────────────────────────── -->
+  <section class="page show" data-page="namespaces">
+    <h2>命名空间清单</h2>
+    <div class="hint">ns 隔离由 MQTT topic 路径天然实现；此处可显式声明（登记）命名空间。</div>
+    <div class="row">
+      <input id="nsName" placeholder="新命名空间名（不含 /）" size="24">
+      <button class="act" id="nsDeclareBtn">声明创建</button>
+    </div>
+    <table>
+      <thead><tr><th>名称</th><th>在线会话</th><th>已注册</th><th>Daemon</th><th>状态</th></tr></thead>
+      <tbody id="nsTable"></tbody>
+    </table>
+
+    <h2>身份清单与检索</h2>
+    <div class="row">
+      <input id="identNs" placeholder="按 ns 过滤（可空）" size="16">
+      <input id="identQ" placeholder="关键字检索（子串）" size="20">
+      <button class="act" id="identSearchBtn">检索</button>
+    </div>
+    <table>
+      <thead><tr><th>身份</th><th>ns</th><th>client_id</th><th>在线</th><th>已注册</th><th>有指标</th></tr></thead>
+      <tbody id="identTable"></tbody>
+    </table>
+  </section>
+
+  <!-- ── 页 2：权限 ────────────────────────────────── -->
+  <section class="page" data-page="permissions">
+    <h2>权限档案</h2>
+    <div class="hint">
+      档案契约与 daemon 配置一致（allowed_senders / inbound_mode=readonly|full / trust_map）。
+      保存后 hub 向目标 daemon 下发 type=control 通知；daemon 侧落地应用为后续演进。
+    </div>
+    <table>
+      <thead><tr><th>身份</th><th>入站模式</th><th>白名单</th><th>更新时间</th><th></th></tr></thead>
+      <tbody id="permTable"></tbody>
+    </table>
+
+    <h2>编辑档案</h2>
+    <div class="row">
+      <input id="permIdentity" placeholder="目标身份，如 default/fe-a" size="28">
+      <button class="act" id="permLoadBtn">载入</button>
+    </div>
+    <div class="row">
+      <label>inbound_mode
+        <select id="permMode"><option value="readonly">readonly（默认只读）</option><option value="full">full（完全）</option></select>
+      </label>
+    </div>
+    <div class="row">
+      <label style="flex:1">allowed_senders（逗号分隔，空=不限制）
+        <input id="permSenders" style="width:100%" placeholder="default/alice, bob">
+      </label>
+    </div>
+    <div class="row">
+      <label style="flex:1">trust_map（JSON：来源 → readonly/full）
+        <textarea id="permTrustMap" rows="3" style="width:100%" placeholder='{"default/alice": "full"}'></textarea>
+      </label>
+    </div>
+    <div class="row">
+      <button class="act" id="permSaveBtn">保存并下发</button>
+      <span id="permResult" class="hint"></span>
+    </div>
+  </section>
+
+  <!-- ── 页 3：指标 ────────────────────────────────── -->
+  <section class="page" data-page="metrics">
+    <h2>全局汇总</h2>
+    <div class="cards" id="metricCards"></div>
+    <h2>各 Daemon 指标 <span class="hint" id="metricRefreshHint"></span></h2>
+    <div class="row">
+      <label><input type="checkbox" id="autoRefresh" checked> 每 5s 自动刷新</label>
+      <button class="act" id="metricRefreshBtn">立即刷新</button>
+    </div>
+    <table>
+      <thead><tr><th>Daemon</th><th>注入成功</th><th>注入失败</th><th>丢弃</th><th>去重</th><th>排队</th><th>会话数</th><th>运行(s)</th><th>上报次数</th><th>最近上报</th></tr></thead>
+      <tbody id="metricTable"></tbody>
+    </table>
+  </section>
+
+</main>
+<div id="msg"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+
+/* ── 通用 ── */
+function toast(text, ok = true) {
+  const el = $("msg");
+  el.textContent = text;
+  el.className = ok ? "ok" : "err";
+  el.style.display = "block";
+  setTimeout(() => (el.style.display = "none"), 3500);
+}
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+  return data;
+}
+const tag = (on, yes = "是", no = "否") =>
+  `<span class="tag ${on ? "on" : "off"}">${on ? yes : no}</span>`;
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
+  ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+
+/* ── 页签切换 ── */
+document.querySelectorAll("nav button").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll("nav button").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll("section.page").forEach((p) => p.classList.remove("show"));
+    btn.classList.add("active");
+    document.querySelector(`section[data-page="${btn.dataset.page}"]`).classList.add("show");
+    if (btn.dataset.page === "metrics") loadMetrics();
+  });
+});
+
+/* ── 页 1：命名空间 ── */
+async function loadNamespaces() {
+  const { namespaces } = await api("/api/console/namespaces");
+  $("nsTable").innerHTML = namespaces.length ? namespaces.map((n) => `
+    <tr><td>${esc(n.name)}</td><td>${n.online_agents}</td><td>${n.registered_agents}</td>
+    <td>${n.daemon_count}</td>
+    <td>${n.declared ? '<span class="tag decl">已声明</span>' : '<span class="tag off">隐式</span>'}</td></tr>
+  `).join("") : '<tr><td colspan="5" class="empty">暂无命名空间</td></tr>';
+}
+$("nsDeclareBtn").addEventListener("click", async () => {
+  const name = $("nsName").value.trim();
+  if (!name) return toast("请填写命名空间名", false);
+  try {
+    await api("/api/console/namespaces", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ name }),
+    });
+    toast(`命名空间 ${name} 已声明`); $("nsName").value = "";
+    loadNamespaces();
+  } catch (e) { toast(e.message, false); }
+});
+async function loadIdentities() {
+  const p = new URLSearchParams();
+  if ($("identNs").value.trim()) p.set("ns", $("identNs").value.trim());
+  if ($("identQ").value.trim()) p.set("q", $("identQ").value.trim());
+  const { identities } = await api(`/api/console/identities?${p}`);
+  $("identTable").innerHTML = identities.length ? identities.map((i) => `
+    <tr><td>${esc(i.identity)}</td><td>${esc(i.ns)}</td><td>${esc(i.client_id)}</td>
+    <td>${tag(i.online, "在线", "离线")}</td><td>${tag(i.registered)}</td><td>${tag(i.has_metrics)}</td></tr>
+  `).join("") : '<tr><td colspan="6" class="empty">无匹配身份</td></tr>';
+}
+$("identSearchBtn").addEventListener("click", loadIdentities);
+
+/* ── 页 2：权限 ── */
+async function loadPermissions() {
+  const { profiles } = await api("/api/console/permissions");
+  $("permTable").innerHTML = profiles.length ? profiles.map((p) => `
+    <tr><td>${esc(p.identity)}</td><td>${esc(p.inbound_mode)}</td>
+    <td>${p.allowed_senders.length ? esc(p.allowed_senders.join(", ")) : '<span class="tag off">不限制</span>'}</td>
+    <td>${esc((p.updated_at || "").replace("T", " ").slice(0, 19))}</td>
+    <td><button class="act" onclick="editProfile('${esc(p.identity)}')">编辑</button></td></tr>
+  `).join("") : '<tr><td colspan="5" class="empty">暂无权限档案（在下方为目标身份创建）</td></tr>';
+}
+async function editProfile(identity) {
+  $("permIdentity").value = identity;
+  try {
+    const { profile } = await api(`/api/console/permissions/${encodeURIComponent(identity)}`);
+    $("permMode").value = profile.inbound_mode || "readonly";
+    $("permSenders").value = (profile.allowed_senders || []).join(", ");
+    $("permTrustMap").value = JSON.stringify(profile.trust_map || {}, null, 2);
+  } catch (e) { toast(e.message, false); }
+}
+window.editProfile = editProfile;
+$("permLoadBtn").addEventListener("click", () => {
+  const id = $("permIdentity").value.trim();
+  if (id) editProfile(id);
+});
+$("permSaveBtn").addEventListener("click", async () => {
+  const identity = $("permIdentity").value.trim();
+  if (!identity) return toast("请填写目标身份", false);
+  let trust_map = {};
+  try {
+    const raw = $("permTrustMap").value.trim();
+    if (raw) trust_map = JSON.parse(raw);
+  } catch { return toast("trust_map 不是合法 JSON", false); }
+  const body = {
+    inbound_mode: $("permMode").value,
+    allowed_senders: $("permSenders").value.split(",").map((s) => s.trim()).filter(Boolean),
+    trust_map,
+  };
+  try {
+    const r = await api(`/api/console/permissions/${encodeURIComponent(identity)}`, {
+      method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+    });
+    $("permResult").textContent = r.distributed
+      ? "✓ 已保存，control 通知已下发 daemon" : "✓ 已保存（daemon 不在线，通知未送达）";
+    toast("权限档案已保存"); loadPermissions();
+  } catch (e) { toast(e.message, false); }
+});
+
+/* ── 页 3：指标 ── */
+let metricTimer = null;
+async function loadMetrics() {
+  const [data, summary] = await Promise.all([
+    api("/api/console/metrics"), api("/api/console/metrics/summary"),
+  ]);
+  const t = summary.totals || {};
+  $("metricCards").innerHTML = [
+    [summary.daemon_count, "在线 Daemon"], [summary.total_senders, "会话发件人总数"],
+    [t.injected_ok ?? 0, "注入成功"], [t.injected_fail ?? 0, "注入失败"],
+    [t.dropped ?? 0, "丢弃"], [t.deduped ?? 0, "去重"], [t.queued ?? 0, "排队"],
+  ].map(([n, l]) => `<div class="card"><div class="num">${n}</div><div class="lbl">${l}</div></div>`).join("");
+
+  const rows = Object.entries(data.daemons || {});
+  $("metricTable").innerHTML = rows.length ? rows.map(([id, e]) => {
+    const m = (typeof e.metrics === "object" && e.metrics) || {};
+    return `<tr><td>${esc(id)}</td><td>${m.injected_ok ?? "-"}</td><td>${m.injected_fail ?? "-"}</td>
+      <td>${m.dropped ?? "-"}</td><td>${m.deduped ?? "-"}</td><td>${m.queued ?? "-"}</td>
+      <td>${m.senders ?? "-"}</td><td>${m.uptime_s ?? "-"}</td><td>${e.report_count ?? "-"}</td>
+      <td>${esc((e.last_seen || "").replace("T", " ").slice(0, 19))}</td></tr>`;
+  }).join("") : '<tr><td colspan="10" class="empty">暂无 daemon 指标上报</td></tr>';
+}
+function syncMetricTimer() {
+  if (metricTimer) { clearInterval(metricTimer); metricTimer = null; }
+  if ($("autoRefresh").checked) {
+    metricTimer = setInterval(loadMetrics, 5000);
+    $("metricRefreshHint").textContent = "（自动刷新中）";
+  } else $("metricRefreshHint").textContent = "";
+}
+$("autoRefresh").addEventListener("change", syncMetricTimer);
+$("metricRefreshBtn").addEventListener("click", loadMetrics);
+
+/* ── 启动 ── */
+(async function init() {
+  try {
+    const h = await api("/health");
+    $("brokerInfo").textContent = `broker ${h.mqtt_broker} · 在线 ${h.online_agents.length} · 消息 ${h.total_messages}`;
+  } catch { $("brokerInfo").textContent = "hub /health 不可达"; }
+  loadNamespaces().catch((e) => toast(e.message, false));
+  loadIdentities().catch(() => {});
+  loadPermissions().catch(() => {});
+  loadMetrics().catch(() => {});
+  syncMetricTimer();
+})();
+</script>
+</body>
+</html>

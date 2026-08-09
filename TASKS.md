@@ -113,7 +113,7 @@
 | TASK-18 | Hermes SSH 适配器【✅ 已完成 2026-08-09：281 TS 全绿（适配器 12 例含 shell 转义防注入 + daemon 接线 2 例）；-z oneshot + -c 按名建/续（同形态幂等）+ remote 段 SSH 注入（BatchMode/ConnectTimeout/-i）；顺修 doctor 对 remote 工具跳过本机探测；真机冒烟：真实 ssh.exe 链路验证（不可达主机 10.2s 快速失败退出码 255 错误透传）；⚠️ 远端真实建/续/代回回合待补（无 hermes 服务器；-c 对不存在会话名的行为同架构 5.5 待实测），分支 feat/task-18】 | T14 | 远端建/续/代回全链路 |
 | TASK-19 | Daemon 指标上报【✅ 已完成 2026-08-09：286 TS + 69 Python 全绿；daemon 侧 MetricsCollector + 周期 publish 到 /phnix/ai/metric/<ns>/<cid>（router drop 新增 kind 分类：invalid/whitelist/dedup/hop）；hub 侧独立 MQTT 连接订阅 metric/# 汇总 + /health 扩展 daemon_metrics；真机端到端冒烟通过（injected_ok/deduped/dropped 计数 + senders + report_count 周期上报均正确），分支 feat/task-19】 | T15 | hub 可查各 daemon 指标 |
 | TASK-20 | Web 控制台后端 API【✅ 已完成 2026-08-09：84 Python 全绿（含 TestClient 路由层 6 例 + paho 发布-订阅端到端防回归 1 例）；/api/console/* 八接口覆盖前端三页：namespaces GET/POST、identities（ns 过滤+子串检索）、permissions GET/PUT（校验对齐 daemon config 契约 readonly/full，PUT 存档并经 metric 连接下发 type=control config_update，wait_for_publish 等 PUBACK）、metrics + summary；真机冒烟全链路通过（探针与 daemon 日志均确认收到 control 下发；排查出 localhost→::1 旧 relay 脑裂隐患，hub 已改连 127.0.0.1），分支 feat/task-20】 | T16 | API 覆盖前端所需 |
-| TASK-21 | Web 控制台前端三页 | T17 | ns/权限/指标页可用 |
+| TASK-21 | Web 控制台前端三页【✅ 已完成 2026-08-09：88 Python 全绿（新增 4 例服务路由与页面结构契约）；hub 直出 web/index.html 单页应用（无构建步骤，原生 JS）：GET /console 三页签 SPA——命名空间（清单/声明创建/身份三态检索）、权限（档案列表/编辑 inbound_mode+allowed_senders+trust_map/保存并下发显示 distributed 状态）、指标（汇总卡片/各 daemon 表/5s 自动刷新）；浏览器实测三页全通：声明 webtest 成功、权限保存后 daemon.log 确认收到 [control] 下发、指标表实时上报正常，分支 feat/task-21】 | T17 | ns/权限/指标页可用 |
 | TASK-22 | 二期集成验收 | T18 | 六工具矩阵回归 |
 
 ## 3. 三期任务卡（T19–T26）
@@ -149,3 +149,4 @@ TASK-10/11 可并行   │                      └→ TASK-09 ─────�
 - v1.4（2026-08-09）：TASK-18 完成标记；hermes 适配器（-z/-c 按名幂等 + SSH 注入 + shell 转义防注入）+ daemon 接线 + doctor 远端工具跳过探测；真机 ssh 链路冒烟通过；远端真实回合因无 hermes 服务器转待补
 - v1.5（2026-08-09）：TASK-19 完成标记；daemon 指标上报（metric MQTT 通道 + MetricsCollector + router drop kind）+ hub 侧采集（parse_metric_topic/MetricsStore/lifespan）+ /health 扩展；真机端到端冒烟通过
 - v1.6（2026-08-09）：TASK-20 完成标记；Web 控制台后端 API（/api/console/* 八接口：ns 清单/声明、身份检索、权限档案读写+control 下发、指标与汇总）；真机冒烟确认下发全链路（顺带排查出 hub 连 broker 需显式 127.0.0.1，避免 localhost→::1 旧 relay 脑裂）
+- v1.7（2026-08-09）：TASK-21 完成标记；Web 控制台前端三页（web/index.html 单页应用，GET /console 直出）；浏览器实测 ns 声明/身份检索/权限保存下发（daemon.log 收到 control）/指标实时表全通

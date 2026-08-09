@@ -47,6 +47,7 @@ from starlette.applications import Starlette
 from starlette.routing import Route, Mount
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from pathlib import Path
 
 # ─── 日志配置 ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -1064,6 +1065,16 @@ async def console_metrics_summary(request: Request):
     return JSONResponse(build_metric_summary(_metrics_store.snapshot()))
 
 
+# TASK-21：控制台前端单页（web/index.html 直出，无构建步骤；三页：ns/权限/指标）
+CONSOLE_HTML = Path(__file__).resolve().parent / "web" / "index.html"
+
+
+async def console_page(request: Request):
+    if not CONSOLE_HTML.exists():
+        return JSONResponse({"error": "控制台页面缺失（web/index.html）"}, status_code=500)
+    return Response(CONSOLE_HTML.read_text(encoding="utf-8"), media_type="text/html; charset=utf-8")
+
+
 async def sse_endpoint(request: Request):
     client_id = request.query_params.get("client_id") or request.headers.get("x-client-id", "")
     ns = normalize_ns(request.query_params.get("ns"))
@@ -1121,6 +1132,8 @@ app = Starlette(
         Route("/api/console/permissions/{identity:path}", console_permission_put, methods=["PUT"]),
         Route("/api/console/metrics", console_metrics, methods=["GET"]),
         Route("/api/console/metrics/summary", console_metrics_summary, methods=["GET"]),
+        # TASK-21：控制台前端页面
+        Route("/console", console_page, methods=["GET"]),
     ],
     lifespan=hub_lifespan,
 )
