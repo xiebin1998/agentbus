@@ -15,6 +15,7 @@ import { newMsgId, makeReply, type BusMessage } from "../protocol.js";
 import { OpenCodeKiloAdapter } from "../adapters/opencode-kilo.js";
 import { QoderAdapter } from "../adapters/qoder.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
+import { CodexAdapter } from "../adapters/codex.js";
 import { createListener, type Listener } from "./listener.js";
 import { RotatingLogger } from "./logger.js";
 import { acquirePidLock, releasePidLock } from "./pid.js";
@@ -278,7 +279,19 @@ export class Daemon {
         if (turn.error) throw new Error(turn.error);
         return { output: turn.output };
       }
-      // qoder 族（含未来 codex 的同类 --session-id UUID 语义）
+      // codex：会话 id 由 CLI 侧生成（JSONL thread.started 提取），-o 文件读最终回复（TASK-16）
+      if (ctx.tool === "codex") {
+        const adapter = new CodexAdapter({
+          binary: typeof toolCfg.binary === "string" ? toolCfg.binary : "codex",
+          workspace,
+        });
+        const turn = ctx.isNew
+          ? await adapter.createSession(ctx.envelope, ctx.mode)
+          : await adapter.injectWith(ctx.envelope, ctx.sessionId, ctx.mode);
+        if (turn.error) throw new Error(turn.error);
+        return { output: turn.output, sessionId: turn.sessionId ?? undefined };
+      }
+      // qoder 族（--session-id UUID 幂等语义）
       const adapter = new QoderAdapter({
         binary: typeof toolCfg.binary === "string" ? toolCfg.binary : ctx.tool === "qoder" ? "qodercli" : ctx.tool,
         workspace,

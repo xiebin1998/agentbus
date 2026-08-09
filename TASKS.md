@@ -108,7 +108,7 @@
 |---|---|---|---|
 | TASK-14 | uninstall 全链路【✅ 已完成 2026-08-09：216 TS 全绿 + 真实冒烟零残留，分支 feat/task-14】 | T10 | 卸载后 doctor 零残留 |
 | TASK-15 | Claude 适配器（含 plan 只读实测）【✅ 已完成 2026-08-09：235 TS 全绿 + daemon 接线 + listener 就绪门控顺修，分支 feat/task-15；⚠️ plan 禁写实测待补（claude 代理 10.1.5.104:3000 不可达，参数已经 --help 实测）】 | T11 | plan 禁写实测 |
-| TASK-16 | Codex 适配器（JSONL 解析会话 id） | T12 | 20 次解析正确率 100% |
+| TASK-16 | Codex 适配器（JSONL 解析会话 id）【✅ 已完成 2026-08-09：252 TS 全绿 + 20 样本解析 100% + 真机两次解析出真实 thread_id；顺修 Windows .cmd spawn/超时杀进程树/stdin 关闭/错误信息保留；⚠️ 20 回合实跑因后端代理不可达待补，分支 feat/task-16】 | T12 | 20 次解析正确率 100% |
 | TASK-17 | OpenCode 适配器 | T13 | 与 Kilo 共用用例全过 |
 | TASK-18 | Hermes SSH 适配器 | T14 | 远端建/续/代回全链路 |
 | TASK-19 | Daemon 指标上报 | T15 | hub 可查各 daemon 指标 |
@@ -144,3 +144,4 @@ TASK-10/11 可并行   │                      └→ TASK-09 ─────�
 
 - v1.0（2026-08-09）：初版，PLAN T1–T26 拆为 TASK-01~30，附 Superpowers 执行协议
 - v1.1（2026-08-09）：TASK-14/15 完成标记；TASK-15 plan 禁写实测因 claude 代理不可达转待补实测
+- v1.2（2026-08-09）：TASK-16 完成标记；单测 20 样本 100%，真机解析真实 thread_id 成功；20 回合实跑因 codex 后端不可达转待补

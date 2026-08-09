@@ -3,6 +3,9 @@
  */
 import { describe, expect, it } from "vitest";
 import { runCommand } from "../src/adapters/base.js";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 describe("runCommand", () => {
   it("捕获 stdout 与退出码", async () => {
@@ -56,5 +59,87 @@ describe("runCommand", () => {
     expect(result.exitCode).toBe(0);
     // Windows 短路径/大小写差异：统一小写比较
     expect(result.stdout.toLowerCase()).toBe((process.env.TEMP ?? process.cwd()).toLowerCase());
+  });
+
+  it("子进程 stdin 立即关闭（TASK-16 实测：codex 等 stdin EOF 会阻塞回合）", async () => {
+    // 脚本等 stdin EOF 后才输出；若 stdin 未关闭将超时
+    const result = await runCommand({
+      cmd: "node",
+      args: ["-e", "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('EOF-REACHED'))"],
+      timeoutMs: 5000,
+    });
+    expect(result.timedOut).toBe(false);
+    expect(result.stdout).toBe("EOF-REACHED");
+  });
+
+  it.skipIf(process.platform !== "win32")("Windows：.cmd shim 可直接作为 cmd 运行（TASK-16 实测：codex/qodercli 均为 .cmd）", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-cmd-"));
+    const shim = join(dir, "shim-test.cmd");
+    writeFileSync(shim, "@echo hello-from-cmd %1\r\n", "utf-8");
+    try {
+      const result = await runCommand({ cmd: shim, args: ["argA"], timeoutMs: 10_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.trim()).toBe("hello-from-cmd argA");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("Windows：无扩展名命令经 PATHEXT 解析（spawn 裸名会 ENOENT）", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-cmd2-"));
+    const shim = join(dir, "shimbare.cmd");
+    writeFileSync(shim, "@echo bare-ok\r\n", "utf-8");
+    try {
+      const result = await runCommand({
+        cmd: "shimbare",
+        args: [],
+        env: { PATH: `${dir};${process.env.PATH ?? ""}` },
+        timeoutMs: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.stdout.trim()).toBe("bare-ok");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("Windows：超时杀整棵进程树（cmd.exe 孙进程持管道实测：单杀 wrapper 会挂死）", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-tree-"));
+    const hb = join(dir, "hb.txt");
+    // .cmd 套壳再起心跳孙进程：每 200ms 追加写文件，存活即可观测（路径经环境变量传，避免引号嵌套）
+    const shim = join(dir, "tree.cmd");
+    const script = "const fs=require('fs');setInterval(()=>fs.appendFileSync(process.env.HB,'x'),200);setTimeout(()=>{},60000)";
+    writeFileSync(shim, `@set "HB=${hb}" && @node -e "${script}"\r\n`, "utf-8");
+    try {
+      const result = await runCommand({ cmd: shim, args: [], timeoutMs: 1500 });
+      expect(result.timedOut).toBe(true);
+      // 孙进程被杀净：心跳停止增长
+      await new Promise((r) => setTimeout(r, 1200));
+      const size1 = existsSync(hb) ? statSync(hb).size : 0;
+      await new Promise((r) => setTimeout(r, 1000));
+      const size2 = existsSync(hb) ? statSync(hb).size : 0;
+      expect(size2).toBe(size1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("Windows：where 同名命中无扩展名 sh 脚本与 .cmd 时优先可执行扩展（npm 全局实测）", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-cmd3-"));
+    writeFileSync(join(dir, "shimboth"), "#!/bin/sh\necho wrong\n", "utf-8");
+    writeFileSync(join(dir, "shimboth.cmd"), "@echo right-cmd\r\n", "utf-8");
+    try {
+      const result = await runCommand({
+        cmd: "shimboth",
+        args: [],
+        env: { PATH: `${dir};${process.env.PATH ?? ""}` },
+        timeoutMs: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.stdout.trim()).toBe("right-cmd");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

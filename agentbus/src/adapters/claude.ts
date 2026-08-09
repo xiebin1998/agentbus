@@ -85,7 +85,7 @@ export class ClaudeAdapter {
     let error = result.error;
     if (result.timedOut) {
       error = `claude 回合超时（${this.timeoutMs}ms）`;
-    } else if (result.exitCode !== 0) {
+    } else if (result.exitCode !== 0 && !error) {
       const tail = result.stderr.trim().split("\n").slice(-3).join("\n");
       error = `claude 退出码 ${result.exitCode}${tail ? `：${tail}` : ""}`;
     } else {

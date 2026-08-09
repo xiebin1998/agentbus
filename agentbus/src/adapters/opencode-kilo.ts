@@ -81,7 +81,7 @@ export class OpenCodeKiloAdapter {
     let error = result.error;
     if (result.timedOut) {
       error = `${this.binary} 回合超时（${this.timeoutMs}ms）`;
-    } else if (result.exitCode !== 0) {
+    } else if (result.exitCode !== 0 && !error) {
       const tail = result.stderr.trim().split("\n").slice(-3).join("\n");
       error = `${this.binary} 退出码 ${result.exitCode}${tail ? `：${tail}` : ""}`;
     }
