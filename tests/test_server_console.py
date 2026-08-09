@@ -206,7 +206,7 @@ def test_distribute_permission_waits_for_puback():
             return FakeMsgInfo(self._flag)
 
     ok = FakeClient(); ok._flag = ["acked"]
-    server._metric_client = ok
+    server._shared_client = ok
     try:
         assert server.distribute_permission_update("ns/a", {"inbound_mode": "readonly"}) is True
         topic, payload, qos = ok.published[0]
@@ -217,10 +217,10 @@ def test_distribute_permission_waits_for_puback():
         assert msg["config"]["inbound_mode"] == "readonly"
 
         bad = FakeClient(); bad._flag = []  # wait_for_publish 后仍未确认
-        server._metric_client = bad
+        server._shared_client = bad
         assert server.distribute_permission_update("ns/a", {"inbound_mode": "readonly"}) is False
     finally:
-        server._metric_client = None
+        server._shared_client = None
 
 
 def test_metric_client_publish_delivers_end_to_end():

@@ -165,7 +165,8 @@ class TestCanAck:
         assert server.can_ack(None, "a") is False
 
 
-# ---------- MQTT 就绪门控（TASK-13 冒烟：SSE 握手返回时订阅未完成，早到回复丢失）----------
+# ---------- MQTT 就绪门控（TASK-13 冒烟：SSE 握手返回时订阅未完成，早到回复丢失；
+#            TASK-24 起门控跟随 hub 共享连接的通配订阅就绪）----------
 
 class TestSessionReadyGate:
     def _make_session(self, cid):
@@ -174,34 +175,38 @@ class TestSessionReadyGate:
         return server.AgentSession(cid, asyncio.new_event_loop())
 
     def test_not_ready_before_connect(self):
+        server._shared_ready.clear()
         session = self._make_session("gate-a")
         assert session.is_mqtt_ready() is False
 
-    def test_ready_after_on_connect(self):
+    def test_ready_after_shared_subscribed(self):
         session = self._make_session("gate-b")
-        session._on_connect(None, None, None, 0)
-        assert session.is_mqtt_ready() is True
-
-    def test_failed_connect_stays_not_ready(self):
-        session = self._make_session("gate-c")
-        session._on_connect(None, None, None, 5)
-        assert session.is_mqtt_ready() is False
+        server._shared_ready.set()
+        try:
+            assert session.is_mqtt_ready() is True
+        finally:
+            server._shared_ready.clear()
 
     def test_not_ready_again_after_disconnect(self):
         session = self._make_session("gate-d")
-        session._on_connect(None, None, None, 0)
-        session._on_disconnect(None, None, None, 0)
+        server._shared_ready.set()
+        server._shared_ready.clear()  # 模拟共享连接断开
         assert session.is_mqtt_ready() is False
 
     def test_wait_ready_times_out_when_not_connected(self):
+        server._shared_ready.clear()
         session = self._make_session("gate-e")
         assert session.wait_ready(timeout=0.1) is False
 
     def test_wait_ready_returns_true_when_connected_later(self):
         """模拟异步建连：稍后就绪，wait_ready 应等到 True"""
+        server._shared_ready.clear()
         session = self._make_session("gate-f")
-        threading.Timer(0.05, session._on_connect, args=(None, None, None, 0)).start()
-        assert session.wait_ready(timeout=2) is True
+        threading.Timer(0.05, server._shared_ready.set).start()
+        try:
+            assert session.wait_ready(timeout=2) is True
+        finally:
+            server._shared_ready.clear()
 
 
 # ---------- 发送目标三态划分（TASK-13 冒烟：纯 MQTT daemon 不在 _sessions，

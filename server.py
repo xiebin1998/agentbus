@@ -72,6 +72,11 @@ TOPIC_MESSAGE = "/phnix/ai/channel/{client_id}/message"
 TOPIC_METRIC_PREFIX = "/phnix/ai/metric/"
 TOPIC_METRIC_WILDCARD = "/phnix/ai/metric/#"
 
+# TASK-24：共享连接通配订阅（架构 11.8 演进方案 2）：flat + ns 两条 message 通配
+TOPIC_MESSAGE_PREFIX = "/phnix/ai/channel/"
+TOPIC_MESSAGE_WILDCARD_FLAT = "/phnix/ai/channel/+/message"
+TOPIC_MESSAGE_WILDCARD_NS = "/phnix/ai/channel/+/+/message"
+
 # 消息体上限（架构 11.8 缺陷 5）：防止异常大包占满 broker 与内存
 MAX_TEXT_BYTES = 64 * 1024
 
@@ -153,6 +158,30 @@ def parse_metric_topic(topic: str) -> Optional[str]:
     if len(parts) == 2 and parts[0] and parts[1]:
         return f"{parts[0]}/{parts[1]}"
     return None
+
+
+def parse_message_topic(topic: str) -> Optional[tuple]:
+    """TASK-24：message topic → (ns_or_None, client_id)。共享连接按 topic 路由的第一步：
+    flat /phnix/ai/channel/<cid>/message → (None, cid)；
+    ns /phnix/ai/channel/<ns>/<cid>/message → (ns, cid)；其余（含 metric）返回 None"""
+    if (not topic or not topic.startswith(TOPIC_MESSAGE_PREFIX)
+            or not topic.endswith("/message")):
+        return None
+    parts = topic[len(TOPIC_MESSAGE_PREFIX):-len("/message")].split("/")
+    if len(parts) == 1 and parts[0]:
+        return (None, parts[0])
+    if len(parts) == 2 and parts[0] and parts[1]:
+        return (parts[0], parts[1])
+    return None
+
+
+def route_message_key(topic: str) -> Optional[str]:
+    """TASK-24：message topic → 会话表键（session_key 语义）；非法返回 None"""
+    parsed = parse_message_topic(topic)
+    if parsed is None:
+        return None
+    ns, cid = parsed
+    return session_key(cid, ns)
 
 
 class MetricsStore:
@@ -461,21 +490,44 @@ _servers: Dict[str, Server] = {}
 _messages: Dict[str, dict] = {}
 _agent_info: Dict[str, AgentInfo] = {}
 
-# TASK-19：daemon 指标汇总（全局单例，/health 与 metric 采集线程共享）
+# TASK-19/24：daemon 指标汇总（全局单例，/health 与共享连接采集共享）
 _metrics_store = MetricsStore()
-_metric_client: Optional[mqtt.Client] = None
+
+# TASK-24：hub 唯一 MQTT 共享连接（架构 11.8 演进方案 2：线程数 N→1）
+_shared_client: Optional[mqtt.Client] = None
+_shared_ready = threading.Event()
 
 # TASK-20：控制台全局状态（显式 ns 登记 + 权限档案库）
 _ns_registry = NamespaceRegistry()
 _permission_store = PermissionStore()
 
 
-def start_metric_collector() -> None:
-    """TASK-19：hub 侧全局 metric 订阅连接（独立于各 SSE 会话连接）；
+def _handle_metric_message(msg) -> None:
+    """TASK-19 metric 消息入库（原 metric 连接 on_message 逻辑，TASK-24 并入共享连接路由）"""
+    try:
+        payload = json.loads(msg.payload.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+    if not isinstance(payload, dict) or payload.get("type") != "metric":
+        return
+    identity = parse_metric_topic(msg.topic)
+    if not identity:
+        return
+    # payload.from 优先（daemon 自报身份），回退 topic 推导
+    from_id = payload.get("from")
+    if isinstance(from_id, str) and from_id.strip():
+        identity = from_id.strip()
+    _metrics_store.update(identity, payload.get("metrics"), payload.get("timestamp"))
+
+
+def start_shared_client() -> None:
+    """TASK-24：hub 唯一 MQTT 连接（架构 11.8 演进方案 2）——通配订阅 flat/ns 两条
+    message topic 与 metric topic，按 topic 解析目标身份路由到对应会话；
+    取消每 Agent 的 paho 客户端与 loop_start 线程（线程数 N→1）。
     broker 不可达时 paho 内部自动重连，不阻塞启动"""
-    global _metric_client
+    global _shared_client
     client = mqtt.Client(
-        client_id=f"agentbus-hub-metrics-{uuid.uuid4().hex[:8]}",
+        client_id=f"agentbus-hub-shared-{uuid.uuid4().hex[:8]}",
         protocol=mqtt.MQTTv311,
         callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
     )
@@ -486,48 +538,77 @@ def start_metric_collector() -> None:
 
     def on_connect(c, userdata, flags, rc, properties=None):
         if rc == 0:
-            c.subscribe(TOPIC_METRIC_WILDCARD, qos=1)
-            logger.info(f"[hub-metrics] subscribed to {TOPIC_METRIC_WILDCARD}")
+            c.subscribe([
+                (TOPIC_MESSAGE_WILDCARD_FLAT, 2),
+                (TOPIC_MESSAGE_WILDCARD_NS, 2),
+                (TOPIC_METRIC_WILDCARD, 1),
+            ])
+            _shared_ready.set()
+            logger.info(f"[hub-shared] subscribed to {TOPIC_MESSAGE_WILDCARD_FLAT}, "
+                        f"{TOPIC_MESSAGE_WILDCARD_NS}, {TOPIC_METRIC_WILDCARD}")
         else:
-            logger.error(f"[hub-metrics] connect failed: rc={rc}")
+            logger.error(f"[hub-shared] connect failed: rc={rc}")
+
+    def on_disconnect(c, userdata, flags, rc, properties=None):
+        _shared_ready.clear()
+        logger.warning(f"[hub-shared] MQTT disconnected (rc={rc})")
 
     def on_message(c, userdata, msg):
+        if msg.topic.startswith(TOPIC_METRIC_PREFIX):
+            _handle_metric_message(msg)
+            return
+        key = route_message_key(msg.topic)
+        if key is None:
+            return
+        session = _sessions.get(key)
+        if session is None:
+            return
         try:
             payload = json.loads(msg.payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
+            logger.error(f"[{key}] Invalid JSON on {msg.topic}")
             return
-        if not isinstance(payload, dict) or payload.get("type") != "metric":
+        if not isinstance(payload, dict):
             return
-        identity = parse_metric_topic(msg.topic)
-        if not identity:
-            return
-        # payload.from 优先（daemon 自报身份），回退 topic 推导
-        from_id = payload.get("from")
-        if isinstance(from_id, str) and from_id.strip():
-            identity = from_id.strip()
-        _metrics_store.update(identity, payload.get("metrics"), payload.get("timestamp"))
+        sender = payload.get("redirect_client_id") or payload.get("from", "?")
+        logger.info(f"[{key}] Received from [{sender}]: {str(payload.get('text', ''))[:50]}")
+        asyncio.run_coroutine_threadsafe(session._push_to_mcp(payload), session.loop)
 
     client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
     client.on_message = on_message
     client.connect_async(MQTT_BROKER_HOST, MQTT_BROKER_PORT)
     client.loop_start()
-    _metric_client = client
+    _shared_client = client
 
 
-def stop_metric_collector() -> None:
-    global _metric_client
-    if _metric_client is not None:
-        _metric_client.loop_stop()
-        _metric_client.disconnect()
-        _metric_client = None
+def wait_shared_ready(timeout: float = 5.0) -> bool:
+    """阻塞等待共享连接建连 + 通配订阅就绪"""
+    return _shared_ready.wait(timeout)
+
+
+def stop_shared_client() -> None:
+    global _shared_client
+    if _shared_client is not None:
+        _shared_client.loop_stop()
+        _shared_client.disconnect()
+        _shared_client = None
+    _shared_ready.clear()
+
+
+def publish_shared(topic: str, payload: str, qos: int = 2):
+    """统一发布入口（TASK-24）：共享连接未启动返回 False，否则转发给 paho（返回 info）"""
+    if _shared_client is None:
+        return False
+    return _shared_client.publish(topic, payload, qos=qos)
 
 
 def distribute_permission_update(identity: str, profile: dict) -> bool:
-    """TASK-20：权限档案下发——复用 metric 连接向目标 daemon 的消息 topic 发 type=control
+    """TASK-20：权限档案下发——经共享连接向目标 daemon 的消息 topic 发 type=control
     config_update 通知（control 短路不触发回合，架构 3.3）；daemon 侧落地应用为后续演进，
     未送达返回 False（档案已在 hub 侧保存）。送达判定以 wait_for_publish 等到
     PUBACK 为准，不能只看 publish 返回码（真机冒烟实测：rc 成功但消息未上总线）"""
-    if _metric_client is None or not _metric_client.is_connected():
+    if _shared_client is None or not _shared_client.is_connected():
         return False
     ns, cid = (identity.split("/", 1) + [None])[:2] if "/" in identity else (None, identity)
     topic = build_sub_topic(cid, ns)
@@ -541,7 +622,7 @@ def distribute_permission_update(identity: str, profile: dict) -> bool:
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }, ensure_ascii=False)
     try:
-        info = _metric_client.publish(topic, payload, qos=1)
+        info = _shared_client.publish(topic, payload, qos=1)
         info.wait_for_publish(timeout=5.0)
         return info.is_published()
     except Exception as e:
@@ -552,89 +633,44 @@ def distribute_permission_update(identity: str, profile: dict) -> bool:
 # ─── Agent Session ───────────────────────────────────────────────────────────
 
 class AgentSession:
-    """单个 Agent 的会话"""
-    
+    """单个 Agent 的会话。
+
+    TASK-24 起为共享连接模型（架构 11.8 演进方案 2）：不再自建 paho 客户端与
+    loop_start 线程；入站消息由 hub 共享连接按 topic 路由进来，出站统一走
+    publish_shared。就绪门控跟随共享连接的通配订阅就绪（TASK-13 语义不变）。
+    """
+
     def __init__(self, client_id: str, event_loop: asyncio.AbstractEventLoop, ns: Optional[str] = None):
         self.client_id = client_id
         self.ns = ns
         self.key = session_key(client_id, ns)
         self.loop = event_loop
-        self.connected = False
-        # TASK-13 冒烟缺陷：SSE 握手返回时 MQTT 订阅可能未完成，早到回复会丢失；
-        # 用就绪事件门控 send_message，确保自身收件 topic 已订阅
-        self.ready = threading.Event()
         self.mcp_server: Optional[Server] = None
         self.mcp_session: Optional[ServerSession] = None
         self.sub_topic = build_sub_topic(client_id, ns)
-        
+
         self.info = AgentInfo(self.key)
         _agent_info[self.key] = self.info
-        
-        mqtt_id = f"agent-{client_id}-{uuid.uuid4().hex[:8]}"
-        self.mqtt = mqtt.Client(
-            client_id=mqtt_id,
-            protocol=mqtt.MQTTv311,
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-        )
-        
-        if MQTT_USERNAME:
-            self.mqtt.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-        if MQTT_USE_TLS:
-            self.mqtt.tls_set()
-        
-        self.mqtt.on_connect = self._on_connect
-        self.mqtt.on_disconnect = self._on_disconnect
-        self.mqtt.on_message = self._on_message
-    
+
+    @property
+    def connected(self) -> bool:
+        """mqtt_connected 语义（list_agents/get_status 用）：共享连接在线即全员可达"""
+        return _shared_client is not None and _shared_client.is_connected()
+
     def is_registered(self) -> bool:
         return self.info.registered
-    
+
     def start(self):
-        self.mqtt.loop_start()
-        try:
-            self.mqtt.connect(MQTT_BROKER_HOST, MQTT_BROKER_PORT, keepalive=60)
-            logger.info(f"[{self.client_id}] MQTT connecting to {MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}")
-        except Exception as e:
-            logger.error(f"[{self.client_id}] MQTT connect failed: {e}")
-    
-    def _on_connect(self, client, userdata, flags, rc, properties=None):
-        if rc == 0:
-            self.connected = True
-            self.mqtt.subscribe(self.sub_topic, qos=2)
-            self.ready.set()
-            logger.info(f"[{self.client_id}] MQTT connected, subscribed to {self.sub_topic}")
-        else:
-            logger.error(f"[{self.client_id}] MQTT connect failed: rc={rc}")
-    
-    def _on_disconnect(self, client, userdata, flags, rc, properties=None):
-        self.connected = False
-        self.ready.clear()
-        logger.warning(f"[{self.client_id}] MQTT disconnected (rc={rc})")
-    
+        """会话上线：登记入路由表（共享连接按 topic 路由的前提）；
+        broker 连接由 lifespan 统一建立，会话侧不再自建"""
+        _sessions[self.key] = self
+
     def is_mqtt_ready(self) -> bool:
-        return self.ready.is_set()
-    
+        return _shared_ready.is_set()
+
     def wait_ready(self, timeout: float = 5.0) -> bool:
-        """阻塞等待 MQTT 建连 + 订阅就绪（供调用方在线程中等待）"""
-        return self.ready.wait(timeout)
-    
-    def _on_message(self, client, userdata, msg):
-        """收到 MQTT 消息时触发"""
-        try:
-            payload = json.loads(msg.payload.decode("utf-8"))
-        except json.JSONDecodeError:
-            logger.error(f"[{self.client_id}] Invalid JSON: {msg.payload}")
-            return
-        
-        # 兼容 qwenpaw：redirect_client_id 或 from 字段
-        sender = payload.get("redirect_client_id") or payload.get("from", "?")
-        text = payload.get("text", "")
-        logger.info(f"[{self.client_id}] Received from [{sender}]: {text[:50]}")
-        
-        asyncio.run_coroutine_threadsafe(
-            self._push_to_mcp(payload),
-            self.loop
-        )
+        """阻塞等待共享连接建连 + 通配订阅就绪（供调用方在线程中等待）"""
+        return _shared_ready.wait(timeout)
     
     async def _push_to_mcp(self, payload: dict):
         session = self.mcp_session
@@ -679,8 +715,10 @@ class AgentSession:
         sent_to = split_targets(to)
         pub_topics = build_pub_topics(to, self.ns)
         message_json = json.dumps(payload, ensure_ascii=False)
+        if _shared_client is None:
+            raise RuntimeError("共享 MQTT 连接未启动（hub lifespan 未生效），无法发送")
         for pub_topic in pub_topics:
-            self.mqtt.publish(pub_topic, message_json, qos=2)
+            _shared_client.publish(pub_topic, message_json, qos=2)
             logger.info(f"[{self.client_id}] Published to {pub_topic}")
         
         self.info.last_active = datetime.now(timezone.utc)
@@ -695,8 +733,8 @@ class AgentSession:
         }
     
     def close(self):
-        self.mqtt.loop_stop()
-        self.mqtt.disconnect()
+        # TASK-24：会话下线从路由表移除；共享连接由 lifespan 统一停止
+        _sessions.pop(self.key, None)
         logger.info(f"[{self.client_id}] Session closed")
 
 
@@ -1095,8 +1133,7 @@ async def sse_endpoint(request: Request):
         logger.error(f"[{key}] SSE error: {e}")
     finally:
         if key in _sessions:
-            _sessions[key].close()
-            del _sessions[key]
+            _sessions[key].close()  # close 内部已从路由表移除
         _servers.pop(key, None)
         # 断线清理（11.8 缺陷 2）：会话消失后同步移除元信息，防止 _agent_info 泄漏
         _agent_info.pop(key, None)
@@ -1112,10 +1149,10 @@ async def sse_endpoint(request: Request):
 # 不能用 Route 包一层，否则 starlette 会尝试调用返回的 None 导致 TypeError
 @asynccontextmanager
 async def hub_lifespan(app):
-    # TASK-19：随应用生命周期启停全局 metric 采集连接
-    start_metric_collector()
+    # TASK-24：随应用生命周期启停 hub 唯一共享 MQTT 连接（含 TASK-19 metric 订阅）
+    start_shared_client()
     yield
-    stop_metric_collector()
+    stop_shared_client()
 
 
 app = Starlette(
