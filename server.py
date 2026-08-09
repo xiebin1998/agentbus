@@ -62,6 +62,8 @@ MQTT_BROKER_PORT = int(os.getenv("MQTT_BROKER_PORT", "1883"))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME", "")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "")
 MQTT_USE_TLS = os.getenv("MQTT_USE_TLS", "false").lower() == "true"
+# TASK-25：自签 CA 证书路径（TLS 时作为信任锚；空则信任系统证书链）
+MQTT_CA_CERTS = os.getenv("MQTT_CA_CERTS", "")
 MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
 
@@ -534,7 +536,7 @@ def start_shared_client() -> None:
     if MQTT_USERNAME:
         client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
     if MQTT_USE_TLS:
-        client.tls_set()
+        client.tls_set(ca_certs=MQTT_CA_CERTS or None)
 
     def on_connect(c, userdata, flags, rc, properties=None):
         if rc == 0:
@@ -1176,6 +1178,61 @@ app = Starlette(
 )
 
 
+# ─── TASK-25：SSE/控制台接入鉴权（安全基线） ───────────────────────────────
+# 契约：MCP_API_TOKEN 非空时启用——/sse、/messages/*、/console、/api/console/*
+# 须携带 ?token= 或 Authorization: Bearer；/health 开放（监控探针）。
+# 未设 token 时保持全开放（内网/开发兼容）。
+
+def check_auth_token(enabled: bool, provided: Optional[str]) -> bool:
+    """纯函数鉴权判定：未启用放行；启用后仅正确 token 放行。"""
+    if not enabled:
+        return True
+    expected = os.getenv("MCP_API_TOKEN") or ""
+    return bool(provided) and provided == expected
+
+
+def extract_token(scope: dict) -> Optional[str]:
+    """从 ASGI scope 提取 token：query ?token= 优先，其次 Authorization: Bearer。"""
+    from urllib.parse import parse_qs
+    qs = (scope.get("query_string") or b"").decode("latin-1")
+    tokens = parse_qs(qs).get("token")
+    if tokens:
+        return tokens[0]
+    for key, value in scope.get("headers") or []:
+        if key.lower() == b"authorization":
+            text = value.decode("latin-1")
+            if text.lower().startswith("bearer "):
+                return text[7:].strip() or None
+    return None
+
+
+class TokenAuthMiddleware:
+    """纯 ASGI 中间件（不用 BaseHTTPMiddleware，避免对 SSE 流的缓冲问题）。"""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "") if scope["type"] == "http" else ""
+        expected = os.getenv("MCP_API_TOKEN") or ""
+        if scope["type"] != "http" or path.startswith("/health") or not expected:
+            await self.inner(scope, receive, send)
+            return
+        if check_auth_token(True, extract_token(scope)):
+            await self.inner(scope, receive, send)
+            return
+        body = json.dumps({
+            "error": "unauthorized",
+            "detail": "token required (?token= or Authorization: Bearer)",
+        }).encode("utf-8")
+        await send({"type": "http.response.start", "status": 401,
+                    "headers": [(b"content-type", b"application/json")]})
+        await send({"type": "http.response.body", "body": body})
+
+
+app_with_auth = TokenAuthMiddleware(app)
+
+
 async def run_stdio(client_id: str):
     from mcp.server.stdio import stdio_server
     server = create_mcp_server(client_id)
@@ -1191,4 +1248,4 @@ if __name__ == "__main__":
         import uvicorn
         logger.info(f"Starting MCP MQTT Bridge on {MCP_HOST}:{MCP_PORT}")
         logger.info(f"MQTT Broker: {MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}")
-        uvicorn.run(app, host=MCP_HOST, port=MCP_PORT)
+        uvicorn.run(app_with_auth, host=MCP_HOST, port=MCP_PORT)

@@ -6,7 +6,8 @@
  * - 固定 clientId（agentbus-<ns>-<client_id>）—— 防多实例互踢；重连复用同一身份
  * - 订阅 QoS 2 —— 与 hub publish 对齐，至少一次投递由去重兜底
  */
-import mqtt, { type MqttClient } from "mqtt";
+import mqtt, { type MqttClient, type IClientOptions } from "mqtt";
+import { readFileSync } from "node:fs";
 import type { BrokerConfig } from "../config.js";
 
 export interface ListenerOptions {
@@ -28,6 +29,25 @@ export interface Listener {
   isConnected(): boolean;
 }
 
+/**
+ * TASK-25：由 broker 配置构造 mqtt.connect 选项（纯函数，便于单测）。
+ * TLS 时校验证书；配置 ca（自签 CA 路径）时加载为信任锚，文件缺失直接抛错。
+ */
+export function buildConnectOptions(broker: BrokerConfig): IClientOptions {
+  const opts: IClientOptions = {
+    clean: false,
+    username: broker.username || undefined,
+    password: broker.password || undefined,
+  };
+  if (broker.tls) {
+    opts.rejectUnauthorized = true;
+    if (broker.ca) {
+      opts.ca = [readFileSync(broker.ca)];
+    }
+  }
+  return opts;
+}
+
 export function createListener(opts: ListenerOptions): Listener {
   let client: MqttClient | null = null;
   // 就绪门控：SUBACK 未到前报 connected 会丢早到消息（首连无持久会话可补投）
@@ -43,13 +63,10 @@ export function createListener(opts: ListenerOptions): Listener {
       return new Promise<void>((resolve, reject) => {
         opts.onStatus?.("connecting", buildUrl());
         client = mqtt.connect(buildUrl(), {
+          ...buildConnectOptions(opts.broker),
           clientId: opts.clientId,
-          clean: false,
-          username: opts.broker.username || undefined,
-          password: opts.broker.password || undefined,
           reconnectPeriod: 2000,
           connectTimeout: 10_000,
-          rejectUnauthorized: opts.broker.tls, // TLS 时校验证书
         });
 
         let firstConnect = true;

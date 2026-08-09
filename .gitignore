@@ -47,6 +47,9 @@ logs/
 # Mosquitto data
 mosquitto/data/
 mosquitto/log/
+# TASK-25：broker 密钥/密码文件不入 git
+mosquitto/certs/
+mosquitto/config/passwd
 
 # OS
 .DS_Store

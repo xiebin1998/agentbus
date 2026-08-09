@@ -99,3 +99,48 @@ def test_publish_shared_delegates_to_client(monkeypatch):
 def test_publish_shared_without_client_returns_false(monkeypatch):
     monkeypatch.setattr(server, "_shared_client", None)
     assert server.publish_shared("/t", "{}") is False
+
+
+# ─── TASK-25：共享连接 TLS CA（自签证书场景） ──────────────────────────────
+
+class _FakeMqttClient:
+    def __init__(self, client_id=None, protocol=None, callback_api_version=None):
+        self.tls_ca = "NOT_CALLED"
+
+    def username_pw_set(self, u, p):
+        pass
+
+    def tls_set(self, ca_certs=None):
+        self.tls_ca = ca_certs
+
+    def connect_async(self, *a, **kw):
+        pass
+
+    def loop_start(self):
+        pass
+
+
+def test_start_shared_client_tls_uses_ca_certs(monkeypatch):
+    created = []
+    monkeypatch.setattr(server, "MQTT_USE_TLS", True)
+    monkeypatch.setattr(server, "MQTT_CA_CERTS", "/certs/ca.crt")
+    monkeypatch.setattr(server, "_shared_client", None)
+    monkeypatch.setattr(
+        server.mqtt, "Client",
+        lambda **kw: created.append(_FakeMqttClient(**kw)) or created[-1],
+    )
+    server.start_shared_client()
+    assert created[0].tls_ca == "/certs/ca.crt"
+
+
+def test_start_shared_client_tls_without_ca(monkeypatch):
+    created = []
+    monkeypatch.setattr(server, "MQTT_USE_TLS", True)
+    monkeypatch.setattr(server, "MQTT_CA_CERTS", "")
+    monkeypatch.setattr(server, "_shared_client", None)
+    monkeypatch.setattr(
+        server.mqtt, "Client",
+        lambda **kw: created.append(_FakeMqttClient(**kw)) or created[-1],
+    )
+    server.start_shared_client()
+    assert created[0].tls_ca is None  # 未配 CA → 信任系统证书链

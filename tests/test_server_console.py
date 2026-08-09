@@ -225,18 +225,31 @@ def test_distribute_permission_waits_for_puback():
 
 def test_metric_client_publish_delivers_end_to_end():
     """真机级单测（需本地 broker，无 broker 时 skip）：paho publish 后独立订阅者
-    应能收到（防 PUBACK 已到但消息未投递的静默丢失回归）"""
+    应能收到（防 PUBACK 已到但消息未投递的静默丢失回归）。
+    TASK-25：尊重 MQTT_USERNAME/PASSWORD（匿名被拒的 broker 上无凭证则 skip）"""
     import os
     import time
     import paho.mqtt.client as mqtt2
 
     host = os.getenv("MQTT_BROKER_HOST", "127.0.0.1")
     port = int(os.getenv("MQTT_BROKER_PORT", "18830"))
+    user = os.getenv("MQTT_USERNAME", "")
+
+    def _apply_auth(client):
+        if user:
+            client.username_pw_set(user, os.getenv("MQTT_PASSWORD", ""))
+
+    conn = {"rc": None}
+
+    def _on_connect(c, u, f, rc, properties=None):
+        conn["rc"] = getattr(rc, "value", rc)
 
     received = []
     sub = mqtt2.Client(client_id="pytest-metric-sub", protocol=mqtt2.MQTTv311,
                        callback_api_version=mqtt2.CallbackAPIVersion.VERSION2)
     sub.on_message = lambda c, u, m: received.append((m.topic, m.payload.decode("utf-8")))
+    sub.on_connect = _on_connect
+    _apply_auth(sub)
     try:
         sub.connect(host, port, keepalive=30)
     except Exception:
@@ -244,10 +257,19 @@ def test_metric_client_publish_delivers_end_to_end():
         pytest.skip("本地 broker 不可达，跳过端到端验证")
     sub.subscribe("/phnix/ai/metric/#", qos=1)
     sub.loop_start()
+    for _ in range(30):
+        if conn["rc"] is not None:
+            break
+        time.sleep(0.1)
+    if conn["rc"] not in (0, None):
+        import pytest
+        sub.loop_stop(); sub.disconnect()
+        pytest.skip(f"broker 拒绝连接（rc={conn['rc']}，未配 MQTT_USERNAME），跳过端到端验证")
     time.sleep(1.0)
 
     pub = mqtt2.Client(client_id="pytest-metric-pub", protocol=mqtt2.MQTTv311,
                        callback_api_version=mqtt2.CallbackAPIVersion.VERSION2)
+    _apply_auth(pub)
     pub.connect(host, port, keepalive=30)
     pub.loop_start()
     info = pub.publish("/phnix/ai/metric/pytest/x", '{"type":"metric"}', qos=1)

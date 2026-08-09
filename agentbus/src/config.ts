@@ -20,6 +20,8 @@ export interface BrokerConfig {
   username?: string;
   password?: string;
   tls?: boolean;
+  /** TASK-25：自签 CA 证书路径（支持 ${ENV} 引用），TLS 时作为信任锚 */
+  ca?: string;
 }
 
 export type InboundMode = "readonly" | "full";
@@ -107,6 +109,8 @@ export function validateConfig(raw: unknown): ValidationResult {
       username: typeof broker.username === "string" ? broker.username : "",
       password: typeof broker.password === "string" ? broker.password : "",
       tls: broker.tls === true,
+      // TASK-25：自签 CA 路径（可选）；非字符串忽略
+      ...(typeof broker.ca === "string" && broker.ca.trim() ? { ca: broker.ca } : {}),
     };
   }
 
@@ -210,5 +214,8 @@ export function loadConfig(path: string): AgentBusConfig {
   const cfg = result.config;
   cfg.broker.username = resolveEnvRefs(cfg.broker.username) as string;
   cfg.broker.password = resolveEnvRefs(cfg.broker.password) as string;
+  if (cfg.broker.ca) {
+    cfg.broker.ca = resolveEnvRefs(cfg.broker.ca) as string;
+  }
   return cfg;
 }

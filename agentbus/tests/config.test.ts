@@ -133,4 +133,30 @@ describe("loadConfig", () => {
   it("文件不存在抛 ConfigError", () => {
     expect(() => loadConfig(join(tmpdir(), "no-such-dir", "config.json"))).toThrowError(ConfigError);
   });
+
+  it("broker.ca 保留且解析 ${ENV_VAR}（TASK-25 TLS 自签 CA）", () => {
+    process.env.AGENTBUS_TEST_CA = "/certs/ca.crt";
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-cfg-"));
+    const file = join(dir, "config.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        ...BASE,
+        broker: { ...BASE.broker, tls: true, ca: "${AGENTBUS_TEST_CA}" },
+      }),
+    );
+    try {
+      const cfg = loadConfig(file);
+      expect(cfg.broker.tls).toBe(true);
+      expect(cfg.broker.ca).toBe("/certs/ca.crt");
+    } finally {
+      delete process.env.AGENTBUS_TEST_CA;
+    }
+  });
+
+  it("broker.ca 非字符串时忽略（保持可选）", () => {
+    const r = validateConfig({ ...BASE, broker: { ...BASE.broker, ca: 123 } });
+    expect(r.ok).toBe(true);
+    expect(r.config?.broker.ca).toBeUndefined();
+  });
 });

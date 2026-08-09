@@ -6,11 +6,13 @@ services:
     restart: unless-stopped
     ports:
       - "18830:1883"     # MQTT (改用 18830 避免冲突)
+      - "8883:8883"      # MQTT over TLS（TASK-25 安全基线）
       - "9001:9001"      # WebSocket
     volumes:
       - mqtt-data:/mosquitto/data
       - mqtt-log:/mosquitto/log
       - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/certs:/mosquitto/certs:ro   # TASK-25 自签证书（setup 脚本生成）
     networks:
       - mcp-network
 
@@ -27,6 +29,8 @@ services:
       - MQTT_USERNAME=${MQTT_USERNAME:-}
       - MQTT_PASSWORD=${MQTT_PASSWORD:-}
       - MQTT_USE_TLS=${MQTT_USE_TLS:-false}
+      - MQTT_CA_CERTS=${MQTT_CA_CERTS:-}   # TASK-25：自签 CA 路径
+      - MCP_API_TOKEN=${MCP_API_TOKEN:-}   # TASK-25：SSE/控制台 token 鉴权（空=开放）
       - MCP_HOST=0.0.0.0
       - MCP_PORT=8000
     depends_on:
