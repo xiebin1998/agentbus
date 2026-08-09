@@ -30,8 +30,8 @@ export interface RouterConfig {
 }
 
 export type RouteDecision =
-  /** 丢弃；alert=true 需记告警日志（白名单外/环路），false 静默（去重/非法） */
-  | { action: "drop"; reason: string; alert: boolean }
+  /** 丢弃；alert=true 需记告警日志（白名单外/环路），false 静默（去重/非法）；kind 供指标分类（TASK-19） */
+  | { action: "drop"; kind: "invalid" | "whitelist" | "dedup" | "hop"; reason: string; alert: boolean }
   /** control 消息：仅记日志，不注入不回 ack（环路抑制核心） */
   | { action: "control"; reason: string }
   /** 目标工具未配置等：忽略 */
@@ -123,7 +123,7 @@ export class Router {
     // 非法输入：静默丢弃
     if (m === null) {
       return {
-        decision: { action: "drop", reason: "非法消息（非对象或缺 from）", alert: false },
+        decision: { action: "drop", kind: "invalid", reason: "非法消息（非对象或缺 from）", alert: false },
         ack: null,
         message: null,
       };
@@ -139,7 +139,7 @@ export class Router {
       !this.cfg.allowedSenders.includes(senderClient)
     ) {
       return {
-        decision: { action: "drop", reason: `来源 ${sender} 不在 allowed_senders 白名单`, alert: true },
+        decision: { action: "drop", kind: "whitelist", reason: `来源 ${sender} 不在 allowed_senders 白名单`, alert: true },
         ack: null,
         message: m,
       };
@@ -148,7 +148,7 @@ export class Router {
     // 步骤 1：去重
     if (this.seen.has(m.id)) {
       return {
-        decision: { action: "drop", reason: `重复消息 id=${m.id}`, alert: false },
+        decision: { action: "drop", kind: "dedup", reason: `重复消息 id=${m.id}`, alert: false },
         ack: null,
         message: m,
       };
@@ -158,7 +158,7 @@ export class Router {
     if (m.hop > this.cfg.hopLimit) {
       this.seen.add(m.id);
       return {
-        decision: { action: "drop", reason: `hop=${m.hop} 超过 hop_limit=${this.cfg.hopLimit}（环路熔断）`, alert: true },
+        decision: { action: "drop", kind: "hop", reason: `hop=${m.hop} 超过 hop_limit=${this.cfg.hopLimit}（环路熔断）`, alert: true },
         ack: null,
         message: m,
       };

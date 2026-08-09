@@ -34,6 +34,7 @@ import logging
 import os
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Optional, Dict, List, Union
 
@@ -65,6 +66,10 @@ MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
 
 # ─── Topic ────────────────────────────────────────────────────────────────────
 TOPIC_MESSAGE = "/phnix/ai/channel/{client_id}/message"
+
+# TASK-19：daemon 指标上报通道（与消息 topic 平行命名，hub 通配订阅汇总）
+TOPIC_METRIC_PREFIX = "/phnix/ai/metric/"
+TOPIC_METRIC_WILDCARD = "/phnix/ai/metric/#"
 
 # 消息体上限（架构 11.8 缺陷 5）：防止异常大包占满 broker 与内存
 MAX_TEXT_BYTES = 64 * 1024
@@ -134,6 +139,41 @@ def check_text_size(text: Optional[str]) -> None:
     """消息体上限校验，超限抛 ValueError（TASK-02 接入调用点）"""
     if text is not None and len(text.encode("utf-8")) > MAX_TEXT_BYTES:
         raise ValueError(f"消息体超过 {MAX_TEXT_BYTES} 字节上限")
+
+
+def parse_metric_topic(topic: str) -> Optional[str]:
+    """TASK-19：metric topic → daemon 身份。/phnix/ai/metric/<ns>/<cid> → "ns/cid"；
+    flat 兼容 /phnix/ai/metric/<cid> → "cid"；非法/超段返回 None"""
+    if not topic or not topic.startswith(TOPIC_METRIC_PREFIX):
+        return None
+    parts = topic[len(TOPIC_METRIC_PREFIX):].split("/")
+    if len(parts) == 1 and parts[0]:
+        return parts[0]
+    if len(parts) == 2 and parts[0] and parts[1]:
+        return f"{parts[0]}/{parts[1]}"
+    return None
+
+
+class MetricsStore:
+    """TASK-19：各 daemon 最新指标汇总（指标以最近一次上报为准，报告次数累加）"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._data: Dict[str, dict] = {}
+
+    def update(self, identity: str, metrics: Any, timestamp: Optional[str]) -> None:
+        if not isinstance(metrics, dict):
+            return
+        with self._lock:
+            entry = self._data.get(identity, {"report_count": 0})
+            entry["metrics"] = metrics
+            entry["last_seen"] = timestamp
+            entry["report_count"] += 1
+            self._data[identity] = entry
+
+    def snapshot(self) -> Dict[str, dict]:
+        with self._lock:
+            return {k: dict(v) for k, v in self._data.items()}
 
 
 def can_ack(stored: Optional[dict], caller: str) -> bool:
@@ -265,6 +305,62 @@ _sessions: Dict[str, "AgentSession"] = {}
 _servers: Dict[str, Server] = {}
 _messages: Dict[str, dict] = {}
 _agent_info: Dict[str, AgentInfo] = {}
+
+# TASK-19：daemon 指标汇总（全局单例，/health 与 metric 采集线程共享）
+_metrics_store = MetricsStore()
+_metric_client: Optional[mqtt.Client] = None
+
+
+def start_metric_collector() -> None:
+    """TASK-19：hub 侧全局 metric 订阅连接（独立于各 SSE 会话连接）；
+    broker 不可达时 paho 内部自动重连，不阻塞启动"""
+    global _metric_client
+    client = mqtt.Client(
+        client_id=f"agentbus-hub-metrics-{uuid.uuid4().hex[:8]}",
+        protocol=mqtt.MQTTv311,
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+    )
+    if MQTT_USERNAME:
+        client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
+    if MQTT_USE_TLS:
+        client.tls_set()
+
+    def on_connect(c, userdata, flags, rc, properties=None):
+        if rc == 0:
+            c.subscribe(TOPIC_METRIC_WILDCARD, qos=1)
+            logger.info(f"[hub-metrics] subscribed to {TOPIC_METRIC_WILDCARD}")
+        else:
+            logger.error(f"[hub-metrics] connect failed: rc={rc}")
+
+    def on_message(c, userdata, msg):
+        try:
+            payload = json.loads(msg.payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return
+        if not isinstance(payload, dict) or payload.get("type") != "metric":
+            return
+        identity = parse_metric_topic(msg.topic)
+        if not identity:
+            return
+        # payload.from 优先（daemon 自报身份），回退 topic 推导
+        from_id = payload.get("from")
+        if isinstance(from_id, str) and from_id.strip():
+            identity = from_id.strip()
+        _metrics_store.update(identity, payload.get("metrics"), payload.get("timestamp"))
+
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect_async(MQTT_BROKER_HOST, MQTT_BROKER_PORT)
+    client.loop_start()
+    _metric_client = client
+
+
+def stop_metric_collector() -> None:
+    global _metric_client
+    if _metric_client is not None:
+        _metric_client.loop_stop()
+        _metric_client.disconnect()
+        _metric_client = None
 
 
 # ─── Agent Session ───────────────────────────────────────────────────────────
@@ -693,6 +789,8 @@ async def health(request: Request):
         "registered_agents": [cid for cid, info in _agent_info.items() if info.registered],
         "total_messages": len(_messages),
         "namespaces": ns_summary,
+        # TASK-19：各 daemon 最新指标（注入成功率/丢弃/去重/排队/在线会话数）
+        "daemon_metrics": _metrics_store.snapshot(),
     })
 
 
@@ -731,11 +829,22 @@ async def sse_endpoint(request: Request):
 
 # handle_post_message 本身是 ASGI 应用（自己发送 202 响应），必须用 Mount 挂载，
 # 不能用 Route 包一层，否则 starlette 会尝试调用返回的 None 导致 TypeError
-app = Starlette(routes=[
-    Route("/health", health),
-    Route("/sse", sse_endpoint),
-    Mount("/messages/", app=sse_transport.handle_post_message),
-])
+@asynccontextmanager
+async def hub_lifespan(app):
+    # TASK-19：随应用生命周期启停全局 metric 采集连接
+    start_metric_collector()
+    yield
+    stop_metric_collector()
+
+
+app = Starlette(
+    routes=[
+        Route("/health", health),
+        Route("/sse", sse_endpoint),
+        Mount("/messages/", app=sse_transport.handle_post_message),
+    ],
+    lifespan=hub_lifespan,
+)
 
 
 async def run_stdio(client_id: str):
