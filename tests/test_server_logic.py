@@ -8,6 +8,7 @@
 - can_ack: ack 归属校验
 """
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -162,3 +163,67 @@ class TestCanAck:
 
     def test_missing_stored_denied(self):
         assert server.can_ack(None, "a") is False
+
+
+# ---------- MQTT 就绪门控（TASK-13 冒烟：SSE 握手返回时订阅未完成，早到回复丢失）----------
+
+class TestSessionReadyGate:
+    def _make_session(self, cid):
+        import asyncio
+
+        return server.AgentSession(cid, asyncio.new_event_loop())
+
+    def test_not_ready_before_connect(self):
+        session = self._make_session("gate-a")
+        assert session.is_mqtt_ready() is False
+
+    def test_ready_after_on_connect(self):
+        session = self._make_session("gate-b")
+        session._on_connect(None, None, None, 0)
+        assert session.is_mqtt_ready() is True
+
+    def test_failed_connect_stays_not_ready(self):
+        session = self._make_session("gate-c")
+        session._on_connect(None, None, None, 5)
+        assert session.is_mqtt_ready() is False
+
+    def test_not_ready_again_after_disconnect(self):
+        session = self._make_session("gate-d")
+        session._on_connect(None, None, None, 0)
+        session._on_disconnect(None, None, None, 0)
+        assert session.is_mqtt_ready() is False
+
+    def test_wait_ready_times_out_when_not_connected(self):
+        session = self._make_session("gate-e")
+        assert session.wait_ready(timeout=0.1) is False
+
+    def test_wait_ready_returns_true_when_connected_later(self):
+        """模拟异步建连：稍后就绪，wait_ready 应等到 True"""
+        session = self._make_session("gate-f")
+        threading.Timer(0.05, session._on_connect, args=(None, None, None, 0)).start()
+        assert session.wait_ready(timeout=2) is True
+
+
+# ---------- 发送目标三态划分（TASK-13 冒烟：纯 MQTT daemon 不在 _sessions，
+#           若拒发则 hub 永远无法触达 daemon —— 未知目标应尽力发布）----------
+
+class TestPlanSendTargets:
+    def test_online_target_delivered(self):
+        delivered, unknown = server.plan_send_targets(["a"], {"a"})
+        assert delivered == ["a"]
+        assert unknown == []
+
+    def test_unknown_target_is_best_effort_not_rejected(self):
+        """不在 SSE 会话表 ≠ 离线：可能是纯 MQTT 直连（daemon），尽力发布"""
+        delivered, unknown = server.plan_send_targets(["demo"], set())
+        assert delivered == ["demo"]
+        assert unknown == ["demo"]
+
+    def test_mixed_group_preserves_order(self):
+        delivered, unknown = server.plan_send_targets(["a", "b", "c"], {"a", "c"})
+        assert delivered == ["a", "b", "c"]
+        assert unknown == ["b"]
+
+    def test_empty_group_rejected(self):
+        with pytest.raises(ValueError):
+            server.plan_send_targets([], {"a"})

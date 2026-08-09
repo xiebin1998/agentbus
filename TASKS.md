@@ -95,10 +95,12 @@
 - **落地**：mcp-registry.ts（七红线逐条注释 + 15 测试）、detect.ts（6 测试）、init.ts 五步编排（15 测试，含交互 prompter 注入）、doctor.ts 六检查项（9 测试，TCP/HTTP 探测可注入）、status.ts；cli.ts 接线 init（--yes + @inquirer/prompts 交互）/doctor/status。实测冒烟：干净目录 init --yes 全绿（qodercli 探测成功、.mcp.json/.kilo/kilo.json 回写验证、daemon detached 拉起），status/doctor/daemon stop 正常；doctor 对断 broker/缺 CLI 正确报黑。顺修：daemon 日志对齐架构 6.2 落 .agentbus/logs/daemon.log（自建目录）。
 - **待补实测**：交互式 init（inquirer 真实终端体验）；kilo/codex global CLI 注册（本机当前 shell 未探到 kilo）；hermes 注册语法。
 
-### TASK-13 一期集成验收（T9）
+### TASK-13 一期集成验收（T9）【✅ 已完成 2026-08-09：196 TS + 63 Python 全绿，分支 feat/task-13，★ 一期里程碑】
 - **目标**：执行架构第 10 章一期全部验收项 + 24h 长跑 + 验收报告 + README 快速上手。
 - **验证**：验收清单逐项勾选（端到端/安全/只读/跨机）
 - **DoD**：★ 一期里程碑达成，finishing-a-development-branch 合入
+- **落地**：端到端冒烟在 aedes 与真实 mosquitto 双 broker 均通过（补齐 TASK-05 顺延项与 TASK-11 readOnlyHint 可见性待补实测）；安全验收 3/3（白名单告警/hop 熔断/去重）；冒烟发现并 TDD 修复两缺陷：①就绪竞态（订阅未完成早到回复丢失，ready 事件门控，6 单测）②在线判定三态（纯 MQTT daemon 被误判离线拒发 → plan_send_targets 尽力发布，4 单测）；24h 长跑以 soak_loop.ps1 循环冒烟替代（验收时点 16 轮全绿）；验收报告 docs/acceptance-phase1.md；README 增 CLI 快速上手。
+- **待补实测**：跨机部署；真实 CLI 登录态相关项（见验收报告 §5，随后续任务卡消化）。
 
 ## 2. 二期任务卡（T10–T18）
 

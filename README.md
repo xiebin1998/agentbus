@@ -48,6 +48,29 @@ export MQTT_BROKER_PORT=1883
 python server.py
 ```
 
+## AgentBus CLI 快速上手（一期，本地项目接入总线）
+
+前置：hub 与 broker 已按上面任一方式运行；本机装有至少一个受支持 CLI（qodercli/kilo/claude/codex/opencode）。
+
+```bash
+cd agentbus          # Node 包目录
+npm install
+npm run build
+
+# 在你的项目目录里一条命令接入（非交互）：
+# 探测已装 CLI → 生成 .agentbus/config.json → 安装 Skill/AGENTS.md 兜底块
+# → 注册 MCP（回写验证）→ 拉起 daemon
+node <agentbus包路径>/dist/cli.js init --yes
+
+# 体检（配置/broker/SSE/CLI/MCP 注册/daemon 六项）
+node <agentbus包路径>/dist/cli.js doctor
+
+# 查看 daemon 状态与会话摘要
+node <agentbus包路径>/dist/cli.js status
+```
+
+接入后，支持 MCP 的 CLI 会话即可通过 `agentbus` MCP 服务器使用总线：`list_agents` 查在线同伴、`send_message` 跨 Agent 发消息，收到的 `[AgentBus]` 信封消息按 Skill 约定回复。完整设计见 `ARCHITECTURE.md`，一期验收见 `docs/acceptance-phase1.md`。
+
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
@@ -123,6 +146,10 @@ Header: x-client-id: qwenpaw
 ## Topic 规则
 
 ```
+# 带命名空间（ns 参数显式传入）
+/phnix/ai/channel/{ns}/{client_id}/message
+
+# 兼容旧 flat（未传 ns）
 /phnix/ai/channel/{client_id}/message
 ```
 
@@ -177,7 +204,7 @@ Header: x-client-id: qwenpaw
 
 ```
 agentbus/
-├── server.py              # 主服务代码
+├── server.py              # 主服务代码（hub）
 ├── requirements.txt       # Python 依赖
 ├── Dockerfile             # Docker 构建文件
 ├── docker-compose.yml     # Docker Compose 编排
@@ -185,6 +212,13 @@ agentbus/
 ├── mosquitto/             # MQTT Broker 配置
 │   └── config/
 │       └── mosquitto.conf
+├── agentbus/              # Node CLI + daemon（一期）
+│   ├── src/               # cli/config/protocol/daemon/adapters/init/doctor…
+│   ├── tests/             # vitest 单测与集成测试
+│   └── scripts/           # dev-broker / smoke-daemon 冒烟脚本
+├── scripts/               # hub 冒烟与长跑脚本（smoke_hub.py / soak_loop.ps1）
+├── tests/                 # server.py pytest 单测
+├── docs/                  # 验收报告等
 └── README.md              # 项目文档
 ```
 

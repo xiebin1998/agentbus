@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional, Dict, List, Union
@@ -195,6 +196,17 @@ def filter_offline(targets: List[str], online_keys: set) -> tuple:
     return online, offline
 
 
+def plan_send_targets(targets: List[str], online_keys: set) -> tuple:
+    """发送目标三态划分（TASK-13 冒烟，架构 5.5 机制 1）：
+    SSE 会话表在 = 确认在线；不在 ≠ 离线，可能是纯 MQTT 直连（daemon 等），
+    拒发会导致 hub 永远无法触达 daemon → 未知目标尽力发布。
+    返回 (待发布目标, 未知在线状态目标)，均保序"""
+    if not targets:
+        raise ValueError("targets 不可为空")
+    unknown = [t for t in targets if t not in online_keys]
+    return list(targets), unknown
+
+
 def resolve_agent_key(target: str, caller_ns: Optional[str]) -> str:
     """get_agent_info 键解析：带 ns/ 前缀直接用；否则继承调用方 ns"""
     if "/" in target:
@@ -266,6 +278,9 @@ class AgentSession:
         self.key = session_key(client_id, ns)
         self.loop = event_loop
         self.connected = False
+        # TASK-13 冒烟缺陷：SSE 握手返回时 MQTT 订阅可能未完成，早到回复会丢失；
+        # 用就绪事件门控 send_message，确保自身收件 topic 已订阅
+        self.ready = threading.Event()
         self.mcp_server: Optional[Server] = None
         self.mcp_session: Optional[ServerSession] = None
         self.sub_topic = build_sub_topic(client_id, ns)
@@ -304,13 +319,22 @@ class AgentSession:
         if rc == 0:
             self.connected = True
             self.mqtt.subscribe(self.sub_topic, qos=2)
+            self.ready.set()
             logger.info(f"[{self.client_id}] MQTT connected, subscribed to {self.sub_topic}")
         else:
             logger.error(f"[{self.client_id}] MQTT connect failed: rc={rc}")
     
     def _on_disconnect(self, client, userdata, flags, rc, properties=None):
         self.connected = False
+        self.ready.clear()
         logger.warning(f"[{self.client_id}] MQTT disconnected (rc={rc})")
+    
+    def is_mqtt_ready(self) -> bool:
+        return self.ready.is_set()
+    
+    def wait_ready(self, timeout: float = 5.0) -> bool:
+        """阻塞等待 MQTT 建连 + 订阅就绪（供调用方在线程中等待）"""
+        return self.ready.wait(timeout)
     
     def _on_message(self, client, userdata, msg):
         """收到 MQTT 消息时触发"""
@@ -564,21 +588,24 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             except ValueError as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))]
             
-            # 目标键解析（无前缀继承发件人 ns）后做在线判定，支持部分送达（11.8 缺陷 7）
+            # 目标键解析（无前缀继承发件人 ns）；不在会话表 ≠ 离线，未知目标尽力发布（架构 5.5）
             target_keys = []
             for t in targets:
                 t_ns, cid, _tool = resolve_target(t)
                 target_keys.append(session_key(cid, t_ns if t_ns is not None else session.ns))
-            online_targets, offline = filter_offline(target_keys, set(_sessions.keys()))
-            if not online_targets:
+            delivered, unknown = plan_send_targets(target_keys, set(_sessions.keys()))
+            
+            # 就绪门控（TASK-13 冒烟缺陷）：等自身收件 topic 订阅完成再发，防早到回复丢失
+            ready = await asyncio.to_thread(session.wait_ready, 5.0)
+            if not ready:
                 return [TextContent(type="text", text=json.dumps({
-                    "error": f"Agents not online: {offline}",
-                    "online_agents": list(_sessions.keys()),
+                    "error": "MQTT 连接尚未就绪（收件订阅未完成），请稍后重试",
                 }, ensure_ascii=False, indent=2))]
             
-            result = session.send_message(text, online_targets, msg_type)
-            if offline:
-                result["failed"] = offline
+            result = session.send_message(text, delivered, msg_type)
+            if unknown:
+                result["unconfirmed"] = unknown
+                result["note"] = "以下目标未保持 SSE 会话（可能是纯 MQTT 直连），已尽力发布，在线状态未知"
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
         
         elif name == "ack_message":

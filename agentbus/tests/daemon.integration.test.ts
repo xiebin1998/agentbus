@@ -258,3 +258,54 @@ describe("daemon 日志路径（架构 6.2：.agentbus/logs/daemon.log）", () =
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("一期安全验收（架构第 10 章）", () => {
+  it("非白名单来源：丢弃 + 告警落盘，不发生注入", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-sec-"));
+    const records: Recorded[] = [];
+    const daemon = new Daemon({
+      config: makeConfig({ allowed_senders: ["trusted-only"] }),
+      workDir: dir,
+      inject: async (ctx) => {
+        records.push({ ctx });
+        return { output: "" };
+      },
+    });
+    expect(daemon.start()).toMatchObject({ started: true });
+    await waitFor(() => daemon.status().connected);
+
+    publishToDaemon({ id: "msg-sec-1", from: "evil-src", to: "fe-test", text: "恶意试探" });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(records.length).toBe(0);
+    const log = readFileSync(join(dir, "logs", "daemon.log"), "utf-8");
+    expect(log).toContain("WARN");
+    expect(log).toContain("不在 allowed_senders 白名单");
+
+    daemon.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("hop 熔断：hop 超限时丢弃 + 告警落盘，不发生注入", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-hop-"));
+    const records: Recorded[] = [];
+    const daemon = new Daemon({
+      config: makeConfig(), // hop_limit=3
+      workDir: dir,
+      inject: async (ctx) => {
+        records.push({ ctx });
+        return { output: "" };
+      },
+    });
+    expect(daemon.start()).toMatchObject({ started: true });
+    await waitFor(() => daemon.status().connected);
+
+    publishToDaemon({ id: "msg-hop-1", from: "be-svc", to: "fe-test", text: "环路消息", hop: 4 });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(records.length).toBe(0);
+    const log = readFileSync(join(dir, "logs", "daemon.log"), "utf-8");
+    expect(log).toContain("环路熔断");
+
+    daemon.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
