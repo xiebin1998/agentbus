@@ -176,6 +176,160 @@ class MetricsStore:
             return {k: dict(v) for k, v in self._data.items()}
 
 
+# ─── Web 控制台后端 API 纯逻辑层（TASK-20，供 /api/console/* 路由复用） ──────────
+
+class NamespaceRegistry:
+    """控制台显式声明的命名空间（ns 本体由 topic 路径天然隔离，此处仅登记清单）"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._data: Dict[str, dict] = {}
+
+    def declare(self, name: str) -> Optional[dict]:
+        name = (name or "").strip()
+        if not name or "/" in name:
+            return None
+        with self._lock:
+            if name not in self._data:
+                self._data[name] = {
+                    "name": name,
+                    "declared": True,
+                    "declared_at": datetime.now(timezone.utc).isoformat(),
+                }
+            return dict(self._data[name])
+
+    def list(self) -> List[dict]:
+        with self._lock:
+            return [dict(v) for v in self._data.values()]
+
+
+def _ns_of(key: str) -> str:
+    """身份键 → 所属 ns；无 ns 前缀（flat 兼容）归入 flat"""
+    return key.split("/", 1)[0] if "/" in key else "flat"
+
+
+def collect_namespaces(session_keys, agent_keys, metric_keys, declared: List[dict]) -> List[dict]:
+    """四路来源（在线会话/注册信息/daemon 指标/显式声明）合并为 ns 清单，按名称排序"""
+    table: Dict[str, dict] = {}
+
+    def slot(ns: str) -> dict:
+        if ns not in table:
+            table[ns] = {"name": ns, "online_agents": 0, "registered_agents": 0,
+                         "daemon_count": 0, "declared": False}
+        return table[ns]
+
+    for key in session_keys:
+        slot(_ns_of(key))["online_agents"] += 1
+    for key in agent_keys:
+        slot(_ns_of(key))["registered_agents"] += 1
+    for key in metric_keys:
+        slot(_ns_of(key))["daemon_count"] += 1
+    for d in declared:
+        entry = slot(d["name"])
+        entry["declared"] = True
+        entry["declared_at"] = d.get("declared_at")
+    return [table[k] for k in sorted(table)]
+
+
+def collect_identities(session_keys, agent_keys, metric_keys,
+                       ns: Optional[str] = None, q: Optional[str] = None) -> List[dict]:
+    """<ns>/<client_id> 身份清单：并集去重 + 三态标记（在线/已注册/有指标），支持 ns 过滤与子串检索"""
+    sessions = set(session_keys)
+    agents = set(agent_keys)
+    metrics = set(metric_keys)
+    result = []
+    for key in sorted(sessions | agents | metrics):
+        if ns is not None and _ns_of(key) != ns:
+            continue
+        if q and q.lower() not in key.lower():
+            continue
+        result.append({
+            "identity": key,
+            "ns": _ns_of(key),
+            "client_id": key.split("/", 1)[1] if "/" in key else key,
+            "online": key in sessions,
+            "registered": key in agents,
+            "has_metrics": key in metrics,
+        })
+    return result
+
+
+# 权限档案契约与 daemon 配置对齐（config.ts：inbound_mode 只允许 readonly/full）
+VALID_INBOUND_MODES = ("readonly", "full")
+_PERMISSION_FIELDS = ("allowed_senders", "trust_map", "inbound_mode")
+
+
+def validate_permission_profile(body: Any) -> dict:
+    """校验并规整权限档案（allowed_senders/trust_map/inbound_mode）；缺省字段补默认值，非法抛 ValueError"""
+    if not isinstance(body, dict):
+        raise ValueError("权限档案须为对象")
+    unknown = set(body) - set(_PERMISSION_FIELDS)
+    if unknown:
+        raise ValueError(f"未知字段: {sorted(unknown)}")
+
+    senders = body.get("allowed_senders", [])
+    if not isinstance(senders, list) or not all(isinstance(s, str) and s.strip() for s in senders):
+        raise ValueError("allowed_senders 须为非空字符串列表")
+
+    trust_map = body.get("trust_map", {})
+    if not isinstance(trust_map, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) and v in VALID_INBOUND_MODES
+        for k, v in trust_map.items()
+    ):
+        raise ValueError(f"trust_map 值只允许 {list(VALID_INBOUND_MODES)}")
+
+    mode = body.get("inbound_mode", "readonly")
+    if mode not in VALID_INBOUND_MODES:
+        raise ValueError(f"inbound_mode 只允许 {list(VALID_INBOUND_MODES)}")
+
+    return {"allowed_senders": [s.strip() for s in senders],
+            "trust_map": dict(trust_map), "inbound_mode": mode}
+
+
+class PermissionStore:
+    """控制台权限档案库（内存，重启不持久；下发靠 control 消息通知 daemon）"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._data: Dict[str, dict] = {}
+
+    def set(self, identity: str, profile: dict) -> dict:
+        with self._lock:
+            entry = json.loads(json.dumps(profile))  # 深拷贝，防外部后续改动污染
+            entry["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._data[identity] = entry
+            return dict(entry)
+
+    def get(self, identity: str) -> Optional[dict]:
+        with self._lock:
+            entry = self._data.get(identity)
+            return dict(entry) if entry else None
+
+    def list(self) -> List[dict]:
+        with self._lock:
+            return [dict(v, identity=k) for k, v in self._data.items()]
+
+
+def build_metric_summary(snapshot: Dict[str, dict]) -> dict:
+    """各 daemon 指标汇总：总量计数 + 在线 daemon 数 + 总会话发件人数（非法条目跳过）"""
+    totals = {"injected_ok": 0, "injected_fail": 0, "dropped": 0, "deduped": 0, "queued": 0}
+    daemon_count = 0
+    total_senders = 0
+    for entry in snapshot.values():
+        metrics = entry.get("metrics") if isinstance(entry, dict) else None
+        if not isinstance(metrics, dict):
+            continue
+        daemon_count += 1
+        for k in totals:
+            v = metrics.get(k)
+            if isinstance(v, (int, float)):
+                totals[k] += v
+        senders = metrics.get("senders")
+        if isinstance(senders, (int, float)):
+            total_senders += senders
+    return {"daemon_count": daemon_count, "totals": totals, "total_senders": total_senders}
+
+
 def can_ack(stored: Optional[dict], caller: str) -> bool:
     """ack 归属校验（架构 11.8 缺陷 4）：仅发送方/接收方可标记已读"""
     if not stored:
@@ -310,6 +464,10 @@ _agent_info: Dict[str, AgentInfo] = {}
 _metrics_store = MetricsStore()
 _metric_client: Optional[mqtt.Client] = None
 
+# TASK-20：控制台全局状态（显式 ns 登记 + 权限档案库）
+_ns_registry = NamespaceRegistry()
+_permission_store = PermissionStore()
+
 
 def start_metric_collector() -> None:
     """TASK-19：hub 侧全局 metric 订阅连接（独立于各 SSE 会话连接）；
@@ -361,6 +519,33 @@ def stop_metric_collector() -> None:
         _metric_client.loop_stop()
         _metric_client.disconnect()
         _metric_client = None
+
+
+def distribute_permission_update(identity: str, profile: dict) -> bool:
+    """TASK-20：权限档案下发——复用 metric 连接向目标 daemon 的消息 topic 发 type=control
+    config_update 通知（control 短路不触发回合，架构 3.3）；daemon 侧落地应用为后续演进，
+    未送达返回 False（档案已在 hub 侧保存）。送达判定以 wait_for_publish 等到
+    PUBACK 为准，不能只看 publish 返回码（真机冒烟实测：rc 成功但消息未上总线）"""
+    if _metric_client is None or not _metric_client.is_connected():
+        return False
+    ns, cid = (identity.split("/", 1) + [None])[:2] if "/" in identity else (None, identity)
+    topic = build_sub_topic(cid, ns)
+    payload = json.dumps({
+        "id": f"cfg-{uuid.uuid4().hex[:12]}",
+        "type": "control",
+        "from": "hub-console",
+        "to": identity,
+        "kind": "config_update",
+        "config": profile,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }, ensure_ascii=False)
+    try:
+        info = _metric_client.publish(topic, payload, qos=1)
+        info.wait_for_publish(timeout=5.0)
+        return info.is_published()
+    except Exception as e:
+        logger.warning(f"[console] 权限下发失败 {identity}: {e}")
+        return False
 
 
 # ─── Agent Session ───────────────────────────────────────────────────────────
@@ -794,6 +979,91 @@ async def health(request: Request):
     })
 
 
+# ─── Web 控制台后端 API（TASK-20：覆盖前端三页 ns/权限/指标） ─────────────────────
+
+def _console_snapshot_sources():
+    """控制台三个清单接口的公共数据源（会话表/注册表/指标库快照）"""
+    return list(_sessions.keys()), list(_agent_info.keys()), list(_metrics_store.snapshot().keys())
+
+
+async def console_namespaces(request: Request):
+    """ns 页：命名空间清单（在线/注册/daemon 计数 + 显式声明标记）"""
+    session_keys, agent_keys, metric_keys = _console_snapshot_sources()
+    return JSONResponse({"namespaces": collect_namespaces(
+        session_keys, agent_keys, metric_keys, _ns_registry.list())})
+
+
+async def console_declare_namespace(request: Request):
+    """ns 页：声明创建命名空间（ns 隔离由 topic 路径天然实现，此处仅登记）"""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "请求体须为 JSON 对象"}, status_code=400)
+    entry = _ns_registry.declare((body or {}).get("name", ""))
+    if entry is None:
+        return JSONResponse({"error": "ns 名非空且不得含 /"}, status_code=400)
+    return JSONResponse({"status": "declared", "namespace": entry})
+
+
+async def console_identities(request: Request):
+    """ns 页：<ns>/<client_id> 身份清单与检索（?ns= 过滤，?q= 子串检索）"""
+    session_keys, agent_keys, metric_keys = _console_snapshot_sources()
+    ns = normalize_ns(request.query_params.get("ns"))
+    q = (request.query_params.get("q") or "").strip() or None
+    return JSONResponse({"identities": collect_identities(
+        session_keys, agent_keys, metric_keys, ns=ns, q=q)})
+
+
+async def console_permissions_list(request: Request):
+    """权限页：全部权限档案"""
+    return JSONResponse({"profiles": _permission_store.list()})
+
+
+async def console_permission_get(request: Request):
+    """权限页：单个身份档案（未存档 404）"""
+    entry = _permission_store.get(request.path_params["identity"])
+    if entry is None:
+        return JSONResponse({"error": "该身份暂无权限档案"}, status_code=404)
+    return JSONResponse({"identity": request.path_params["identity"], "profile": entry})
+
+
+async def console_permission_put(request: Request):
+    """权限页：保存档案并下发 control 通知（校验对齐 daemon config 契约）"""
+    identity = request.path_params["identity"]
+    try:
+        body = await request.json()
+        profile = validate_permission_profile(body)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    except Exception:
+        return JSONResponse({"error": "请求体须为 JSON 对象"}, status_code=400)
+    entry = _permission_store.set(identity, profile)
+    distributed = distribute_permission_update(identity, profile)
+    logger.info(f"[console] 权限档案更新 {identity}（下发 {'成功' if distributed else '未送达，仅存档'}）")
+    return JSONResponse({"identity": identity, "profile": entry, "distributed": distributed})
+
+
+async def console_metrics(request: Request):
+    """指标页：各 daemon 最新指标 + hub 概览（在线/注册/消息数/ns 分布）"""
+    ns_summary: Dict[str, int] = {}
+    for key in _sessions.keys():
+        ns_summary[_ns_of(key)] = ns_summary.get(_ns_of(key), 0) + 1
+    return JSONResponse({
+        "daemons": _metrics_store.snapshot(),
+        "overview": {
+            "online_agents": list(_sessions.keys()),
+            "registered_agents": [k for k, info in _agent_info.items() if info.registered],
+            "total_messages": len(_messages),
+            "namespaces": ns_summary,
+        },
+    })
+
+
+async def console_metrics_summary(request: Request):
+    """指标页：全部 daemon 指标汇总（吞吐/丢弃/去重/排队总量）"""
+    return JSONResponse(build_metric_summary(_metrics_store.snapshot()))
+
+
 async def sse_endpoint(request: Request):
     client_id = request.query_params.get("client_id") or request.headers.get("x-client-id", "")
     ns = normalize_ns(request.query_params.get("ns"))
@@ -842,6 +1112,15 @@ app = Starlette(
         Route("/health", health),
         Route("/sse", sse_endpoint),
         Mount("/messages/", app=sse_transport.handle_post_message),
+        # TASK-20：Web 控制台后端 API（前端三页：ns/权限/指标）
+        Route("/api/console/namespaces", console_namespaces, methods=["GET"]),
+        Route("/api/console/namespaces", console_declare_namespace, methods=["POST"]),
+        Route("/api/console/identities", console_identities, methods=["GET"]),
+        Route("/api/console/permissions", console_permissions_list, methods=["GET"]),
+        Route("/api/console/permissions/{identity:path}", console_permission_get, methods=["GET"]),
+        Route("/api/console/permissions/{identity:path}", console_permission_put, methods=["PUT"]),
+        Route("/api/console/metrics", console_metrics, methods=["GET"]),
+        Route("/api/console/metrics/summary", console_metrics_summary, methods=["GET"]),
     ],
     lifespan=hub_lifespan,
 )
