@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ps1Path = join(repoRoot, "scripts", "install.ps1");
 const shPath = join(repoRoot, "scripts", "install.sh");
+const publishPath = join(repoRoot, "scripts", "publish.ps1");
 
 describe("install.ps1（Windows 一键安装）", () => {
   it("存在且含三步主流程：npm 安装 → init --yes → doctor", () => {
@@ -52,5 +53,29 @@ describe("install.sh（macOS/Linux 一键安装）", () => {
   it("LF 行尾（CRLF 的 sh 脚本经 bash 执行会失败；托管给 Linux/macOS 用户）", () => {
     const src = readFileSync(shPath, "utf-8");
     expect(src).not.toMatch(/\r/);
+  });
+});
+
+describe("publish.ps1（npm 一键发布）", () => {
+  it("存在且含主流程：版本升级 → 构建 → publish --access public --otp", () => {
+    expect(existsSync(publishPath)).toBe(true);
+    const src = readFileSync(publishPath, "utf-8");
+    expect(src).toMatch(/npm(\.cmd)? version/);
+    expect(src).toMatch(/npm(\.cmd)? run build/);
+    expect(src).toMatch(/npm(\.cmd)? publish/);
+    expect(src).toMatch(/--access public/);
+    expect(src).toMatch(/--otp/);
+  });
+
+  it("发布前跑单测（防坏版本上 registry）且失败即停", () => {
+    const src = readFileSync(publishPath, "utf-8");
+    expect(src).toMatch(/npm(\.cmd)? test|vitest/);
+    expect(src).toMatch(/\$ErrorActionPreference\s*=\s*"Stop"|throw|exit 1/);
+  });
+
+  it("OTP 交互输入（支持 6 位动态码或 64 位恢复码）", () => {
+    const src = readFileSync(publishPath, "utf-8");
+    expect(src).toMatch(/Read-Host/);
+    expect(src).toMatch(/\{6\}|\{64\}/);
   });
 });
