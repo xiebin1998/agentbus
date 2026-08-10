@@ -4,7 +4,7 @@
 #   iwr https://<host>/install.ps1 | iex
 #
 # 可选环境变量：
-#   AGENTBUS_PACKAGE  npm 包来源（默认 @phnix/agentbus@latest；可指本地目录/tarball 供离线安装）
+#   AGENTBUS_PACKAGE  npm 包来源（默认 @agenthub/agentbus@latest；可指本地目录/tarball 供离线安装）
 #   AGENTBUS_BROKER   broker host:port（默认 localhost:18830）
 #   AGENTBUS_NS       命名空间（默认 default）
 #
@@ -41,7 +41,7 @@ if (-not $npmVersion) {
 Write-Host "[install] 环境检查通过：node $nodeVersion / npm $npmVersion"
 
 # 步骤 1：安装 agentbus CLI（npm 全局）
-$pkg = if ($env:AGENTBUS_PACKAGE) { $env:AGENTBUS_PACKAGE } else { "@phnix/agentbus@latest" }
+$pkg = if ($env:AGENTBUS_PACKAGE) { $env:AGENTBUS_PACKAGE } else { "@agenthub/agentbus@latest" }
 Write-Host "[install] npm install -g $pkg"
 & npm install -g $pkg
 if ($LASTEXITCODE -ne 0) {

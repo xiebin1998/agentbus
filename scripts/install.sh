@@ -5,7 +5,7 @@
 #   curl -fsSL https://<host>/install.sh | bash
 #
 # 可选环境变量：
-#   AGENTBUS_PACKAGE  npm 包来源（默认 @phnix/agentbus@latest；可指本地目录/tarball 供离线安装）
+#   AGENTBUS_PACKAGE  npm 包来源（默认 @agenthub/agentbus@latest；可指本地目录/tarball 供离线安装）
 #   AGENTBUS_BROKER   broker host:port（默认 localhost:18830）
 #   AGENTBUS_NS       命名空间（默认 default）
 #
@@ -32,7 +32,7 @@ command -v npm >/dev/null 2>&1 || fail "未找到 npm。请确认 Node.js 安装
 echo "[install] 环境检查通过：node $(node --version) / npm $(npm --version)"
 
 # 步骤 1：安装 agentbus CLI（npm 全局）
-PKG="${AGENTBUS_PACKAGE:-@phnix/agentbus@latest}"
+PKG="${AGENTBUS_PACKAGE:-@agenthub/agentbus@latest}"
 echo "[install] npm install -g $PKG"
 npm install -g "$PKG" || fail "npm install -g 失败。请检查网络与 registry（npm config get registry）；离线环境可用 AGENTBUS_PACKAGE 指向本地包路径后重试。"
 

@@ -15,7 +15,7 @@ MCP MQTT Bridge Server — Agent 实时通信版
 }
 
 Topic:
-    /phnix/ai/channel/{client_id}/message
+    /agenthub/ai/channel/{client_id}/message
 
 MCP 工具：
 ├── register_agent(name, description, capabilities)  注册 Agent
@@ -69,16 +69,16 @@ MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
 
 # ─── Topic ────────────────────────────────────────────────────────────────────
-TOPIC_MESSAGE = "/phnix/ai/channel/{client_id}/message"
+TOPIC_MESSAGE = "/agenthub/ai/channel/{client_id}/message"
 
 # TASK-19：daemon 指标上报通道（与消息 topic 平行命名，hub 通配订阅汇总）
-TOPIC_METRIC_PREFIX = "/phnix/ai/metric/"
-TOPIC_METRIC_WILDCARD = "/phnix/ai/metric/#"
+TOPIC_METRIC_PREFIX = "/agenthub/ai/metric/"
+TOPIC_METRIC_WILDCARD = "/agenthub/ai/metric/#"
 
 # TASK-24：共享连接通配订阅（架构 11.8 演进方案 2）：flat + ns 两条 message 通配
-TOPIC_MESSAGE_PREFIX = "/phnix/ai/channel/"
-TOPIC_MESSAGE_WILDCARD_FLAT = "/phnix/ai/channel/+/message"
-TOPIC_MESSAGE_WILDCARD_NS = "/phnix/ai/channel/+/+/message"
+TOPIC_MESSAGE_PREFIX = "/agenthub/ai/channel/"
+TOPIC_MESSAGE_WILDCARD_FLAT = "/agenthub/ai/channel/+/message"
+TOPIC_MESSAGE_WILDCARD_NS = "/agenthub/ai/channel/+/+/message"
 
 # 消息体上限（架构 11.8 缺陷 5）：防止异常大包占满 broker 与内存
 MAX_TEXT_BYTES = 64 * 1024
@@ -90,7 +90,7 @@ def build_sub_topic(client_id: str, ns: Optional[str] = None) -> str:
     """构造订阅/推送 topic。ns=None → 旧 flat topic（兼容存量）；显式 ns → ns topic"""
     if ns is None:
         return TOPIC_MESSAGE.format(client_id=client_id)
-    return f"/phnix/ai/channel/{ns}/{client_id}/message"
+    return f"/agenthub/ai/channel/{ns}/{client_id}/message"
 
 
 def resolve_target(t: str) -> tuple:
@@ -151,8 +151,8 @@ def check_text_size(text: Optional[str]) -> None:
 
 
 def parse_metric_topic(topic: str) -> Optional[str]:
-    """TASK-19：metric topic → daemon 身份。/phnix/ai/metric/<ns>/<cid> → "ns/cid"；
-    flat 兼容 /phnix/ai/metric/<cid> → "cid"；非法/超段返回 None"""
+    """TASK-19：metric topic → daemon 身份。/agenthub/ai/metric/<ns>/<cid> → "ns/cid"；
+    flat 兼容 /agenthub/ai/metric/<cid> → "cid"；非法/超段返回 None"""
     if not topic or not topic.startswith(TOPIC_METRIC_PREFIX):
         return None
     parts = topic[len(TOPIC_METRIC_PREFIX):].split("/")
@@ -165,8 +165,8 @@ def parse_metric_topic(topic: str) -> Optional[str]:
 
 def parse_message_topic(topic: str) -> Optional[tuple]:
     """TASK-24：message topic → (ns_or_None, client_id)。共享连接按 topic 路由的第一步：
-    flat /phnix/ai/channel/<cid>/message → (None, cid)；
-    ns /phnix/ai/channel/<ns>/<cid>/message → (ns, cid)；其余（含 metric）返回 None"""
+    flat /agenthub/ai/channel/<cid>/message → (None, cid)；
+    ns /agenthub/ai/channel/<ns>/<cid>/message → (ns, cid)；其余（含 metric）返回 None"""
     if (not topic or not topic.startswith(TOPIC_MESSAGE_PREFIX)
             or not topic.endswith("/message")):
         return None
@@ -260,8 +260,8 @@ def render_broker_acl(hub_user: str, teams: List[dict]) -> str:
         ns = t["name"]
         lines += [
             f"user {team_broker_user(ns)}",
-            f"topic readwrite /phnix/ai/channel/{ns}/#",
-            f"topic write /phnix/ai/metric/{ns}/#",
+            f"topic readwrite /agenthub/ai/channel/{ns}/#",
+            f"topic write /agenthub/ai/metric/{ns}/#",
             "",
         ]
     return "\n".join(lines)

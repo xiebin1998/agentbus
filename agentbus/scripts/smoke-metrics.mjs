@@ -15,7 +15,7 @@ import { Daemon } from "../dist/daemon/daemon.js";
 const port = Number(process.argv[2] ?? 18830);
 const hubUrl = process.argv[3] ?? "http://localhost:8000/health";
 const clientId = "smoke-metrics";
-const msgTopic = `/phnix/ai/channel/default/${clientId}/message`;
+const msgTopic = `/agenthub/ai/channel/default/${clientId}/message`;
 
 const daemon = new Daemon({
   config: {

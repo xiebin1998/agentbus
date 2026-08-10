@@ -42,7 +42,7 @@ T3 CLI骨架 ──────────┴───────────�
 **详细步骤**：
 1. 全局身份改键：`_sessions` / `_agent_info` 的 key 由 `client_id` 改为 `<ns>/<client_id>`（无 ns 时键为 `default/<client_id>` 但 topic 走 flat，保持兼容）
 2. `sse_endpoint` 解析 `ns` query 参数（缺省 `default`）；`AgentSession.__init__` 增加 ns 参数
-3. `sub_topic` 计算：未显式传 ns 的连接 → flat topic `/phnix/ai/channel/{client_id}/message`；显式传 ns → `/phnix/ai/channel/{ns}/{client_id}/message`（兼容规则见架构 3.1）
+3. `sub_topic` 计算：未显式传 ns 的连接 → flat topic `/agenthub/ai/channel/{client_id}/message`；显式传 ns → `/agenthub/ai/channel/{ns}/{client_id}/message`（兼容规则见架构 3.1）
 4. `send_message` 目标解析：`to` 支持 `<ns>/<client_id>`（跨 ns，publish 到对应 ns topic）与 `<client_id>@<tool>`（topic 仅取 client_id 段，`@tool` 保留在 payload 供 daemon 消费）；数组逐个解析
 5. 顺手修缺陷：群发改部分送达 + 返回失败列表（11.8-7）；text 长度上限 64KB（11.8-5）；`ack_message` 校验消息 from/to 与调用者相关（11.8-4）；`get_event_loop()` → `get_running_loop()`（11.8-3）
 6. 内存治理：`_messages` 改 `deque(maxlen=10000)` + 每日定时清 TTL 过期项；SSE 断开时清理 `_agent_info`（未 registered 直删，registered 保留但标记离线，`list_agents` 区分在线/离线）
@@ -98,7 +98,7 @@ T3 CLI骨架 ──────────┴───────────�
 **依赖**：T1、T2、T3。
 
 **详细步骤**：
-1. **MQTT 层**（listener.ts）：mqtt.js 连接（`cleanSession:false`、固定 clientId `agentbus-<ns>-<client_id>`、自动重连退避）；订阅 `/phnix/ai/channel/<ns>/<client_id>/message`
+1. **MQTT 层**（listener.ts）：mqtt.js 连接（`cleanSession:false`、固定 clientId `agentbus-<ns>-<client_id>`、自动重连退避）；订阅 `/agenthub/ai/channel/<ns>/<client_id>/message`
 2. **路由管线**：按 4.2 步骤 0–8 顺序实现——白名单 → 去重 LRU(1000) → hop 熔断 → control 短路 → 工具判定（`@tool` / default_tool）→ 速率限制（60s/5 条，队列>20 丢最旧）→ 会话查询 → ack
 3. **注册表**（registry.ts）：sessions.json 原子写（tmp + rename）；读失败回退空表重建；sender 为主键的增删改查
 4. **队列**：每工具独立 FIFO 队列，串行消费（注入动作在 T5/T6 落地，此处先留注入回调接口）
@@ -259,7 +259,7 @@ T3 CLI骨架 ──────────┴───────────�
 
 **内容**：为 Web 控制台供数（架构 10 二期"数据来源"）。
 **依赖**：T4。
-**步骤**：指标项定义（在线状态、收/发/注入计数、注入成功率、队列深度、白名单拦截数、hop 熔断数、代回延迟分位数）；上报通道选型落地（推荐：周期性 MQTT publish 到 `/phnix/ai/metrics/<ns>/<client_id>`，hub 侧聚合；备选 HTTP POST /metrics）；server.py 增加指标内存聚合与查询接口。
+**步骤**：指标项定义（在线状态、收/发/注入计数、注入成功率、队列深度、白名单拦截数、hop 熔断数、代回延迟分位数）；上报通道选型落地（推荐：周期性 MQTT publish 到 `/agenthub/ai/metrics/<ns>/<client_id>`，hub 侧聚合；备选 HTTP POST /metrics）；server.py 增加指标内存聚合与查询接口。
 **验收**：控制台后端能取到每个 daemon 的实时指标；断线期间指标缺失可识别。
 
 ### T16 Web 控制台后端（3 人日）
@@ -296,7 +296,7 @@ T3 CLI骨架 ──────────┴───────────�
 
 **内容**：线程数 N→1，容量千级→万级（架构 11.8 演进方案 2）。
 **依赖**：T1。
-**步骤**：hub 改为单条 MQTT 连接，通配订阅 `/phnix/ai/channel/+/message`（flat）与 `/phnix/ai/channel/+/+/message`（ns）；按 topic 解析目标身份 → 路由到对应 AgentSession（内存路由表）；publish 统一走共享连接；删除每 Agent 的 paho 客户端与 loop_start 线程；压测：模拟 2000 在线会话下的内存/延迟基线。
+**步骤**：hub 改为单条 MQTT 连接，通配订阅 `/agenthub/ai/channel/+/message`（flat）与 `/agenthub/ai/channel/+/+/message`（ns）；按 topic 解析目标身份 → 路由到对应 AgentSession（内存路由表）；publish 统一走共享连接；删除每 Agent 的 paho 客户端与 loop_start 线程；压测：模拟 2000 在线会话下的内存/延迟基线。
 **验收**：500 并发会话内存增量 < 原方案 20%；单事件循环吞吐 > 1000 条/秒。
 
 ### T21 安全基线：broker 鉴权 + TLS + SSE 鉴权（2.5 人日）
@@ -310,7 +310,7 @@ T3 CLI骨架 ──────────┴───────────�
 
 **内容**：规划留存项（架构 10 三期），命名空间权限化。
 **依赖**：T21（broker 鉴权前置）、T16/T17（控制台骨架）。
-**步骤**：控制台账号体系（注册/登录/团队 CRUD）；团队 ↔ ns 绑定与命名空间权限（谁能建 ns、成员归属）；落地 3.1.1“一团队一账号”：按团队生成 broker 账号、下发 topic 前缀 ACL（`topic readwrite /phnix/ai/channel/<ns>/#`）；SSE/MQTT 接入身份与团队归属校验（hub 侧对账）；审计日志（谁改了哪个 ns 的权限）。
+**步骤**：控制台账号体系（注册/登录/团队 CRUD）；团队 ↔ ns 绑定与命名空间权限（谁能建 ns、成员归属）；落地 3.1.1“一团队一账号”：按团队生成 broker 账号、下发 topic 前缀 ACL（`topic readwrite /agenthub/ai/channel/<ns>/#`）；SSE/MQTT 接入身份与团队归属校验（hub 侧对账）；审计日志（谁改了哪个 ns 的权限）。
 **验收**：A 团队账号无法向 B 团队 ns publish（broker ACL 强制）；控制台权限变更 5 分钟内生效。
 
 ### T23 进阶通道（2 人日）

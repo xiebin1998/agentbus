@@ -186,7 +186,7 @@ export function buildProgram(): Command {
       console.log(`会话注册表：${summary.senderCount} 个来源${summary.senders.length ? `（${summary.senders.join(", ")}）` : ""}`);
       try {
         const config = loadConfig(join(workDir, "config.json"));
-        console.log(`身份 ${config.ns}/${config.client_id}，订阅 /phnix/ai/channel/${config.ns}/${config.client_id}/message`);
+        console.log(`身份 ${config.ns}/${config.client_id}，订阅 /agenthub/ai/channel/${config.ns}/${config.client_id}/message`);
         console.log(`离线丢消息声明：broker 持久会话容量有限，daemon 长时间离线期间的消息可能丢失`);
       } catch {
         console.log("（config.json 未初始化，先跑 agentbus init）");
@@ -209,7 +209,7 @@ export function buildProgram(): Command {
         process.exit(1);
       }
       console.log(result.reason);
-      console.log(`订阅 /phnix/ai/channel/${config.ns}/${config.client_id}/message（Ctrl+C 退出）`);
+      console.log(`订阅 /agenthub/ai/channel/${config.ns}/${config.client_id}/message（Ctrl+C 退出）`);
       const shutdown = () => {
         // stop 异步：等 MQTT 关闭完成再退，避免关闭日志丢失
         void d.stop().finally(() => process.exit(0));

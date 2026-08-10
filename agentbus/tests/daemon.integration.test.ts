@@ -64,7 +64,7 @@ async function makeSender(): Promise<{ client: MqttClient; received: BusMessage[
   const client = mqtt.connect(`mqtt://127.0.0.1:${port}`, { clientId: "be-svc" });
   await new Promise<void>((resolve) => client.on("connect", () => resolve()));
   await new Promise<void>((resolve) =>
-    client.subscribe("/phnix/ai/channel/be-svc/message", { qos: 1 }, () => resolve()),
+    client.subscribe("/agenthub/ai/channel/be-svc/message", { qos: 1 }, () => resolve()),
   );
   client.on("message", (_t, payload) => {
     received.push(JSON.parse(payload.toString("utf-8")) as BusMessage);
@@ -75,7 +75,7 @@ async function makeSender(): Promise<{ client: MqttClient; received: BusMessage[
 function publishToDaemon(msg: Record<string, unknown>): void {
   broker.publish({
     cmd: "publish",
-    topic: "/phnix/ai/channel/default/fe-test/message",
+    topic: "/agenthub/ai/channel/default/fe-test/message",
     payload: JSON.stringify({ type: "text", hop: 0, expect_reply: true, ...msg }),
     qos: 1,
     retain: false,

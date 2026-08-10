@@ -2,7 +2,7 @@
  * TASK-19: daemon 指标上报接线
  * - 启动即报一次 + 按 metricIntervalMs 周期上报（测试注入短间隔）
  * - 计数挂点：注入成功/失败、去重、白名单丢弃
- * - 通道：publish 到 /phnix/ai/metric/<ns>/<client_id>，payload type=metric
+ * - 通道：publish 到 /agenthub/ai/metric/<ns>/<client_id>，payload type=metric
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
@@ -55,12 +55,12 @@ afterAll(async () => {
   server.close();
 });
 
-/** 指标收集客户端：订阅 /phnix/ai/metric/# */
+/** 指标收集客户端：订阅 /agenthub/ai/metric/# */
 async function makeMetricCollector(): Promise<{ client: MqttClient; reports: Array<{ topic: string; payload: Record<string, unknown> }> }> {
   const reports: Array<{ topic: string; payload: Record<string, unknown> }> = [];
   const client = mqtt.connect(`mqtt://127.0.0.1:${port}`, { clientId: "metric-collector" });
   await new Promise<void>((resolve) => client.on("connect", () => resolve()));
-  await new Promise<void>((resolve) => client.subscribe("/phnix/ai/metric/#", { qos: 1 }, () => resolve()));
+  await new Promise<void>((resolve) => client.subscribe("/agenthub/ai/metric/#", { qos: 1 }, () => resolve()));
   client.on("message", (topic, payload) => {
     try {
       reports.push({ topic, payload: JSON.parse(payload.toString("utf-8")) as Record<string, unknown> });
@@ -74,7 +74,7 @@ async function makeMetricCollector(): Promise<{ client: MqttClient; reports: Arr
 function publishToDaemon(msg: Record<string, unknown>): void {
   broker.publish({
     cmd: "publish",
-    topic: "/phnix/ai/channel/default/fe-test/message",
+    topic: "/agenthub/ai/channel/default/fe-test/message",
     payload: JSON.stringify({ type: "text", hop: 0, expect_reply: false, ...msg }),
     qos: 1,
     retain: false,
@@ -106,7 +106,7 @@ describe("daemon 指标上报", { timeout: 30000 }, () => {
 
     // 启动即报一次（无需等注入发生）
     await waitFor(() => collector.reports.length >= 1);
-    expect(collector.reports[0]!.topic).toBe("/phnix/ai/metric/default/fe-test");
+    expect(collector.reports[0]!.topic).toBe("/agenthub/ai/metric/default/fe-test");
     expect(collector.reports[0]!.payload.type).toBe("metric");
     expect(collector.reports[0]!.payload.from).toBe("default/fe-test");
 

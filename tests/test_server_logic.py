@@ -23,14 +23,14 @@ import server
 class TestBuildSubTopic:
     def test_flat_topic_when_ns_absent(self):
         """未传 ns → 旧 flat topic，兼容既有客户端"""
-        assert server.build_sub_topic("demo") == "/phnix/ai/channel/demo/message"
+        assert server.build_sub_topic("demo") == "/agenthub/ai/channel/demo/message"
 
     def test_flat_topic_when_ns_none(self):
         """运行时语义：ns 未传 → None → flat（空串不是合法 ns，按显式处理）"""
-        assert server.build_sub_topic("demo", None) == "/phnix/ai/channel/demo/message"
+        assert server.build_sub_topic("demo", None) == "/agenthub/ai/channel/demo/message"
 
     def test_ns_topic_when_ns_present(self):
-        assert server.build_sub_topic("demo", "iot") == "/phnix/ai/channel/iot/demo/message"
+        assert server.build_sub_topic("demo", "iot") == "/agenthub/ai/channel/iot/demo/message"
 
 
 # ---------- resolve_target ----------
@@ -66,58 +66,58 @@ class TestResolveTarget:
 class TestBuildPubTopics:
     def test_single_target_from_flat_sender_is_flat(self):
         """兼容规则：发件人未传 ns（sender_ns=None）且目标无 ns 前缀 → flat topic"""
-        assert server.build_pub_topics("demo", None) == ["/phnix/ai/channel/demo/message"]
+        assert server.build_pub_topics("demo", None) == ["/agenthub/ai/channel/demo/message"]
 
     def test_single_target_in_named_ns_uses_ns_topic(self):
         """发件人在 iot ns 且目标无 ns 前缀 → 同 ns 的 ns topic"""
         assert server.build_pub_topics("demo", "iot") == [
-            "/phnix/ai/channel/iot/demo/message"
+            "/agenthub/ai/channel/iot/demo/message"
         ]
 
     def test_explicit_default_ns_prefix_is_not_flat(self):
         """显式 default/cid → ns topic（显式传 ns 的连接不在 flat 上）"""
         assert server.build_pub_topics("default/a", "default") == [
-            "/phnix/ai/channel/default/a/message"
+            "/agenthub/ai/channel/default/a/message"
         ]
 
     def test_cross_ns_target(self):
         assert server.build_pub_topics("iot/be-svc", None) == [
-            "/phnix/ai/channel/iot/be-svc/message"
+            "/agenthub/ai/channel/iot/be-svc/message"
         ]
 
     def test_tool_suffix_does_not_affect_topic(self):
         assert server.build_pub_topics("demo@kilo", None) == [
-            "/phnix/ai/channel/demo/message"
+            "/agenthub/ai/channel/demo/message"
         ]
 
     def test_comma_separated_group(self):
         assert server.build_pub_topics("a,b", None) == [
-            "/phnix/ai/channel/a/message",
-            "/phnix/ai/channel/b/message",
+            "/agenthub/ai/channel/a/message",
+            "/agenthub/ai/channel/b/message",
         ]
 
     def test_list_group(self):
         assert server.build_pub_topics(["a", "iot/b"], None) == [
-            "/phnix/ai/channel/a/message",
-            "/phnix/ai/channel/iot/b/message",
+            "/agenthub/ai/channel/a/message",
+            "/agenthub/ai/channel/iot/b/message",
         ]
 
     def test_dedupe_across_flat_and_ns_forms(self):
         """flat 与显式 default/ 前缀是两个不同 topic，均需保留"""
         assert server.build_pub_topics("a,default/a", None) == [
-            "/phnix/ai/channel/a/message",
-            "/phnix/ai/channel/default/a/message",
+            "/agenthub/ai/channel/a/message",
+            "/agenthub/ai/channel/default/a/message",
         ]
 
     def test_exact_duplicates_removed(self):
         assert server.build_pub_topics("a,a", None) == [
-            "/phnix/ai/channel/a/message"
+            "/agenthub/ai/channel/a/message"
         ]
 
     def test_sender_in_default_ns_targets_stay_in_default(self):
         """显式 ns=default 的发件人，无前缀目标解析到 default ns topic（非 flat）"""
         assert server.build_pub_topics("a", "default") == [
-            "/phnix/ai/channel/default/a/message"
+            "/agenthub/ai/channel/default/a/message"
         ]
 
     def test_empty_group_rejected(self):

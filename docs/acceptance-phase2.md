@@ -17,7 +17,7 @@
 | 6 | 控制台-命名空间管理 | ✅ | TASK-20/21：ns 清单（四路来源合并）/声明创建/`<ns>/<client_id>` 身份清单与检索（ns 过滤+子串）；浏览器实测通过 |
 | 7 | 控制台-权限管理 | ✅ | TASK-20/21：allowed_senders/trust_map/inbound_mode 可视化编辑与下发（control 通知 daemon 日志确认收到）；broker ACL 配置衔接三期安全基线（规划留存） |
 | 8 | 控制台-通信指标统计 | ✅（核心项） | TASK-19/20/21：daemon 指标上报（注入成败/丢弃/去重/排队/会话数/运行时长）+ hub /health 汇总 + 前端汇总卡片/各 daemon 表/5s 自动刷新；端到端时延与告警记录为后续演进（如实记录） |
-| 9 | 数据来源：/health 扩展 + daemon 指标上报 | ✅ | TASK-19：metric MQTT 通道（/phnix/ai/metric/#）+ /health daemon_metrics；本次验收实测 default/accept 周期上报 report_count 递增 |
+| 9 | 数据来源：/health 扩展 + daemon 指标上报 | ✅ | TASK-19：metric MQTT 通道（/agenthub/ai/metric/#）+ /health daemon_metrics；本次验收实测 default/accept 周期上报 report_count 递增 |
 
 ## 2. 六工具矩阵回归
 

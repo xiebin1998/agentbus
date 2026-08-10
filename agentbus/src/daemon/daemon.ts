@@ -69,8 +69,8 @@ interface QueueItem {
 /** ack/回复回发 topic：ns 形态身份 → ns topic；纯 client_id → flat topic */
 export function senderTopic(from: string): string {
   const slash = from.indexOf("/");
-  if (slash < 0) return `/phnix/ai/channel/${from}/message`;
-  return `/phnix/ai/channel/${from.slice(0, slash)}/${from.slice(slash + 1)}/message`;
+  if (slash < 0) return `/agenthub/ai/channel/${from}/message`;
+  return `/agenthub/ai/channel/${from.slice(0, slash)}/${from.slice(slash + 1)}/message`;
 }
 
 /** OpenCode/Kilo 同族：会话 id 由 CLI 侧生成（事件流提取），非 daemon 预生成 */
@@ -154,7 +154,7 @@ export class Daemon {
     this.router = new Router(routerCfg, { knownSenders: knownSenders(this.registry) });
 
     // 4. MQTT 层：首次连接失败不致命，mqtt.js 内部持续重连
-    const topic = `/phnix/ai/channel/${cfg.ns}/${cfg.client_id}/message`;
+    const topic = `/agenthub/ai/channel/${cfg.ns}/${cfg.client_id}/message`;
     this.listener = createListener({
       broker: cfg.broker,
       clientId: `agentbus-${cfg.ns}-${cfg.client_id}`,
@@ -468,7 +468,7 @@ export class Daemon {
     await this.listener.publish(topic, JSON.stringify(msg));
   }
 
-  /** 指标上报（TASK-19）：publish 到 /phnix/ai/metric/<ns>/<client_id>；连接未就绪静默跳过 */
+  /** 指标上报（TASK-19）：publish 到 /agenthub/ai/metric/<ns>/<client_id>；连接未就绪静默跳过 */
   private publishMetric(): void {
     if (!this.started || !this.listener || !this.listener.isConnected()) return;
     const cfg = this.opts.config;

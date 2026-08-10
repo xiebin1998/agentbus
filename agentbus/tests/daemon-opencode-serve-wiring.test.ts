@@ -104,7 +104,7 @@ afterAll(async () => {
 function publishToDaemon(msg: Record<string, unknown>): void {
   broker.publish({
     cmd: "publish",
-    topic: "/phnix/ai/channel/default/fe-test/message",
+    topic: "/agenthub/ai/channel/default/fe-test/message",
     payload: JSON.stringify({ type: "text", hop: 0, expect_reply: false, ...msg }),
     qos: 1,
     retain: false,

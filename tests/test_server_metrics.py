@@ -1,26 +1,26 @@
 """TASK-19: hub 侧 daemon 指标采集（server.py）
 
-daemon 周期性 publish 指标到 /phnix/ai/metric/<ns>/<client_id>，hub 订阅
-/phnix/ai/metric/# 汇总；/health 扩展返回 daemon_metrics。
+daemon 周期性 publish 指标到 /agenthub/ai/metric/<ns>/<client_id>，hub 订阅
+/agenthub/ai/metric/# 汇总；/health 扩展返回 daemon_metrics。
 本文件覆盖纯逻辑层：metric topic 解析 + MetricsStore 汇总。
 """
 import server
 
 
 def test_parse_metric_topic_ns_form():
-    assert server.parse_metric_topic("/phnix/ai/metric/iot/fe-a") == "iot/fe-a"
+    assert server.parse_metric_topic("/agenthub/ai/metric/iot/fe-a") == "iot/fe-a"
 
 
 def test_parse_metric_topic_flat_form():
-    assert server.parse_metric_topic("/phnix/ai/metric/legacy-daemon") == "legacy-daemon"
+    assert server.parse_metric_topic("/agenthub/ai/metric/legacy-daemon") == "legacy-daemon"
 
 
 def test_parse_metric_topic_invalid():
-    assert server.parse_metric_topic("/phnix/ai/channel/x/message") is None
-    assert server.parse_metric_topic("/phnix/ai/metric/") is None
+    assert server.parse_metric_topic("/agenthub/ai/channel/x/message") is None
+    assert server.parse_metric_topic("/agenthub/ai/metric/") is None
     assert server.parse_metric_topic("") is None
     # 超过两段的身份非法（只取前两段以外视为非法）
-    assert server.parse_metric_topic("/phnix/ai/metric/a/b/c") is None
+    assert server.parse_metric_topic("/agenthub/ai/metric/a/b/c") is None
 
 
 def test_metrics_store_update_and_snapshot():

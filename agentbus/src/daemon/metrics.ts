@@ -2,7 +2,7 @@
  * TASK-19: Daemon 指标上报（架构二期：通信指标统计）
  *
  * 通道：metric 类 MQTT 消息（架构二期“通道待定”选型）——daemon 周期性 publish 到
- * `/phnix/ai/metric/<ns>/<client_id>`，hub（server.py）订阅 `/phnix/ai/metric/#` 汇总，
+ * `/agenthub/ai/metric/<ns>/<client_id>`，hub（server.py）订阅 `/agenthub/ai/metric/#` 汇总，
  * /health 可查各 daemon 指标。不复用消息 topic，避免触发其他 daemon 的路由逻辑。
  */
 
@@ -22,9 +22,9 @@ export interface MetricsSnapshot {
   uptime_s: number;
 }
 
-/** 指标上报 topic（与消息 topic 平行命名，hub 通配订阅 /phnix/ai/metric/#） */
+/** 指标上报 topic（与消息 topic 平行命名，hub 通配订阅 /agenthub/ai/metric/#） */
 export function metricTopic(ns: string, clientId: string): string {
-  return `/phnix/ai/metric/${ns}/${clientId}`;
+  return `/agenthub/ai/metric/${ns}/${clientId}`;
 }
 
 /** daemon 运行计数器：纯累加，snapshot 时附带即时量（senders/uptime） */
