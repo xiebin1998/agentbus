@@ -4,6 +4,14 @@
 
 > 本仓库是 AgentBus 的**中心节点**（MQTT Broker + Hub + Web 控制台）；完整设计（协议、三层防线、适配器契约）见 `ARCHITECTURE.md`。
 
+> ⚠️ **四期升级（breaking changes，0.2.0）**——从旧版本升级请先阅读本节：
+>
+> - **Topic 前缀更名**：`/agenthub/ai/...` → `/agentbus/ai/...`；同时**移除 flat topic**（未带 ns 的旧通道不再支持），所有客户端必须带命名空间。
+> - **Broker 认证切换为 dynsec**：不再使用 `mosquitto/config/passwd` + `acl` 静态文件，改用 mosquitto **动态安全插件（dynamic-security）**；账号/角色/ACL 由 hub 经 `$CONTROL` 通道运行时下发。`setup-broker-security.ps1` 现只生成 TLS 证书，首次启动由 `mosquitto/bootstrap.sh` 自动初始化 dynsec 管理员。
+> - **控制台改为账号 + 会话登录**：不再用 `MCP_API_TOKEN` Bearer 单一令牌；引入三级角色（`super_admin` / `ns_admin` / `user`），登录下发 session cookie。超管由 `.env` 的 `AGENTBUS_ADMIN_USER/PASSWORD` 引导。
+> - **团队模型 → 命名空间 + 账号（多对多）**：删除 `/api/console/teams` 等旧 API；一个账号可属于多个命名空间，一个命名空间可有多个成员。
+> - **`.env` 新增变量**：`DYNSEC_ADMIN_USER` / `DYNSEC_ADMIN_PASSWORD`（dynsec 管理员，hub 共享连接用）、`AGENTBUS_ADMIN_USER` / `AGENTBUS_ADMIN_PASSWORD`（控制台超管）。
+
 ## 架构一览
 
 ```
@@ -204,12 +212,11 @@ agentbus doctor        # 更新后体检确认
 ### Topic 规则
 
 ```
-/agenthub/ai/channel/{ns}/{client_id}/message   # 带命名空间
-/agenthub/ai/channel/{client_id}/message        # 兼容旧 flat（未传 ns）
-/agenthub/ai/metric/{ns}/{client_id}            # daemon 指标上报
+/agentbus/ai/channel/{ns}/{client_id}/message   # 带命名空间（唯一形态）
+/agentbus/ai/metric/{ns}/{client_id}            # daemon 指标上报
 ```
 
-团队账号受 ACL 约束：仅能读写本团队 topic 前缀，跨团队 publish 被 broker 拒绝。
+账号受 dynsec ACL 约束：仅能读写所属命名空间的 topic 前缀，跨命名空间 publish 会被 broker 丢弃（订阅者收不到）。
 
 ### 消息格式
 
@@ -260,9 +267,9 @@ agentbus doctor        # 更新后体检确认
 
 ```bash
 # hub（Python）
-py -m pytest -q                    # 116+ 用例
+py -m pytest -q                    # 119+ 用例
 # 客户端（TypeScript）
-cd agentbus && npm install && npm run build && npx vitest run   # 377 用例
+cd agentbus && npm install && npm run build && npx vitest run   # 392 用例
 ```
 
 ## 目录结构
