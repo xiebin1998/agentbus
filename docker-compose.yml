@@ -1,9 +1,13 @@
 services:
-  # MQTT Broker
+  # MQTT Broker（四期：dynsec 动态安全插件，bootstrap.sh 首次启动初始化管理员）
   mqtt-broker:
     image: eclipse-mosquitto:2
     container_name: mqtt-broker
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "/mosquitto/bootstrap.sh"]
+    environment:
+      - DYNSEC_ADMIN_USER=${DYNSEC_ADMIN_USER:-admin}
+      - DYNSEC_ADMIN_PASSWORD=${DYNSEC_ADMIN_PASSWORD:?set DYNSEC_ADMIN_PASSWORD in .env}
     ports:
       - "18830:1883"     # MQTT (改用 18830 避免冲突)
       - "8883:8883"      # MQTT over TLS（TASK-25 安全基线）
@@ -13,6 +17,7 @@ services:
       - mqtt-log:/mosquitto/log
       - ./mosquitto/config:/mosquitto/config
       - ./mosquitto/certs:/mosquitto/certs:ro   # TASK-25 自签证书（setup 脚本生成）
+      - ./mosquitto/bootstrap.sh:/mosquitto/bootstrap.sh:ro
     networks:
       - mcp-network
 
@@ -26,13 +31,20 @@ services:
     environment:
       - MQTT_BROKER_HOST=mqtt-broker
       - MQTT_BROKER_PORT=1883
-      - MQTT_USERNAME=${MQTT_USERNAME:-}
-      - MQTT_PASSWORD=${MQTT_PASSWORD:-}
+      # 四期：hub 以 dynsec 管理员身份连 broker（管理通道 + 全量收发）
+      - MQTT_USERNAME=${DYNSEC_ADMIN_USER:-admin}
+      - MQTT_PASSWORD=${DYNSEC_ADMIN_PASSWORD:?set DYNSEC_ADMIN_PASSWORD in .env}
       - MQTT_USE_TLS=${MQTT_USE_TLS:-false}
       - MQTT_CA_CERTS=${MQTT_CA_CERTS:-}   # TASK-25：自签 CA 路径
-      - MCP_API_TOKEN=${MCP_API_TOKEN:-}   # TASK-25：SSE/控制台 token 鉴权（空=开放）
+      - MCP_API_TOKEN=${MCP_API_TOKEN:-}   # TASK-25：MCP 通道 token 鉴权（空=开放）
+      # 四期：账号体系（SQLite + 控制台超管引导）
+      - AGENTBUS_DB_PATH=/data/agentbus.db
+      - AGENTBUS_ADMIN_USER=${AGENTBUS_ADMIN_USER:-}
+      - AGENTBUS_ADMIN_PASSWORD=${AGENTBUS_ADMIN_PASSWORD:-}
       - MCP_HOST=0.0.0.0
       - MCP_PORT=8000
+    volumes:
+      - hub-data:/data
     depends_on:
       - mqtt-broker
     networks:
@@ -41,6 +53,7 @@ services:
 volumes:
   mqtt-data:
   mqtt-log:
+  hub-data:
 
 networks:
   mcp-network:

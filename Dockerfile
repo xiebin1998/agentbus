@@ -19,8 +19,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制代码（web/ 控制台页与 scripts/ 安装脚本为运行时托管静态资源，缺失会 500）
+# 复制代码（hub/ 为四期账号体系包；web/ 控制台页与 scripts/ 安装脚本为运行时托管静态资源）
 COPY server.py .
+COPY hub/ hub/
 COPY web/ web/
 COPY scripts/ scripts/
 
