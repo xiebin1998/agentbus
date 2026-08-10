@@ -12,6 +12,7 @@ import { ConfigError, loadConfig } from "./config.js";
 import { runAutostartInstall, runAutostartStatus, runAutostartUninstall } from "./autostart.js";
 import { Daemon } from "./daemon/daemon.js";
 import { isProcessAlive } from "./daemon/pid.js";
+import { killServePort, reclaimServePorts } from "./daemon/serve-manager.js";
 import { detectClis, TOOL_BINARIES } from "./detect.js";
 import { runDoctor } from "./doctor.js";
 import { runInit, type Prompter } from "./init.js";
@@ -241,6 +242,15 @@ export function buildProgram(): Command {
       } catch (e) {
         console.error(`无法停止 pid ${pid}: ${(e as Error).message}`);
         process.exit(1);
+      }
+      // Windows 实测 SIGTERM 为强杀（handler 不运行，serve 优雅回收不会执行）→ 按 config 端口定向回收孤儿 serve
+      if (process.platform === "win32") {
+        try {
+          const cfg = loadConfig(join(resolveWorkDir(opts.config), "config.json"));
+          reclaimServePorts(cfg.tools, (port) => killServePort(port, { warn: (m) => console.warn(m) }));
+        } catch {
+          /* config 不可读时跳过回收，不影响 stop 本身 */
+        }
       }
     });
   daemon

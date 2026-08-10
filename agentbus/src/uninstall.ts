@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isProcessAlive } from "./daemon/pid.js";
+import { killServePort as killServePortDefault, reclaimServePorts } from "./daemon/serve-manager.js";
 import { defaultCliRunner, type CliRunner } from "./detect.js";
 import { cliRemoveArgs, MCP_NAME, planMcpUninstall, removeMcpJsonEntry } from "./mcp-registry.js";
 import { SKILL_DIRS, uninstallSkill } from "./skill.js";
@@ -19,6 +20,8 @@ export interface UninstallDeps {
   runner?: CliRunner;
   /** 停 daemon 注入点（测试用）；返回是否成功停止 */
   stopDaemon?: (pid: number) => boolean;
+  /** serve 端口定向回收注入点（测试用）；Windows 下 daemon 强杀后孤儿 serve 按端口杀 */
+  killServePort?: (port: number) => void;
 }
 
 export interface UninstallReport {
@@ -60,9 +63,11 @@ export async function runUninstall(deps: UninstallDeps): Promise<UninstallReport
 
   // 步骤 0：读配置拿工具清单（损坏时降级为空清单，后续清理照常进行）
   let tools: string[] = [];
+  let toolsMap: Record<string, Record<string, unknown>> = {};
   try {
-    const cfg = JSON.parse(readFileSync(configPath, "utf-8")) as { tools?: Record<string, unknown> };
-    tools = Object.keys(cfg.tools ?? {});
+    const cfg = JSON.parse(readFileSync(configPath, "utf-8")) as { tools?: Record<string, Record<string, unknown>> };
+    toolsMap = cfg.tools ?? {};
+    tools = Object.keys(toolsMap);
   } catch (e) {
     lines.push(`⚠ config.json 解析失败（${(e as Error).message}），按空工具清单继续清理`);
   }
@@ -84,6 +89,17 @@ export async function runUninstall(deps: UninstallDeps): Promise<UninstallReport
     }
   } else {
     lines.push("✓ daemon 未在运行（无 daemon.pid）");
+  }
+
+  // 步骤 1.5（TASK-27）：Windows 实测 SIGTERM 为强杀，serve 优雅回收不会运行（含 stale 场景的历次残留）→ 按端口定向回收
+  if (process.platform === "win32") {
+    const kill = deps.killServePort ?? killServePortDefault;
+    const reclaimed: number[] = [];
+    reclaimServePorts(toolsMap, (port) => {
+      reclaimed.push(port);
+      kill(port);
+    });
+    if (reclaimed.length > 0) lines.push(`✓ 已按端口回收 serve 进程（${reclaimed.join(", ")}）`);
   }
 
   // 步骤 2：移除 MCP 注册（红线 1：file 型只删 agentbus 键；cli 型尽力 mcp remove）

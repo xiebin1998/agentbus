@@ -24,6 +24,7 @@ import { acquirePidLock, releasePidLock } from "./pid.js";
 import { QueueManager } from "./queue.js";
 import { knownSenders, loadRegistry, saveRegistry, touchSession, type RegistryData } from "./registry.js";
 import { Router, type RouterConfig } from "./router.js";
+import { ServeManager } from "./serve-manager.js";
 import { buildEnvelope } from "./envelope.js";
 import { resolveTrust } from "./trust.js";
 
@@ -91,6 +92,7 @@ export class Daemon {
   private listener: Listener | null = null;
   private registry: RegistryData | null = null;
   private queues = new QueueManager<QueueItem>(20);
+  private serveManager = new ServeManager({ warn: (m) => this.logger.warn(m) });
   private logger: RotatingLogger;
   private metrics = new MetricsCollector();
   private metricTimer: ReturnType<typeof setInterval> | null = null;
@@ -285,10 +287,32 @@ export class Daemon {
       const toolCfg = this.opts.config.tools[ctx.tool] ?? {};
       const workspace = typeof toolCfg.workspace === "string" ? toolCfg.workspace : process.cwd();
       if (KILO_FAMILY.has(ctx.tool)) {
-        const adapter = new OpenCodeKiloAdapter({
-          binary: typeof toolCfg.binary === "string" ? toolCfg.binary : ctx.tool,
-          workspace,
-        });
+        const binary = typeof toolCfg.binary === "string" ? toolCfg.binary : ctx.tool;
+        const adapter = new OpenCodeKiloAdapter({ binary, workspace });
+        // TASK-27 进阶通道：serve=true 且工具支持 → attach 免冷启动；任何环节失败回退冷启动（可用性优先）
+        if (toolCfg.serve === true && adapter.supportsServe()) {
+          try {
+            const url = await this.serveManager.ensure({
+              binary,
+              workspace,
+              port: typeof toolCfg.serve_port === "number" ? toolCfg.serve_port : 0,
+            });
+            let turn;
+            try {
+              turn = ctx.isNew
+                ? await adapter.attachCreateSession(url, ctx.envelope, ctx.senderName)
+                : await adapter.attachInject(url, ctx.envelope, ctx.sessionId);
+            } catch (e) {
+              turn = { sessionId: null, output: "", exitCode: -1, timedOut: false, error: (e as Error).message };
+            }
+            if (!turn.error) {
+              return { output: turn.output, sessionId: turn.sessionId ?? undefined };
+            }
+            this.logger.warn(`attach 回合失败，回退冷启动：${turn.error}`);
+          } catch (e) {
+            this.logger.warn(`serve 启动失败，回退冷启动：${(e as Error).message}`);
+          }
+        }
         const turn = ctx.isNew
           ? await adapter.createSession(ctx.envelope, ctx.senderName)
           : await adapter.inject(ctx.envelope, ctx.sessionId);
@@ -400,6 +424,7 @@ export class Daemon {
       clearInterval(this.metricTimer);
       this.metricTimer = null;
     }
+    this.serveManager.stopAll();
     void this.listener?.stop();
     releasePidLock(this.pidFile);
     this.logger.info("daemon stopped");

@@ -6,6 +6,10 @@
  * - `--format json` 输出 NDJSON 事件流 → 取末条文本事件（架构 4.6 表）
  * - `--auto` 全自动批准（full 档）；无只读权限档 → readonly 仅信封约束（4.7 回退）
  * - 新会话 id 不由 daemon 预生成，从事件流 session 事件中提取
+ *
+ * TASK-27 进阶通道（架构 5.4）实测 opencode（2026-08-10）：
+ * - `serve --port <n> --hostname <h>` 起无头服务器；`run --attach <url>` 免冷启动注入
+ * - kilo 无 serve 子命令 → supportsServe 仅 opencode 族为真
  */
 import { runCommand, type RunnerResult, type SpawnSpec } from "./base.js";
 
@@ -57,6 +61,30 @@ export class OpenCodeKiloAdapter {
     return this.baseArgs(message, ["--title", sessionName]);
   }
 
+  /** 是否支持 serve 模式（TASK-27 实测：opencode 有 serve 子命令，kilo 无） */
+  supportsServe(): boolean {
+    return this.binary === "opencode";
+  }
+
+  /** serve 无头服务器参数；port 缺省 0 = 随机端口（stdout 打印实际地址） */
+  serveArgs(port = 0, hostname = "127.0.0.1"): string[] {
+    return ["serve", "--port", String(port), "--hostname", hostname];
+  }
+
+  /** attach 建会话参数（full 档）：连已就绪 serve，免冷启动 */
+  attachCreateSessionArgs(serverUrl: string, message: string, sessionName: string): string[] {
+    return this.attachBaseArgs(serverUrl, message, ["--title", sessionName, "--auto"]);
+  }
+
+  /** attach 续接参数：连已就绪 serve + -s 会话续接 */
+  attachInjectArgs(serverUrl: string, message: string, sessionId: string): string[] {
+    return this.attachBaseArgs(serverUrl, message, ["-s", sessionId]);
+  }
+
+  private attachBaseArgs(serverUrl: string, message: string, trailing: string[]): string[] {
+    return ["run", "--attach", serverUrl, "--format", "json", "--dir", this.cfg.workspace, ...trailing, message];
+  }
+
   /** 选项一律置于位置参数消息之前（yargs array 位置参数会吞后续 token） */
   private baseArgs(message: string, trailing: string[] = []): string[] {
     return ["run", "--format", "json", "--dir", this.cfg.workspace, ...trailing, message];
@@ -68,6 +96,16 @@ export class OpenCodeKiloAdapter {
 
   async inject(message: string, sessionId: string): Promise<KiloTurn> {
     return this.runTurn(this.injectArgs(message, sessionId));
+  }
+
+  /** attach 建会话回合（TASK-27：连 serve 免冷启动） */
+  async attachCreateSession(serverUrl: string, message: string, sessionName: string): Promise<KiloTurn> {
+    return this.runTurn(this.attachCreateSessionArgs(serverUrl, message, sessionName));
+  }
+
+  /** attach 续接回合（TASK-27：连 serve 免冷启动） */
+  async attachInject(serverUrl: string, message: string, sessionId: string): Promise<KiloTurn> {
+    return this.runTurn(this.attachInjectArgs(serverUrl, message, sessionId));
   }
 
   private async runTurn(args: string[]): Promise<KiloTurn> {
@@ -134,6 +172,12 @@ export class OpenCodeKiloAdapter {
           return part.text;
         }
       }
+    }
+    // TASK-27 attach 实测形态：{ type:"text", part: { type:"text", text:"..." } }（单数 part）
+    const part = ev.part;
+    if (part && typeof part === "object") {
+      const p = part as Record<string, unknown>;
+      if (p.type === "text" && typeof p.text === "string" && p.text.trim()) return p.text;
     }
     return null;
   }

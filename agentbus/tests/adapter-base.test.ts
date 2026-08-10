@@ -2,6 +2,22 @@
  * TASK-07: Adapter 执行框架 base.ts —— spawn 收集 stdout/stderr + 超时 kill
  */
 import { describe, expect, it } from "vitest";
+import { resolveSpawnTarget } from "../src/adapters/base.js";
+
+describe("resolveSpawnTarget（TASK-27 抽出：长活进程复用 Windows shim 解析）", () => {
+  it("非 win32：原样返回无前缀", () => {
+    expect(resolveSpawnTarget("/usr/bin/opencode", "linux")).toEqual({ cmd: "/usr/bin/opencode", prefix: [], verbatim: false });
+  });
+
+  it("win32 裸名：.cmd shim 经 cmd.exe 套壳（与 runCommand 同源语义）", () => {
+    const r = resolveSpawnTarget("opencode", "win32");
+    expect(r.cmd).toBe("cmd.exe");
+    expect(r.prefix.slice(0, 3)).toEqual(["/d", "/s", "/c"]);
+    expect(r.prefix[3]).toMatch(/opencode(\.(cmd|bat|exe|com))?"?$/i);
+    expect(r.verbatim).toBe(true);
+  });
+});
+
 import { runCommand } from "../src/adapters/base.js";
 import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";

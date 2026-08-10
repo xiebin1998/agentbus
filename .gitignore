@@ -58,3 +58,6 @@ mosquitto/config/acl
 .DS_Store
 Thumbs.db
 ARCHITECTURE.md
+
+# 冒烟/验收临时探针工作目录（不入 git）
+.tmp-probe/

@@ -244,4 +244,22 @@ describe("runUninstall", () => {
     expect(report.ok).toBe(true);
     expect(stopped).toEqual([]);
   });
+
+  it.runIf(process.platform === "win32")("停 daemon 后按 serve_port 定向回收孤儿 serve（TASK-27：Windows SIGTERM 为强杀）", async () => {
+    seedInitProject();
+    const cfgPath = join(root, ".agentbus", "config.json");
+    const cfg = JSON.parse(readFileSync(cfgPath, "utf-8"));
+    cfg.tools.opencode = { serve: true, serve_port: 4599 };
+    writeFileSync(cfgPath, JSON.stringify(cfg), "utf-8");
+    const ports: number[] = [];
+    const report = await runUninstall({
+      projectRoot: root,
+      homeDir: home,
+      stopDaemon: () => true,
+      runner: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+      killServePort: (p) => ports.push(p),
+    });
+    expect(report.ok).toBe(true);
+    expect(ports).toEqual([4599]);
+  });
 });

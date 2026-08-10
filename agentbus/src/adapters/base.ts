@@ -45,6 +45,19 @@ function resolveWindowsCmd(cmd: string, env: Record<string, string | undefined>)
   return { cmd: resolved, prefix: [], verbatim: false };
 }
 
+/**
+ * TASK-27 抽出的纯解析（长活进程 spawn 复用）：
+ * 非 win32 原样返回；win32 裸名经 where.exe 解析全路径，.cmd/.bat 经 cmd.exe 套壳。
+ */
+export function resolveSpawnTarget(
+  cmd: string,
+  platform: NodeJS.Platform = process.platform,
+  env: Record<string, string | undefined> = process.env,
+): { cmd: string; prefix: string[]; verbatim: boolean } {
+  if (platform !== "win32") return { cmd, prefix: [], verbatim: false };
+  return resolveWindowsCmd(cmd, env);
+}
+
 /** cmd 元字符：未引用时会被 cmd.exe 解析（分隔/重定向/变量展开） */
 const CMD_META = /[ \t&|<>^%!()"]/;
 
@@ -68,12 +81,7 @@ export function runCommand(spec: SpawnSpec): Promise<RunnerResult> {
     let timer: NodeJS.Timeout | null = null;
 
     const env = spec.env ? { ...process.env, ...spec.env } : process.env;
-    let cmd = spec.cmd;
-    let prefix: string[] = [];
-    let verbatim = false;
-    if (process.platform === "win32") {
-      ({ cmd, prefix, verbatim } = resolveWindowsCmd(spec.cmd, env));
-    }
+    const { cmd, prefix, verbatim } = resolveSpawnTarget(spec.cmd, process.platform, env);
     // cmd.exe 路径下参数已自行引号转义；非 cmd 路径仍由 libuv 默认加引号
     const args = verbatim ? spec.args.map(escapeCmdArg) : spec.args;
 
