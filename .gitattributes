@@ -1,0 +1,5 @@
+# 托管给终端用户执行的脚本行尾契约（TASK-28）：
+# install.sh 经 curl | bash 在 Linux/macOS 执行，CRLF 会导致语法错误 → 强制 LF
+*.sh text eol=lf
+# PowerShell 脚本保持 CRLF（Windows 惯例，无执行障碍）
+*.ps1 text eol=crlf

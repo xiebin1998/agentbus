@@ -48,4 +48,9 @@ describe("install.sh（macOS/Linux 一键安装）", () => {
     expect(src).toMatch(/18/);
     expect(src).toMatch(/set -e|exit 1/);
   });
+
+  it("LF 行尾（CRLF 的 sh 脚本经 bash 执行会失败；托管给 Linux/macOS 用户）", () => {
+    const src = readFileSync(shPath, "utf-8");
+    expect(src).not.toMatch(/\r/);
+  });
 });
