@@ -1180,6 +1180,20 @@ async def console_page(request: Request):
     return Response(CONSOLE_HTML.read_text(encoding="utf-8"), media_type="text/html; charset=utf-8")
 
 
+# TASK-28：一键安装脚本托管（架构 6.6 / PLAN T24：中心节点静态服务，干净机器一条命令接入的下载源）
+INSTALL_SCRIPTS = {
+    "/install.ps1": (Path(__file__).resolve().parent / "scripts" / "install.ps1", "text/plain; charset=utf-8"),
+    "/install.sh": (Path(__file__).resolve().parent / "scripts" / "install.sh", "text/plain; charset=utf-8"),
+}
+
+
+async def install_script(request: Request):
+    path, media = INSTALL_SCRIPTS[request.url.path]
+    if not path.exists():
+        return JSONResponse({"error": f"安装脚本缺失（{path.name}）"}, status_code=500)
+    return Response(path.read_text(encoding="utf-8"), media_type=media)
+
+
 async def sse_endpoint(request: Request):
     client_id = request.query_params.get("client_id") or request.headers.get("x-client-id", "")
     ns = normalize_ns(request.query_params.get("ns"))
@@ -1274,6 +1288,9 @@ app = Starlette(
         Route("/api/console/metrics/summary", console_metrics_summary, methods=["GET"]),
         # TASK-21：控制台前端页面
         Route("/console", console_page, methods=["GET"]),
+        # TASK-28：一键安装脚本（引导资源，鉴权豁免）
+        Route("/install.ps1", install_script, methods=["GET"]),
+        Route("/install.sh", install_script, methods=["GET"]),
         # TASK-26：团队管理（一团队一账号 ACL）
         Route("/api/console/teams", console_teams_list, methods=["GET"]),
         Route("/api/console/teams", console_team_create, methods=["POST"]),
@@ -1285,7 +1302,7 @@ app = Starlette(
 
 # ─── TASK-25：SSE/控制台接入鉴权（安全基线） ───────────────────────────────
 # 契约：MCP_API_TOKEN 非空时启用——/sse、/messages/*、/console、/api/console/*
-# 须携带 ?token= 或 Authorization: Bearer；/health 开放（监控探针）。
+# 须携带 ?token= 或 Authorization: Bearer；/health 与 /install.*（引导资源，装机时尚无 token）开放。
 # 未设 token 时保持全开放（内网/开发兼容）。
 
 def check_auth_token(enabled: bool, provided: Optional[str]) -> bool:
@@ -1320,7 +1337,12 @@ class TokenAuthMiddleware:
     async def __call__(self, scope, receive, send):
         path = scope.get("path", "") if scope["type"] == "http" else ""
         expected = os.getenv("MCP_API_TOKEN") or ""
-        if scope["type"] != "http" or path.startswith("/health") or not expected:
+        if (
+            scope["type"] != "http"
+            or path.startswith("/health")
+            or path.startswith("/install.")
+            or not expected
+        ):
             await self.inner(scope, receive, send)
             return
         if check_auth_token(True, extract_token(scope)):

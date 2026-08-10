@@ -75,6 +75,42 @@ describe("buildInitConfig 默认值生成", () => {
 });
 
 describe("runInit --yes 全链路（非交互）", () => {
+  it("--yes 未指定 tools：自动探测可接入工具（TASK-28 一键安装契约）", async () => {
+    // 仅 qodercli 与 opencode 已安装，其余未安装
+    const deps = fakeDeps({
+      kilo: { exitCode: 1 },
+      claude: { exitCode: 1 },
+      codex: { exitCode: 1 },
+      hermes: { exitCode: 1 },
+    });
+    const report = await runInit(
+      { yes: true },
+      { projectRoot: root, homeDir: home, runner: deps.runner, spawnDaemon: deps.spawnDaemon },
+    );
+    expect(report.ok).toBe(true);
+    const cfg = JSON.parse(readFileSync(join(root, ".agentbus", "config.json"), "utf-8"));
+    expect(Object.keys(cfg.tools).sort()).toEqual(["opencode", "qoder"]);
+    expect(cfg.default_tool).toBe("qoder");
+  });
+
+  it("--yes 自动探测全部未安装：失败且不写配置", async () => {
+    const deps = fakeDeps({
+      qodercli: { exitCode: 1 },
+      kilo: { exitCode: 1 },
+      opencode: { exitCode: 1 },
+      claude: { exitCode: 1 },
+      codex: { exitCode: 1 },
+      hermes: { exitCode: 1 },
+    });
+    const report = await runInit(
+      { yes: true },
+      { projectRoot: root, homeDir: home, runner: deps.runner, spawnDaemon: deps.spawnDaemon },
+    );
+    expect(report.ok).toBe(false);
+    expect(report.lines.join("\n")).toMatch(/未安装|未探测到/);
+    expect(existsSync(join(root, ".agentbus", "config.json"))).toBe(false);
+  });
+
   async function init(overrides: Record<string, { exitCode?: number }> = {}) {
     const deps = fakeDeps(overrides);
     const report = await runInit(

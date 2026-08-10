@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { detectClis, defaultCliRunner, type CliRunner } from "./detect.js";
+import { detectClis, defaultCliRunner, TOOL_BINARIES, type CliRunner } from "./detect.js";
 import { cliRemoveArgs, planMcpRegistration, registerMcpFile, type McpScope } from "./mcp-registry.js";
 import { installSkill, SKILL_DIRS } from "./skill.js";
 import { AGENTBUS_BLOCK, upsertAgentsMdBlock } from "./agents-md.js";
@@ -111,10 +111,22 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   // 步骤 1：交互确认（--yes 全部取默认/传参）
   let answers: Required<Pick<InitCliOptions, "tools" | "scope" | "ns" | "broker" | "sseUrl">> & { clientId: string };
   if (opts.yes) {
+    // TASK-28 一键安装契约：--yes 未指定工具时自动探测全部已知 CLI，取已安装集
+    let tools = opts.tools ?? [];
+    if (tools.length === 0) {
+      const scan = await detectClis(Object.keys(TOOL_BINARIES), deps.runner);
+      tools = scan.filter((d) => d.installed).map((d) => d.tool);
+      if (tools.length > 0) {
+        lines.push(`自动探测到可接入工具：${tools.join(", ")}`);
+      } else {
+        lines.push("✗ 未探测到任何已安装的 AI CLI（qodercli/kilo/opencode/claude/codex/hermes），请先安装后重试");
+        return { ok: false, lines };
+      }
+    }
     answers = {
       ns: opts.ns ?? "default",
       clientId: opts.clientId ?? "",
-      tools: opts.tools ?? [],
+      tools,
       scope: opts.scope ?? "project",
       broker: opts.broker ?? "localhost:18830",
       sseUrl: opts.sseUrl ?? "",
