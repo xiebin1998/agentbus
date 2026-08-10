@@ -4,6 +4,7 @@
  * TASK-12：init/doctor/status 落地；TASK-14：uninstall 落地；daemon → TASK-06
  */
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkbox, input, select } from "@inquirer/prompts";
@@ -19,6 +20,7 @@ import { runInit, type Prompter } from "./init.js";
 import { runIsolateApply, runIsolateRemove, runIsolateStatus } from "./isolate.js";
 import type { McpScope } from "./mcp-registry.js";
 import { readDaemonStatus, readSessionsSummary } from "./status.js";
+import { isDaemonRunning, planUpgrade, resolveUpdateSource } from "./update.js";
 import { runUninstall } from "./uninstall.js";
 
 const pkg = JSON.parse(
@@ -350,6 +352,48 @@ export function buildProgram(): Command {
     .action(async (opts: { config?: string }) => {
       const report = await runIsolateStatus(dirname(resolveWorkDir(opts.config)));
       for (const line of report.lines) console.log(line);
+    });
+
+  // 客户端一键更新：npm 升级 → 停旧 daemon（不可重跑 iwr 安装脚本，init --yes 会覆盖 config；见 src/update.ts）
+  program
+    .command("update")
+    .description("一键更新：npm 升级最新版 → 停旧 daemon（随后 daemon start 拉起新版）；配置/MCP/skill 不动")
+    .option("-c, --config <path>", "config.json 路径（默认 .agentbus/config.json）")
+    .action((opts: { config?: string }) => {
+      const pkg = resolveUpdateSource(process.env);
+      for (const step of planUpgrade(pkg).steps) {
+        console.log(`[update] ${step.cmd} ${step.args.join(" ")}`);
+        // Windows 上 npm 解析为 npm.cmd：需 shell 否则 ENOENT
+        const r = spawnSync(step.cmd, step.args, { stdio: "inherit", shell: process.platform === "win32" });
+        if (r.status !== 0) {
+          console.error(`[update] 升级失败（exit ${r.status}）；离线环境可用 AGENTBUS_PACKAGE 指本地包后重试`);
+          process.exit(1);
+        }
+      }
+      const workDir = resolveWorkDir(opts.config);
+      const st = isDaemonRunning(workDir);
+      if (st.running) {
+        try {
+          process.kill(st.pid!, "SIGTERM");
+        } catch (e) {
+          console.error(`[update] 无法停止 daemon pid ${st.pid}: ${(e as Error).message}`);
+          process.exit(1);
+          return;
+        }
+        // 与 daemon stop 同口径：Windows SIGTERM 为强杀，按 config 端口定向回收孤儿 serve
+        if (process.platform === "win32") {
+          try {
+            const cfg = loadConfig(join(workDir, "config.json"));
+            reclaimServePorts(cfg.tools, (port) => killServePort(port, { warn: (m) => console.warn(m) }));
+          } catch {
+            /* config 不可读时跳过回收 */
+          }
+        }
+        console.log(`[update] 旧 daemon（pid ${st.pid}）已停止，运行 agentbus daemon start 拉起新版（自启机器下次登录自动生效）`);
+      } else {
+        console.log("[update] daemon 未运行，无需重启");
+      }
+      console.log("[update] 更新完成，可运行 agentbus doctor 验证");
     });
 
   return program;

@@ -153,11 +153,25 @@ GET /sse    （Header: x-client-id: qwenpaw, Authorization: Bearer <token>）
 
 流程：连接 SSE → `register_agent`（必须先注册）→ `send_message` 发送 / 收 SSE 推送。
 
+### 客户端更新
+
+在已接入的项目目录执行一条命令即可：
+
+```bash
+agentbus update        # npm 升级最新版 → 停旧 daemon；随后 agentbus daemon start 拉起新版
+agentbus doctor        # 更新后体检确认
+```
+
+> ⚠️ **不要重跑 `iwr …/install.ps1 | iex` 来更新**：安装脚本内的 `init --yes` 会用默认值覆盖既有
+> `.agentbus/config.json`（broker 地址/团队凭证/命名空间）。update 只动 npm 包与 daemon 进程，
+> 配置、MCP 注册、skill 均不受影响；离线环境同样支持 `AGENTBUS_PACKAGE` 指本地包。
+
 ### CLI 命令参考
 
 | 命令 | 说明 |
 |---|---|
 | `agentbus init [--yes] [--tools …]` | 初始化接入（写配置、注册 MCP、装 skill、拉起 daemon） |
+| `agentbus update` | 一键更新（npm 升级 → 停旧 daemon；配置/MCP/skill 不动） |
 | `agentbus doctor` | 环境体检（配置/broker/SSE/CLI/MCP/daemon/隔离） |
 | `agentbus status` | daemon 状态与会话摘要 |
 | `agentbus uninstall [--yes]` | 完整卸载（停 daemon、移除注册/skill/配置，零残留） |
