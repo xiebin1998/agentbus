@@ -61,3 +61,6 @@ ARCHITECTURE.md
 
 # 冒烟/验收临时探针工作目录（不入 git）
 .tmp-probe/
+PLAN.md
+TASKS.md
+.superpowers/
