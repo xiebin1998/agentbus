@@ -135,6 +135,13 @@ describe("回合执行与输出提取", () => {
     const turn = await adapter.injectWith("hi", "s1", "full");
     expect(turn.error).toContain("Not logged in");
   });
+
+  it("spawn 失败（binary 缺失 ENOENT）：error 保真不被逻辑检查覆写（TASK-29 实测缺陷）", async () => {
+    const { run } = stubRun({ exitCode: -1, stdout: "", stderr: "", error: "spawn 失败: spawn no-such-bin ENOENT" });
+    const adapter = new ClaudeAdapter(cfg, run);
+    const turn = await adapter.injectWith("hi", "s1", "full");
+    expect(turn.error).toContain("ENOENT");
+  });
 });
 
 describe("extractText 边界", () => {

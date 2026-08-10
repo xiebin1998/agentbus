@@ -120,6 +120,13 @@ describe("回合执行与输出提取", () => {
     const turn = await adapter.inject("hi", "s1");
     expect(turn.error).toContain("Not logged in");
   });
+
+  it("spawn 失败（binary 缺失 ENOENT）：error 保真不被逻辑检查覆写（TASK-29 实测缺陷）", async () => {
+    const { run } = stubRun({ exitCode: -1, stdout: "", stderr: "", error: "spawn 失败: spawn no-such-bin ENOENT" });
+    const adapter = new QoderAdapter(cfg, run);
+    const turn = await adapter.inject("hi", "s1");
+    expect(turn.error).toContain("ENOENT"); // 回归：此前被 detectLogicalError 覆写成 undefined → daemon 静默“成功”
+  });
 });
 
 describe("extractText 边界", () => {

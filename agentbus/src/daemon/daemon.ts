@@ -25,6 +25,7 @@ import { QueueManager } from "./queue.js";
 import { knownSenders, loadRegistry, saveRegistry, touchSession, type RegistryData } from "./registry.js";
 import { Router, type RouterConfig } from "./router.js";
 import { ServeManager } from "./serve-manager.js";
+import { SessionLock } from "./session-lock.js";
 import { buildEnvelope } from "./envelope.js";
 import { resolveTrust } from "./trust.js";
 
@@ -92,6 +93,8 @@ export class Daemon {
   private listener: Listener | null = null;
   private registry: RegistryData | null = null;
   private queues = new QueueManager<QueueItem>(20);
+  /** TASK-29：同一发件人在同一工具的回合串行（并发不串话）；异会话并行 */
+  private sessionLock = new SessionLock();
   private serveManager = new ServeManager({ warn: (m) => this.logger.warn(m) });
   private logger: RotatingLogger;
   private metrics = new MetricsCollector();
@@ -226,7 +229,15 @@ export class Daemon {
       return;
     }
 
-    void this.injectAndDrain(decision.tool, entry.sessionId, message!, isNew);
+    void this.runLocked(decision.tool, entry.sessionId, message!, isNew);
+  }
+
+  /** 按 工具|发件人 串行排队（同源同会话回合不重叠）；限速队列续排也走同一入口 */
+  private runLocked(tool: string, sessionId: string, msg: BusMessage, isNew: boolean): void {
+    const key = `${tool}|${msg.from}`;
+    void this.sessionLock
+      .run(key, () => this.injectAndDrain(tool, sessionId, msg, isNew))
+      .catch((e: Error) => this.logger.error(`回合链异常: ${e.message}`));
   }
 
   private async injectAndDrain(tool: string, sessionId: string, msg: BusMessage, isNew: boolean): Promise<void> {
@@ -278,7 +289,7 @@ export class Daemon {
     // 消费后按 FIFO 续排下一条
     this.router!.dequeue(msg.from);
     const next = this.queues.pop(tool);
-    if (next) void this.injectAndDrain(next.tool, next.sessionId, next.msg, false);
+    if (next) this.runLocked(next.tool, next.sessionId, next.msg, false);
   }
 
   /** 缺省注入器：按工具名选适配器执行真实回合 */

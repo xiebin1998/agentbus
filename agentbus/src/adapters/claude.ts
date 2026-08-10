@@ -88,8 +88,9 @@ export class ClaudeAdapter {
     } else if (result.exitCode !== 0 && !error) {
       const tail = result.stderr.trim().split("\n").slice(-3).join("\n");
       error = `claude 退出码 ${result.exitCode}${tail ? `：${tail}` : ""}`;
-    } else {
+    } else if (result.exitCode === 0 && !error) {
       // 实测陷阱：未登录等失败时进程仍 exit 0，但 JSON 携带 is_error=true
+      // 仅 exit 0 且无既有 error 时做逻辑检查（TASK-29 实测缺陷：spawn 失败会被覆写成 undefined）
       error = this.detectLogicalError(result.stdout);
     }
     return { sessionId, output, exitCode: result.exitCode, timedOut: result.timedOut, error };

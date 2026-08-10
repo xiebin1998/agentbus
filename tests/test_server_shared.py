@@ -144,3 +144,40 @@ def test_start_shared_client_tls_without_ca(monkeypatch):
     )
     server.start_shared_client()
     assert created[0].tls_ca is None  # 未配 CA → 信任系统证书链
+
+
+# ─── TASK-29：出站身份独立无互踢（架构 5.5-B 身份红线，PLAN T25 验收） ─────
+
+@pytest.fixture
+def clean_sessions():
+    """快照/恢复模块级路由表，防跨用例污染"""
+    saved_sessions = dict(server._sessions)
+    saved_info = dict(server._agent_info)
+    yield
+    server._sessions.clear()
+    server._sessions.update(saved_sessions)
+    server._agent_info.clear()
+    server._agent_info.update(saved_info)
+
+
+def test_independent_client_ids_do_not_evict_each_other(clean_sessions, monkeypatch):
+    """hermes 出站独立身份（<项目>-hermes）：一方下线不得影响另一方（架构 5.5-B）"""
+    loop = asyncio.new_event_loop()
+    proj = server.AgentSession("fe-dev", loop, "iot")
+    hermes = server.AgentSession("fe-dev-hermes", loop, "iot")
+    proj.start()
+    hermes.start()
+    assert "iot/fe-dev" in server._sessions
+    assert "iot/fe-dev-hermes" in server._sessions
+
+    # hermes 侧 SSE 断线的 finally 清理：仅移除自身键
+    hermes.close()
+    assert "iot/fe-dev-hermes" not in server._sessions
+    assert "iot/fe-dev" in server._sessions  # 项目会话不受牵连
+
+    # 会话侧无自有连接可关：close 不得触碰共享客户端（互踢的物理根源已消除）
+    sentinel = object()
+    monkeypatch.setattr(server, "_shared_client", sentinel)
+    proj.close()
+    assert server._shared_client is sentinel
+    loop.close()

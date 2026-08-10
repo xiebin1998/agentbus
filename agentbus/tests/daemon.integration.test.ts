@@ -309,3 +309,72 @@ describe("一期安全验收（架构第 10 章）", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+describe("TASK-29：并发不串话（同一发件人回合串行，PLAN T25）", () => {
+  it("同源 3 条消息同时到达：回合严格按到达顺序串行，无并发重叠", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-conc-"));
+    let active = 0;
+    let maxActive = 0;
+    const order: string[] = [];
+    const daemon = new Daemon({
+      config: makeConfig({ ack: false, rate_limit: 100 }),
+      workDir: dir,
+      inject: async (ctx) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((r) => setTimeout(r, 60)); // 慢回合放大竞争窗口
+        order.push(ctx.msg.id);
+        active -= 1;
+        return { output: "ok" };
+      },
+    });
+    expect(daemon.start()).toMatchObject({ started: true });
+    await waitFor(() => daemon.status().connected);
+
+    for (let i = 1; i <= 3; i++) {
+      publishToDaemon({ id: `msg-conc-${i}`, from: "be-svc", to: "fe-test", text: `第${i}条` });
+    }
+    await waitFor(() => order.length === 3, 8000);
+    expect(maxActive).toBe(1); // 不串话核心：同一会话零重叠
+    expect(order).toEqual(["msg-conc-1", "msg-conc-2", "msg-conc-3"]);
+
+    daemon.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("TASK-29：重连自愈（broker 抖动后自动恢复，PLAN T25）", () => {
+  it("broker 断连重启后 daemon 自动重连并继续注入", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-recon-"));
+    const records: Recorded[] = [];
+    const daemon = new Daemon({
+      config: makeConfig({ ack: false }),
+      workDir: dir,
+      inject: async (ctx) => {
+        records.push({ ctx });
+        return { output: "ok" };
+      },
+    });
+    expect(daemon.start()).toMatchObject({ started: true });
+    await waitFor(() => daemon.status().connected);
+
+    // broker 抖动：先关 aedes（断开全部客户端）再关 TCP 监听，否则 close 互相等待挂死
+    await new Promise<void>((resolve) => broker.close(() => resolve()));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(daemon.status().connected).toBe(false);
+
+    // 同端口重建 broker（mqtt.js reconnectPeriod=2s 自动恢复）
+    broker = aedes();
+    server = createServer(broker.handle);
+    await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
+    await waitFor(() => daemon.status().connected, 15_000);
+
+    publishToDaemon({ id: "msg-recon-1", from: "be-svc", to: "fe-test", text: "重连后第一条" });
+    await waitFor(() => records.length === 1, 8000);
+    expect(records[0]!.ctx.msg.id).toBe("msg-recon-1");
+
+    daemon.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }, 20_000);
+});
