@@ -32,6 +32,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -233,6 +234,70 @@ class NamespaceRegistry:
     def list(self) -> List[dict]:
         with self._lock:
             return [dict(v) for v in self._data.values()]
+
+
+# ─── TASK-26：账号/团队管理（一团队一账号 + topic 前缀 ACL） ─────────────
+
+_TEAM_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")  # 同 ns 命名规则（架构 3.1.1）
+
+
+def team_broker_user(team_name: str) -> str:
+    """一团队一账号：broker 账号名 = team-<团队名>"""
+    return f"team-{team_name}"
+
+
+def render_broker_acl(hub_user: str, teams: List[dict]) -> str:
+    """渲染 mosquitto ACL 文件：hub 账号全量；团队账号仅本 ns
+    channel readwrite + metric write（跨团队 publish 被 broker 拒，验收项）"""
+    lines = [
+        "# AgentBus broker ACL（TASK-26 一团队一账号；sync-broker-acl 脚本生成，勿手改）",
+        "# hub 共享连接：全量权限",
+        f"user {hub_user}",
+        "topic readwrite #",
+        "",
+    ]
+    for t in teams:
+        ns = t["name"]
+        lines += [
+            f"user {team_broker_user(ns)}",
+            f"topic readwrite /phnix/ai/channel/{ns}/#",
+            f"topic write /phnix/ai/metric/{ns}/#",
+            "",
+        ]
+    return "\n".join(lines)
+
+
+class TeamStore:
+    """团队登记（团队 ↔ ns 绑定；内存态，与 ns/权限登记一致）"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._data: Dict[str, dict] = {}
+
+    def create(self, name: str, members: Optional[List[str]] = None) -> Optional[dict]:
+        name = (name or "").strip()
+        if not _TEAM_NAME_RE.match(name):
+            return None
+        with self._lock:
+            if name in self._data:
+                return None
+            entry = {
+                "name": name,
+                "broker_user": team_broker_user(name),
+                "members": [m.strip() for m in (members or [])
+                            if isinstance(m, str) and m.strip()],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self._data[name] = entry
+            return dict(entry)
+
+    def delete(self, name: str) -> bool:
+        with self._lock:
+            return self._data.pop(name, None) is not None
+
+    def list(self) -> Dict[str, dict]:
+        with self._lock:
+            return {k: dict(v) for k, v in self._data.items()}
 
 
 def _ns_of(key: str) -> str:
@@ -1157,6 +1222,42 @@ async def hub_lifespan(app):
     stop_shared_client()
 
 
+_teams_store = TeamStore()
+
+
+async def console_teams_list(request: Request):
+    """团队页：团队清单（TASK-26）"""
+    return JSONResponse({"teams": list(_teams_store.list().values())})
+
+
+async def console_team_create(request: Request):
+    """团队页：创建团队（团队名即 ns，broker 账号 team-<名>，ACL 由同步脚本落地）"""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "请求体须为 JSON 对象"}, status_code=400)
+    body = body or {}
+    name = (body.get("name") or "").strip()
+    if not _TEAM_NAME_RE.match(name):
+        return JSONResponse(
+            {"error": "团队名须为小写字母/数字/中划线（同 ns 命名规则）"}, status_code=400)
+    members = body.get("members", [])
+    if not isinstance(members, list):
+        return JSONResponse({"error": "members 须为字符串数组"}, status_code=400)
+    entry = _teams_store.create(name, members=members)
+    if entry is None:
+        return JSONResponse({"error": f"团队已存在: {name}"}, status_code=409)
+    return JSONResponse({"status": "created", "team": entry})
+
+
+async def console_team_delete(request: Request):
+    """团队页：删除团队（broker 账号/ACL 需再跑同步脚本才会失效）"""
+    name = request.path_params["name"]
+    if _teams_store.delete(name):
+        return JSONResponse({"status": "deleted", "name": name})
+    return JSONResponse({"error": f"团队不存在: {name}"}, status_code=404)
+
+
 app = Starlette(
     routes=[
         Route("/health", health),
@@ -1173,6 +1274,10 @@ app = Starlette(
         Route("/api/console/metrics/summary", console_metrics_summary, methods=["GET"]),
         # TASK-21：控制台前端页面
         Route("/console", console_page, methods=["GET"]),
+        # TASK-26：团队管理（一团队一账号 ACL）
+        Route("/api/console/teams", console_teams_list, methods=["GET"]),
+        Route("/api/console/teams", console_team_create, methods=["POST"]),
+        Route("/api/console/teams/{name}", console_team_delete, methods=["DELETE"]),
     ],
     lifespan=hub_lifespan,
 )

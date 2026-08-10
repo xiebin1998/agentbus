@@ -50,6 +50,9 @@ mosquitto/log/
 # TASK-25：broker 密钥/密码文件不入 git
 mosquitto/certs/
 mosquitto/config/passwd
+# TASK-26：团队账号凭证与生成的 ACL 不入 git
+mosquitto/team-accounts.json
+mosquitto/config/acl
 
 # OS
 .DS_Store

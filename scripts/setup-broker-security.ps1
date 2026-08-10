@@ -73,6 +73,18 @@ if ($LASTEXITCODE -ne 0) { throw "mosquitto_passwd 失败" }
 docker run --rm -v "${cfgDir}:/mosquitto/config" eclipse-mosquitto:2 `
     chmod 644 /mosquitto/config/passwd
 
+# 初始 ACL（TASK-26）：仅 hub 账号全量；团队账号由 scripts/sync-broker-acl.ps1 追加
+$aclFile = Join-Path $cfgDir "acl"
+if (-not (Test-Path $aclFile)) {
+    Set-Content -Path $aclFile -Encoding utf8 -Value @(
+        "# AgentBus broker ACL（TASK-26 一团队一账号；sync-broker-acl 脚本生成，勿手改）",
+        "# hub 共享连接：全量权限",
+        "user $User",
+        "topic readwrite #",
+        ""
+    )
+}
+
 Write-Host ""
 Write-Host "完成。请同步以下凭证到 .env / daemon config.json：" -ForegroundColor Green
 Write-Host "  MQTT_USERNAME=$User"
