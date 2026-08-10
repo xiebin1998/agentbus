@@ -6,6 +6,7 @@
   "bin": {
     "agentbus": "dist/bin.js"
   },
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=18"
   },

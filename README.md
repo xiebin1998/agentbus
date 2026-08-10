@@ -268,9 +268,10 @@ agentbus/
 │   ├── src/               # cli/config/protocol/daemon/adapters/init/doctor/isolate…
 │   └── tests/             # vitest 单测与集成测试
 ├── docs/                  # 验收报告
-└── README.md
+├── README.md
+└── LICENSE                # Apache License 2.0
 ```
 
 ## 许可证
 
-MIT
+[Apache License 2.0](LICENSE)
