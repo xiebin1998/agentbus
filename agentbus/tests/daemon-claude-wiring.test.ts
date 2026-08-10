@@ -109,7 +109,7 @@ describe("defaultInject claude 分发", { timeout: 30000 }, () => {
     // 会话复用：续接使用首条生成的 sessionId
     expect(calls[1]!.args[1]).toBe(calls[0]!.args[1]);
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -127,7 +127,7 @@ describe("defaultInject claude 分发", { timeout: 30000 }, () => {
     await waitFor(() => calls.length >= 1);
     expect(calls[0]!.args[2]).toBe("full");
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -146,7 +146,7 @@ describe("defaultInject claude 分发", { timeout: 30000 }, () => {
     await waitFor(() => ctorConfigs.length >= 1);
     expect(ctorConfigs[0]).toMatchObject({ binary: "claude-nightly", workspace: "/ws" });
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 });

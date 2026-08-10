@@ -28,6 +28,7 @@ import { ServeManager } from "./serve-manager.js";
 import { SessionLock } from "./session-lock.js";
 import { buildEnvelope } from "./envelope.js";
 import { resolveTrust } from "./trust.js";
+import { applyReadonly, removeReadonly } from "../isolate.js";
 
 /** 注入上下文：信封已按信任级别包装；注入器返回回合输出（代回的原料） */
 export interface InjectContext {
@@ -95,6 +96,8 @@ export class Daemon {
   private queues = new QueueManager<QueueItem>(20);
   /** TASK-29：同一发件人在同一工具的回合串行（并发不串话）；异会话并行 */
   private sessionLock = new SessionLock();
+  /** TASK-30：隔离引用计数（同 workspace 并发回合共享隔离，归零才解除） */
+  private isolateStates = new Map<string, { count: number; chain: Promise<void> }>();
   private serveManager = new ServeManager({ warn: (m) => this.logger.warn(m) });
   private logger: RotatingLogger;
   private metrics = new MetricsCollector();
@@ -247,6 +250,12 @@ export class Daemon {
     const envelope = buildEnvelope(msg, mode);
     const senderName = msg.from.includes("/") ? msg.from.slice(msg.from.indexOf("/") + 1) : msg.from;
 
+    // TASK-30 隔离层（可选）：readonly 回合在 OS 层物理禁写，参数层被绕过时仍安全
+    let isolated = false;
+    if (cfg.isolation && mode === "readonly") {
+      isolated = await this.isolateAcquire(this.resolveWorkspace(tool));
+    }
+
     let output = "";
     let failed = false;
     let failReason = "";
@@ -267,6 +276,8 @@ export class Daemon {
       failed = true;
       failReason = (e as Error).message;
       this.logger.error(`注入 ${tool} 失败: ${failReason}`);
+    } finally {
+      if (isolated) this.isolateRelease(this.resolveWorkspace(tool));
     }
     // 注入结果计数（TASK-19：注入成功率指标源）
     this.metrics.count(failed ? "injected_fail" : "injected_ok");
@@ -292,11 +303,50 @@ export class Daemon {
     if (next) this.runLocked(next.tool, next.sessionId, next.msg, false);
   }
 
+  /** 会话工作目录：tools.<工具>.workspace 配置优先，缺省当前目录 */
+  private resolveWorkspace(tool: string): string {
+    const toolCfg = this.opts.config.tools[tool] ?? {};
+    return typeof toolCfg.workspace === "string" ? toolCfg.workspace : process.cwd();
+  }
+
+  /** TASK-30：施加隔离（count 0→1 时真正 apply）；同 workspace 的 acquire/release 串行防竞态 */
+  private isolateAcquire(ws: string): Promise<boolean> {
+    const st = this.isolateStates.get(ws) ?? { count: 0, chain: Promise.resolve() };
+    this.isolateStates.set(ws, st);
+    const task = st.chain.then(async () => {
+      if (st.count === 0) {
+        const r = await applyReadonly(ws);
+        if (!r.ok) {
+          this.logger.warn(`隔离施加失败，降级仅参数层防护: ${r.lines.join("；")}`);
+          return false;
+        }
+      }
+      st.count += 1;
+      return true;
+    });
+    st.chain = task.then(() => undefined, () => undefined);
+    return task.catch(() => false);
+  }
+
+  /** TASK-30：解除隔离（count 归零时真正 remove） */
+  private isolateRelease(ws: string): void {
+    const st = this.isolateStates.get(ws);
+    if (!st) return;
+    const task = st.chain.then(async () => {
+      st.count = Math.max(0, st.count - 1);
+      if (st.count === 0) {
+        const r = await removeReadonly(ws);
+        if (!r.ok) this.logger.warn(`隔离解除失败（可手动 agentbus isolate remove）: ${r.lines.join("；")}`);
+      }
+    });
+    st.chain = task.then(() => undefined, () => undefined);
+  }
+
   /** 缺省注入器：按工具名选适配器执行真实回合 */
   private defaultInject(): InjectHandler {
     return async (ctx) => {
       const toolCfg = this.opts.config.tools[ctx.tool] ?? {};
-      const workspace = typeof toolCfg.workspace === "string" ? toolCfg.workspace : process.cwd();
+      const workspace = this.resolveWorkspace(ctx.tool);
       if (KILO_FAMILY.has(ctx.tool)) {
         const binary = typeof toolCfg.binary === "string" ? toolCfg.binary : ctx.tool;
         const adapter = new OpenCodeKiloAdapter({ binary, workspace });
@@ -429,17 +479,18 @@ export class Daemon {
     );
   }
 
-  stop(): void {
+  /** 异步停止：resolve 于 MQTT 关闭完成后（期间仍有 offline 日志），resolve 后 workDir 可安全删除 */
+  async stop(): Promise<void> {
     if (!this.started) return;
+    this.started = false; // 先行置位：幂等防重入，关闭期间的日志照常落盘
     if (this.metricTimer) {
       clearInterval(this.metricTimer);
       this.metricTimer = null;
     }
     this.serveManager.stopAll();
-    void this.listener?.stop();
+    await this.listener?.stop();
     releasePidLock(this.pidFile);
     this.logger.info("daemon stopped");
-    this.started = false;
   }
 
   status(): DaemonStatus {

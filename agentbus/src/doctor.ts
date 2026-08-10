@@ -164,9 +164,36 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
 
     // 5. MCP 注册回验（红线 7）
     checks.push(await verifyMcpRegistrations(config, deps));
+
+    // 6. 隔离工具链（TASK-30）：启用时验证 OS 级只读命令可用（win32 icacls / 其他 chmod）
+    if (config.isolation) {
+      const probe =
+        process.platform === "win32"
+          ? { bin: "icacls", args: [deps.projectRoot] }
+          : { bin: "chmod", args: ["--version"] };
+      if (!deps.runner) {
+        checks.push({ name: "隔离", ok: true, detail: "已启用，⚠ 无执行器，跳过工具链验证" });
+      } else {
+        try {
+          const r = await deps.runner(probe.bin, probe.args);
+          checks.push({
+            name: "隔离",
+            ok: r.exitCode === 0,
+            detail:
+              r.exitCode === 0
+                ? "已启用，工具链可用（readonly 回合物理禁写）"
+                : `${probe.bin} 不可用：${r.stderr.trim().slice(0, 80) || "exit " + r.exitCode}`,
+          });
+        } catch {
+          checks.push({ name: "隔离", ok: false, detail: `${probe.bin} 探测执行失败` });
+        }
+      }
+    } else {
+      checks.push({ name: "隔离", ok: true, detail: "未启用（可选：config 设 isolation: true 启用 readonly 回合 OS 层物理禁写）" });
+    }
   }
 
-  // 6. daemon 存活
+  // 7. daemon 存活
   let pidAlive = false;
   let pidDetail = "无 daemon.pid（agentbus daemon start 未运行）";
   try {

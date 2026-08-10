@@ -16,6 +16,7 @@ import { killServePort, reclaimServePorts } from "./daemon/serve-manager.js";
 import { detectClis, TOOL_BINARIES } from "./detect.js";
 import { runDoctor } from "./doctor.js";
 import { runInit, type Prompter } from "./init.js";
+import { runIsolateApply, runIsolateRemove, runIsolateStatus } from "./isolate.js";
 import type { McpScope } from "./mcp-registry.js";
 import { readDaemonStatus, readSessionsSummary } from "./status.js";
 import { runUninstall } from "./uninstall.js";
@@ -210,8 +211,8 @@ export function buildProgram(): Command {
       console.log(result.reason);
       console.log(`订阅 /phnix/ai/channel/${config.ns}/${config.client_id}/message（Ctrl+C 退出）`);
       const shutdown = () => {
-        d.stop();
-        process.exit(0);
+        // stop 异步：等 MQTT 关闭完成再退，避免关闭日志丢失
+        void d.stop().finally(() => process.exit(0));
       };
       process.on("SIGINT", shutdown);
       process.on("SIGTERM", shutdown);
@@ -318,6 +319,37 @@ export function buildProgram(): Command {
       const s = await runAutostartStatus(autostartSpec(opts));
       console.log(`${s.registered ? "✓" : "✗"} ${s.detail}`);
       if (!s.registered) process.exit(1);
+    });
+
+  // TASK-30：OS 级隔离（架构 4.7 三层防线之隔离层，手动锁/解锁入口）
+  const isolate = program
+    .command("isolate")
+    .description("工作目录 OS 级只读隔离（readonly 回合物理禁写的手动入口与恢复手段）");
+  isolate
+    .command("apply")
+    .description("对工作目录施加只读隔离（Windows icacls deny 写 / Linux chmod a-w，幂等）")
+    .option("-c, --config <path>", "config.json 路径（默认 .agentbus/config.json）")
+    .action(async (opts: { config?: string }) => {
+      const report = await runIsolateApply(dirname(resolveWorkDir(opts.config)));
+      for (const line of report.lines) console.log(line);
+      if (!report.ok) process.exit(1);
+    });
+  isolate
+    .command("remove")
+    .description("解除只读隔离（daemon 被强杀残留时的解锁出口，幂等）")
+    .option("-c, --config <path>", "config.json 路径（默认 .agentbus/config.json）")
+    .action(async (opts: { config?: string }) => {
+      const report = await runIsolateRemove(dirname(resolveWorkDir(opts.config)));
+      for (const line of report.lines) console.log(line);
+      if (!report.ok) process.exit(1);
+    });
+  isolate
+    .command("status")
+    .description("查询工作目录当前隔离状态")
+    .option("-c, --config <path>", "config.json 路径（默认 .agentbus/config.json）")
+    .action(async (opts: { config?: string }) => {
+      const report = await runIsolateStatus(dirname(resolveWorkDir(opts.config)));
+      for (const line of report.lines) console.log(line);
     });
 
   return program;

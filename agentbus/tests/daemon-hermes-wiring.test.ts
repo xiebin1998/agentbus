@@ -110,7 +110,7 @@ describe("defaultInject hermes 分发（按名建/续）", { timeout: 30000 }, (
     // 按名续接：会话名不变（区别于 UUID 注册表语义）
     expect(calls[1]!.args[1]).toBe("be-svc");
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -142,7 +142,7 @@ describe("defaultInject hermes 分发（按名建/续）", { timeout: 30000 }, (
       remote: { host: "10.1.5.200", user: "root", sshKey: "~/.ssh/id_ed25519" },
     });
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 });

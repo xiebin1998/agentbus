@@ -105,7 +105,7 @@ describe("daemon 端到端：路由 + ack + 会话", () => {
   });
 
   afterAll(async () => {
-    daemon.stop();
+    await daemon.stop();
     sender.client.end(true);
     rmSync(dir, { recursive: true, force: true });
   });
@@ -151,11 +151,11 @@ describe("daemon 端到端：路由 + ack + 会话", () => {
     expect(records.length).toBe(2);
   });
 
-  it("第二次 start 被 pid 锁拒绝；stop 清理", () => {
+  it("第二次 start 被 pid 锁拒绝；stop 清理", async () => {
     const second = new Daemon({ config: makeConfig(), workDir: dir });
     expect(second.start().started).toBe(false);
     expect(existsSync(join(dir, "daemon.pid"))).toBe(true);
-    daemon.stop();
+    await daemon.stop();
     expect(existsSync(join(dir, "daemon.pid"))).toBe(false);
   });
 });
@@ -185,7 +185,7 @@ describe("代回通道分支语义", () => {
     await new Promise((r) => setTimeout(r, 400));
     expect(sender.received.filter((m) => m.type === "text")).toEqual([]); // 无代回
 
-    daemon.stop();
+    await daemon.stop();
     sender.client.end(true);
     rmSync(dir, { recursive: true, force: true });
   });
@@ -211,7 +211,7 @@ describe("代回通道分支语义", () => {
     expect(notice.reply_to).toBe("msg-fail-1");
     expect(notice.expect_reply).toBe(false);
 
-    daemon.stop();
+    await daemon.stop();
     sender.client.end(true);
     rmSync(dir, { recursive: true, force: true });
   });
@@ -237,7 +237,7 @@ describe("代回通道分支语义", () => {
     expect(records[0]!.ctx.envelope.split("\n")[0]).toContain("mode=full");
     expect(records[0]!.ctx.envelope).not.toContain("禁止修改任何文件");
 
-    daemon.stop();
+    await daemon.stop();
     sender.client.end(true);
     rmSync(dir, { recursive: true, force: true });
   });
@@ -253,7 +253,7 @@ describe("daemon 日志路径（架构 6.2：.agentbus/logs/daemon.log）", () =
     });
     expect(daemon.start()).toMatchObject({ started: true });
     await waitFor(() => daemon.status().connected);
-    daemon.stop();
+    await daemon.stop();
     expect(existsSync(join(dir, "logs", "daemon.log"))).toBe(true);
     rmSync(dir, { recursive: true, force: true });
   });
@@ -281,7 +281,7 @@ describe("一期安全验收（架构第 10 章）", () => {
     expect(log).toContain("WARN");
     expect(log).toContain("不在 allowed_senders 白名单");
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -305,7 +305,7 @@ describe("一期安全验收（架构第 10 章）", () => {
     const log = readFileSync(join(dir, "logs", "daemon.log"), "utf-8");
     expect(log).toContain("环路熔断");
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -338,7 +338,7 @@ describe("TASK-29：并发不串话（同一发件人回合串行，PLAN T25）"
     expect(maxActive).toBe(1); // 不串话核心：同一会话零重叠
     expect(order).toEqual(["msg-conc-1", "msg-conc-2", "msg-conc-3"]);
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 });
@@ -374,7 +374,7 @@ describe("TASK-29：重连自愈（broker 抖动后自动恢复，PLAN T25）", 
     await waitFor(() => records.length === 1, 8000);
     expect(records[0]!.ctx.msg.id).toBe("msg-recon-1");
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   }, 20_000);
 });

@@ -50,6 +50,8 @@ export interface AgentBusConfig {
   tools: Record<string, Record<string, unknown>>;
   /** 是否回 ack（type=control） */
   ack: boolean;
+  /** TASK-30：OS 级只读隔离（架构 4.7 隔离层）；readonly 回合物理禁写，默认关闭（可选，validate 后恒有值） */
+  isolation?: boolean;
 }
 
 export interface ValidationResult {
@@ -170,6 +172,16 @@ export function validateConfig(raw: unknown): ValidationResult {
 
   const ack = obj.ack === undefined ? true : obj.ack === true;
 
+  // TASK-30：OS 级只读隔离（可选，默认关闭）
+  let isolation = false;
+  if (obj.isolation !== undefined) {
+    if (typeof obj.isolation === "boolean") {
+      isolation = obj.isolation;
+    } else {
+      errors.push(`isolation 必须是布尔值（收到 "${String(obj.isolation)}"）`);
+    }
+  }
+
   if (errors.length > 0) {
     return { ok: false, errors };
   }
@@ -189,6 +201,7 @@ export function validateConfig(raw: unknown): ValidationResult {
       trust_map,
       tools,
       ack,
+      isolation,
     },
   };
 }

@@ -109,7 +109,7 @@ describe("defaultInject codex 分发", { timeout: 30000 }, () => {
     // 关键：续接用的是适配器回写的真实 thread_id，而非 daemon 预生成 UUID
     expect(calls[1]!.args[1]).toBe("thread-real-id");
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -128,7 +128,7 @@ describe("defaultInject codex 分发", { timeout: 30000 }, () => {
     await waitFor(() => ctorConfigs.length >= 1);
     expect(ctorConfigs[0]).toMatchObject({ binary: "codex-nightly", workspace: "/ws" });
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 });

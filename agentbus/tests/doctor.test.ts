@@ -179,3 +179,37 @@ describe("默认探测：localhost 不可达时回退 127.0.0.1（TASK-22：Wind
     }
   });
 });
+
+describe("TASK-30: 隔离检查（OS 级只读工具链）", () => {
+  it("未启用 isolation → 检查通过且提示可选", async () => {
+    const report = await runDoctor(baseDeps());
+    const check = report.checks.find((c) => c.name === "隔离");
+    expect(check).toBeDefined();
+    expect(check!.ok).toBe(true);
+    expect(check!.detail).toContain("未启用");
+  });
+
+  it("isolation=true 且工具链可用（icacls/chmod exit 0）→ ✓", async () => {
+    writeFileSync(join(workDir, "config.json"), JSON.stringify({ ...CONFIG, isolation: true }));
+    const report = await runDoctor(baseDeps());
+    const check = report.checks.find((c) => c.name === "隔离");
+    expect(check!.ok).toBe(true);
+  });
+
+  it("isolation=true 但工具链不可用 → ✗ 且体检不通过", async () => {
+    writeFileSync(join(workDir, "config.json"), JSON.stringify({ ...CONFIG, isolation: true }));
+    const report = await runDoctor(
+      baseDeps({
+        runner: async (bin, args) => {
+          if (bin === "icacls" || bin === "chmod") return { exitCode: 1, stdout: "", stderr: "不是内部命令" };
+          if (args.includes("--version")) return { exitCode: 0, stdout: `${bin} 1.0.0`, stderr: "" };
+          if (args.includes("list")) return { exitCode: 0, stdout: "agentbus: http://...", stderr: "" };
+          return { exitCode: 0, stdout: "", stderr: "" };
+        },
+      }),
+    );
+    const check = report.checks.find((c) => c.name === "隔离");
+    expect(check!.ok).toBe(false);
+    expect(report.ok).toBe(false);
+  });
+});

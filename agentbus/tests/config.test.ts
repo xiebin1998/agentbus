@@ -160,3 +160,23 @@ describe("loadConfig", () => {
     expect(r.config?.broker.ca).toBeUndefined();
   });
 });
+
+describe("TASK-30: isolation 隔离字段（OS 级只读隔离，默认关闭）", () => {
+  it("缺省为 false", () => {
+    const r = validateConfig(BASE);
+    expect(r.ok).toBe(true);
+    expect(r.config?.isolation).toBe(false);
+  });
+
+  it("isolation=true 合法", () => {
+    const r = validateConfig({ ...BASE, isolation: true });
+    expect(r.ok).toBe(true);
+    expect(r.config?.isolation).toBe(true);
+  });
+
+  it("isolation 非布尔报错", () => {
+    const r = validateConfig({ ...BASE, isolation: "yes" });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join()).toContain("isolation");
+  });
+});

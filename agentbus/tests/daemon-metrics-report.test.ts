@@ -131,7 +131,7 @@ describe("daemon 指标上报", { timeout: 30000 }, () => {
     const before = collector.reports.length;
     await waitFor(() => collector.reports.length >= before + 2);
 
-    daemon.stop();
+    await daemon.stop();
     collector.client.end(true);
     rmSync(dir, { recursive: true, force: true });
   });

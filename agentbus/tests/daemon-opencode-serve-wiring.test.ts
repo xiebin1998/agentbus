@@ -132,7 +132,7 @@ describe("defaultInject opencode serve 模式接线", { timeout: 30000 }, () => 
     expect(calls[1]!.method).toBe("attachInject");
     expect(calls[1]!.args[2]).toBe("ses-attach"); // 续接 serve 回合回写的 session id（args[0]=url）
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -152,7 +152,7 @@ describe("defaultInject opencode serve 模式接线", { timeout: 30000 }, () => 
     expect(calls[2]!.method).toBe("inject"); // 失败后回退冷启动
 
     injectShouldFail = false;
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -172,7 +172,7 @@ describe("defaultInject opencode serve 模式接线", { timeout: 30000 }, () => 
     expect(calls[0]!.method).toBe("createSession");
     expect(ensureCalls.length).toBe(0);
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -192,7 +192,7 @@ describe("defaultInject opencode serve 模式接线", { timeout: 30000 }, () => 
     expect(calls[0]!.method).toBe("createSession");
     expect(ensureCalls.length).toBe(0);
 
-    daemon.stop();
+    await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 });
