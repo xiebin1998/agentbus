@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS sessions(
 
 
 def open_store(path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path))
+    # check_same_thread=False：hub 全局单例连接，ASGI 请求在 worker 线程中访问；
+    # 控制台操作低频且由 SQLite 自身锁串行化，风险可控
+    conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn

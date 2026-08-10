@@ -1,7 +1,8 @@
-"""TASK-25: 安全基线 —— hub SSE/控制台接入鉴权（架构三期清单）
+"""TASK-25: 安全基线 —— MCP 通道接入鉴权（架构三期清单）
 
-契约：环境变量 MCP_API_TOKEN 非空时启用 token 鉴权——
-/sse、/messages/*、/console、/api/console/* 须携带 ?token= 或 Authorization: Bearer；
+契约（四期收窄）：环境变量 MCP_API_TOKEN 非空时启用 token 鉴权——
+仅 /sse、/messages/*（MCP 通道）须携带 ?token= 或 Authorization: Bearer；
+控制台 API 改走 session 鉴权（hub/auth），与本中间件互不影响；
 /health 保持开放（监控探针）。未设 token 时保持全开放（内网/开发兼容）。
 """
 
@@ -50,22 +51,17 @@ def open_client(monkeypatch):
 
 
 def test_open_when_token_not_configured(open_client):
-    assert open_client.get("/api/console/namespaces").status_code == 200
+    # 控制台 API 不走 token 中间件（session 鉴权）：未登录 401 来自 session_guard
+    assert open_client.get("/api/console/namespaces").status_code == 401
     assert open_client.get("/health").status_code == 200
 
 
-def test_api_rejected_without_token(authed_client):
-    assert authed_client.get("/api/console/namespaces").status_code == 401
-    assert authed_client.get("/api/console/metrics").status_code == 401
-    assert authed_client.get("/console").status_code == 401
-
-
-def test_api_allowed_with_token_query_or_header(authed_client):
-    assert authed_client.get("/api/console/namespaces?token=s3cret").status_code == 200
-    assert authed_client.get(
-        "/api/console/namespaces", headers={"Authorization": "Bearer s3cret"}
-    ).status_code == 200
-    assert authed_client.get("/api/console/namespaces?token=wrong").status_code == 401
+def test_console_api_not_behind_token_middleware(authed_client):
+    """四期收窄：配置 token 后控制台 API 也不要求 MCP_API_TOKEN——
+    401 来自 session_guard（无 detail），而非中间件的 token required"""
+    r = authed_client.get("/api/console/namespaces")
+    assert r.status_code == 401
+    assert "detail" not in r.json()
 
 
 def test_health_stays_open(authed_client):

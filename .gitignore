@@ -47,6 +47,9 @@ logs/
 # Mosquitto data
 mosquitto/data/
 mosquitto/log/
+
+# 四期：hub 账号体系本地运行数据（SQLite）
+data/
 # TASK-25：broker 密钥/密码文件不入 git
 mosquitto/certs/
 mosquitto/config/passwd

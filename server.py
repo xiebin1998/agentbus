@@ -36,7 +36,7 @@ import re
 import threading
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Dict, List, Union
 
 import paho.mqtt.client as mqtt
@@ -49,6 +49,12 @@ from starlette.routing import Route, Mount
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from pathlib import Path
+
+# 四期：账号体系（SQLite 存储 / session 鉴权 / dynsec 客户端 / 生命周期编排）
+from hub import accounts as hub_accounts
+from hub import auth as hub_auth
+from hub import dynsec as hub_dynsec
+from hub import store as hub_store
 
 # ─── 日志配置 ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -204,203 +210,7 @@ class MetricsStore:
             return {k: dict(v) for k, v in self._data.items()}
 
 
-# ─── Web 控制台后端 API 纯逻辑层（TASK-20，供 /api/console/* 路由复用） ──────────
-
-class NamespaceRegistry:
-    """控制台显式声明的命名空间（ns 本体由 topic 路径天然隔离，此处仅登记清单）"""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._data: Dict[str, dict] = {}
-
-    def declare(self, name: str) -> Optional[dict]:
-        name = (name or "").strip()
-        if not name or "/" in name:
-            return None
-        with self._lock:
-            if name not in self._data:
-                self._data[name] = {
-                    "name": name,
-                    "declared": True,
-                    "declared_at": datetime.now(timezone.utc).isoformat(),
-                }
-            return dict(self._data[name])
-
-    def list(self) -> List[dict]:
-        with self._lock:
-            return [dict(v) for v in self._data.values()]
-
-
-# ─── TASK-26：账号/团队管理（一团队一账号 + topic 前缀 ACL） ─────────────
-
-_TEAM_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")  # 同 ns 命名规则（架构 3.1.1）
-
-
-def team_broker_user(team_name: str) -> str:
-    """一团队一账号：broker 账号名 = team-<团队名>"""
-    return f"team-{team_name}"
-
-
-def render_broker_acl(hub_user: str, teams: List[dict]) -> str:
-    """渲染 mosquitto ACL 文件：hub 账号全量；团队账号仅本 ns
-    channel readwrite + metric write（跨团队 publish 被 broker 拒，验收项）"""
-    lines = [
-        "# AgentBus broker ACL（TASK-26 一团队一账号；sync-broker-acl 脚本生成，勿手改）",
-        "# hub 共享连接：全量权限",
-        f"user {hub_user}",
-        "topic readwrite #",
-        "",
-    ]
-    for t in teams:
-        ns = t["name"]
-        lines += [
-            f"user {team_broker_user(ns)}",
-            f"topic readwrite /agentbus/ai/channel/{ns}/#",
-            f"topic write /agentbus/ai/metric/{ns}/#",
-            "",
-        ]
-    return "\n".join(lines)
-
-
-class TeamStore:
-    """团队登记（团队 ↔ ns 绑定；内存态，与 ns/权限登记一致）"""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._data: Dict[str, dict] = {}
-
-    def create(self, name: str, members: Optional[List[str]] = None) -> Optional[dict]:
-        name = (name or "").strip()
-        if not _TEAM_NAME_RE.match(name):
-            return None
-        with self._lock:
-            if name in self._data:
-                return None
-            entry = {
-                "name": name,
-                "broker_user": team_broker_user(name),
-                "members": [m.strip() for m in (members or [])
-                            if isinstance(m, str) and m.strip()],
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-            self._data[name] = entry
-            return dict(entry)
-
-    def delete(self, name: str) -> bool:
-        with self._lock:
-            return self._data.pop(name, None) is not None
-
-    def list(self) -> Dict[str, dict]:
-        with self._lock:
-            return {k: dict(v) for k, v in self._data.items()}
-
-
-def _ns_of(key: str) -> str:
-    """身份键 → 所属 ns；无 ns 前缀（flat 兼容）归入 flat"""
-    return key.split("/", 1)[0] if "/" in key else "flat"
-
-
-def collect_namespaces(session_keys, agent_keys, metric_keys, declared: List[dict]) -> List[dict]:
-    """四路来源（在线会话/注册信息/daemon 指标/显式声明）合并为 ns 清单，按名称排序"""
-    table: Dict[str, dict] = {}
-
-    def slot(ns: str) -> dict:
-        if ns not in table:
-            table[ns] = {"name": ns, "online_agents": 0, "registered_agents": 0,
-                         "daemon_count": 0, "declared": False}
-        return table[ns]
-
-    for key in session_keys:
-        slot(_ns_of(key))["online_agents"] += 1
-    for key in agent_keys:
-        slot(_ns_of(key))["registered_agents"] += 1
-    for key in metric_keys:
-        slot(_ns_of(key))["daemon_count"] += 1
-    for d in declared:
-        entry = slot(d["name"])
-        entry["declared"] = True
-        entry["declared_at"] = d.get("declared_at")
-    return [table[k] for k in sorted(table)]
-
-
-def collect_identities(session_keys, agent_keys, metric_keys,
-                       ns: Optional[str] = None, q: Optional[str] = None) -> List[dict]:
-    """<ns>/<client_id> 身份清单：并集去重 + 三态标记（在线/已注册/有指标），支持 ns 过滤与子串检索"""
-    sessions = set(session_keys)
-    agents = set(agent_keys)
-    metrics = set(metric_keys)
-    result = []
-    for key in sorted(sessions | agents | metrics):
-        if ns is not None and _ns_of(key) != ns:
-            continue
-        if q and q.lower() not in key.lower():
-            continue
-        result.append({
-            "identity": key,
-            "ns": _ns_of(key),
-            "client_id": key.split("/", 1)[1] if "/" in key else key,
-            "online": key in sessions,
-            "registered": key in agents,
-            "has_metrics": key in metrics,
-        })
-    return result
-
-
-# 权限档案契约与 daemon 配置对齐（config.ts：inbound_mode 只允许 readonly/full）
-VALID_INBOUND_MODES = ("readonly", "full")
-_PERMISSION_FIELDS = ("allowed_senders", "trust_map", "inbound_mode")
-
-
-def validate_permission_profile(body: Any) -> dict:
-    """校验并规整权限档案（allowed_senders/trust_map/inbound_mode）；缺省字段补默认值，非法抛 ValueError"""
-    if not isinstance(body, dict):
-        raise ValueError("权限档案须为对象")
-    unknown = set(body) - set(_PERMISSION_FIELDS)
-    if unknown:
-        raise ValueError(f"未知字段: {sorted(unknown)}")
-
-    senders = body.get("allowed_senders", [])
-    if not isinstance(senders, list) or not all(isinstance(s, str) and s.strip() for s in senders):
-        raise ValueError("allowed_senders 须为非空字符串列表")
-
-    trust_map = body.get("trust_map", {})
-    if not isinstance(trust_map, dict) or not all(
-        isinstance(k, str) and isinstance(v, str) and v in VALID_INBOUND_MODES
-        for k, v in trust_map.items()
-    ):
-        raise ValueError(f"trust_map 值只允许 {list(VALID_INBOUND_MODES)}")
-
-    mode = body.get("inbound_mode", "readonly")
-    if mode not in VALID_INBOUND_MODES:
-        raise ValueError(f"inbound_mode 只允许 {list(VALID_INBOUND_MODES)}")
-
-    return {"allowed_senders": [s.strip() for s in senders],
-            "trust_map": dict(trust_map), "inbound_mode": mode}
-
-
-class PermissionStore:
-    """控制台权限档案库（内存，重启不持久；下发靠 control 消息通知 daemon）"""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._data: Dict[str, dict] = {}
-
-    def set(self, identity: str, profile: dict) -> dict:
-        with self._lock:
-            entry = json.loads(json.dumps(profile))  # 深拷贝，防外部后续改动污染
-            entry["updated_at"] = datetime.now(timezone.utc).isoformat()
-            self._data[identity] = entry
-            return dict(entry)
-
-    def get(self, identity: str) -> Optional[dict]:
-        with self._lock:
-            entry = self._data.get(identity)
-            return dict(entry) if entry else None
-
-    def list(self) -> List[dict]:
-        with self._lock:
-            return [dict(v, identity=k) for k, v in self._data.items()]
-
+# ─── 指标汇总（控制台指标页复用） ─────────────────────────────────────────
 
 def build_metric_summary(snapshot: Dict[str, dict]) -> dict:
     """各 daemon 指标汇总：总量计数 + 在线 daemon 数 + 总会话发件人数（非法条目跳过）"""
@@ -559,10 +369,6 @@ _metrics_store = MetricsStore()
 _shared_client: Optional[mqtt.Client] = None
 _shared_ready = threading.Event()
 
-# TASK-20：控制台全局状态（显式 ns 登记 + 权限档案库）
-_ns_registry = NamespaceRegistry()
-_permission_store = PermissionStore()
-
 
 def _handle_metric_message(msg) -> None:
     """TASK-19 metric 消息入库（原 metric 连接 on_message 逻辑，TASK-24 并入共享连接路由）"""
@@ -603,9 +409,10 @@ def start_shared_client() -> None:
             c.subscribe([
                 (TOPIC_MESSAGE_WILDCARD_NS, 2),
                 (TOPIC_METRIC_WILDCARD, 1),
+                (hub_dynsec.RESPONSE_TOPIC, 1),
             ])
             _shared_ready.set()
-            logger.info(f"[hub-shared] subscribed to {TOPIC_MESSAGE_WILDCARD_NS}, {TOPIC_METRIC_WILDCARD}")
+            logger.info(f"[hub-shared] subscribed to {TOPIC_MESSAGE_WILDCARD_NS}, {TOPIC_METRIC_WILDCARD}, {hub_dynsec.RESPONSE_TOPIC}")
         else:
             logger.error(f"[hub-shared] connect failed: rc={rc}")
 
@@ -614,6 +421,11 @@ def start_shared_client() -> None:
         logger.warning(f"[hub-shared] MQTT disconnected (rc={rc})")
 
     def on_message(c, userdata, msg):
+        if msg.topic == hub_dynsec.RESPONSE_TOPIC:
+            # 四期：dynsec 命令响应转给客户端执行器（串行请求-响应配对）
+            if DYNSEC_CLIENT is not None:
+                DYNSEC_CLIENT.on_response(msg.payload)
+            return
         if msg.topic.startswith(TOPIC_METRIC_PREFIX):
             _handle_metric_message(msg)
             return
@@ -661,33 +473,6 @@ def publish_shared(topic: str, payload: str, qos: int = 2):
     if _shared_client is None:
         return False
     return _shared_client.publish(topic, payload, qos=qos)
-
-
-def distribute_permission_update(identity: str, profile: dict) -> bool:
-    """TASK-20：权限档案下发——经共享连接向目标 daemon 的消息 topic 发 type=control
-    config_update 通知（control 短路不触发回合，架构 3.3）；daemon 侧落地应用为后续演进，
-    未送达返回 False（档案已在 hub 侧保存）。送达判定以 wait_for_publish 等到
-    PUBACK 为准，不能只看 publish 返回码（真机冒烟实测：rc 成功但消息未上总线）"""
-    if _shared_client is None or not _shared_client.is_connected():
-        return False
-    ns, cid = (identity.split("/", 1) + [None])[:2] if "/" in identity else (None, identity)
-    topic = build_sub_topic(cid, ns)
-    payload = json.dumps({
-        "id": f"cfg-{uuid.uuid4().hex[:12]}",
-        "type": "control",
-        "from": "hub-console",
-        "to": identity,
-        "kind": "config_update",
-        "config": profile,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }, ensure_ascii=False)
-    try:
-        info = _shared_client.publish(topic, payload, qos=1)
-        info.wait_for_publish(timeout=5.0)
-        return info.is_published()
-    except Exception as e:
-        logger.warning(f"[console] 权限下发失败 {identity}: {e}")
-        return False
 
 
 # ─── Agent Session ───────────────────────────────────────────────────────────
@@ -1078,99 +863,252 @@ async def health(request: Request):
     })
 
 
-# ─── Web 控制台后端 API（TASK-20：覆盖前端三页 ns/权限/指标） ─────────────────────
+# ─── 四期：控制台 API v4（session 鉴权 + 账号/ns 管理 + 指标 ns 过滤） ─────────────
 
-def _console_snapshot_sources():
-    """控制台三个清单接口的公共数据源（会话表/注册表/指标库快照）"""
-    return list(_sessions.keys()), list(_agent_info.keys()), list(_metrics_store.snapshot().keys())
-
-
-async def console_namespaces(request: Request):
-    """ns 页：命名空间清单（在线/注册/daemon 计数 + 显式声明标记）"""
-    session_keys, agent_keys, metric_keys = _console_snapshot_sources()
-    return JSONResponse({"namespaces": collect_namespaces(
-        session_keys, agent_keys, metric_keys, _ns_registry.list())})
+DB_CONN = None
+DYNSEC_CLIENT = None   # lifespan 注入真实客户端（共享连接发布函数）；测试可预置假客户端
 
 
-async def console_declare_namespace(request: Request):
-    """ns 页：声明创建命名空间（ns 隔离由 topic 路径天然实现，此处仅登记）"""
+def init_hub_state() -> None:
+    """建 SQLite + 引导超管（幂等）。env 在调用时读取，便于测试预置。"""
+    global DB_CONN
+    db_path = os.getenv("AGENTBUS_DB_PATH", "data/agentbus.db")
+    admin_user = os.getenv("AGENTBUS_ADMIN_USER", "")
+    admin_password = os.getenv("AGENTBUS_ADMIN_PASSWORD", "")
+    parent = os.path.dirname(db_path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    DB_CONN = hub_store.open_store(db_path)
+    hub_store.init_schema(DB_CONN)
+    if not hub_store.list_users(DB_CONN) and admin_user:
+        hub_store.create_user(DB_CONN, admin_user, hub_auth.hash_password(admin_password), "super_admin")
+
+    def _resolve(token):
+        username = hub_store.get_session_user(DB_CONN, token)
+        return hub_store.get_user(DB_CONN, username) if username else None
+
+    hub_auth.resolve_user_by_token = _resolve
+
+
+def _json_error(msg: str, code: int = 400):
+    return JSONResponse({"error": msg}, status_code=code)
+
+
+def _ns_visible(user, ns_id: str) -> bool:
+    """可见性：超管全量；其余须为该 ns 成员"""
+    return user["role"] == "super_admin" or ns_id in hub_store.list_user_namespaces(DB_CONN, user["username"])
+
+
+def _can_manage_ns(user, ns_id: str) -> bool:
+    """管理权：super_admin 或该 ns 的 ns_admin"""
+    return user["role"] == "super_admin" or (
+        user["role"] == "ns_admin" and ns_id in hub_store.list_user_namespaces(DB_CONN, user["username"]))
+
+
+async def api_login(request: Request):
     try:
         body = await request.json()
     except Exception:
-        return JSONResponse({"error": "请求体须为 JSON 对象"}, status_code=400)
-    entry = _ns_registry.declare((body or {}).get("name", ""))
-    if entry is None:
-        return JSONResponse({"error": "ns 名非空且不得含 /"}, status_code=400)
-    return JSONResponse({"status": "declared", "namespace": entry})
+        return _json_error("请求体须为 JSON 对象")
+    body = body or {}
+    user = hub_store.get_user(DB_CONN, body.get("username", ""))
+    if not hub_auth.login_ok(user, body.get("password", "")):
+        return _json_error("invalid credentials", 401)
+    token = hub_auth.new_token()
+    now = datetime.now(timezone.utc)
+    hub_store.create_session(DB_CONN, token, user["username"], now.isoformat(),
+                             (now + timedelta(days=hub_auth.SESSION_TTL_DAYS)).isoformat())
+    resp = JSONResponse({"username": user["username"], "role": user["role"]})
+    hub_auth.set_session_cookie(resp, token)
+    return resp
 
 
-async def console_identities(request: Request):
-    """ns 页：<ns>/<client_id> 身份清单与检索（?ns= 过滤，?q= 子串检索）"""
-    session_keys, agent_keys, metric_keys = _console_snapshot_sources()
-    ns = normalize_ns(request.query_params.get("ns"))
-    q = (request.query_params.get("q") or "").strip() or None
-    return JSONResponse({"identities": collect_identities(
-        session_keys, agent_keys, metric_keys, ns=ns, q=q)})
+async def api_logout(request: Request):
+    token = request.cookies.get(hub_auth.COOKIE_NAME, "")
+    if token:
+        hub_store.delete_session(DB_CONN, token)
+    resp = JSONResponse({"ok": True})
+    hub_auth.clear_session_cookie(resp)
+    return resp
 
 
-async def console_permissions_list(request: Request):
-    """权限页：全部权限档案"""
-    return JSONResponse({"profiles": _permission_store.list()})
+async def api_me(request: Request):
+    user = hub_auth.current_user(request)
+    return JSONResponse({"username": user["username"], "role": user["role"],
+                         "namespaces": hub_store.list_user_namespaces(DB_CONN, user["username"])})
 
 
-async def console_permission_get(request: Request):
-    """权限页：单个身份档案（未存档 404）"""
-    entry = _permission_store.get(request.path_params["identity"])
-    if entry is None:
-        return JSONResponse({"error": "该身份暂无权限档案"}, status_code=404)
-    return JSONResponse({"identity": request.path_params["identity"], "profile": entry})
+async def api_ns_list(request: Request):
+    user = hub_auth.current_user(request)
+    if user["role"] == "super_admin":
+        items = hub_store.list_namespaces(DB_CONN)
+    else:
+        allowed = set(hub_store.list_user_namespaces(DB_CONN, user["username"]))
+        items = [n for n in hub_store.list_namespaces(DB_CONN) if n["id"] in allowed]
+    return JSONResponse(items)
 
 
-async def console_permission_put(request: Request):
-    """权限页：保存档案并下发 control 通知（校验对齐 daemon config 契约）"""
-    identity = request.path_params["identity"]
+async def api_ns_create(request: Request):
+    user = hub_auth.current_user(request)
+    if user["role"] != "super_admin":
+        return _json_error("forbidden", 403)
     try:
         body = await request.json()
-        profile = validate_permission_profile(body)
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=400)
+        hub_accounts.create_namespace_with_admin(
+            DB_CONN, DYNSEC_CLIENT, body["id"], body["name"], body.get("description", ""),
+            body["admin_username"], body["admin_password"])
+    except (ValueError, KeyError) as e:
+        return _json_error(str(e))
+    except hub_dynsec.DynsecError as e:
+        return _json_error(f"broker 侧失败: {e}", 502)
     except Exception:
-        return JSONResponse({"error": "请求体须为 JSON 对象"}, status_code=400)
-    entry = _permission_store.set(identity, profile)
-    distributed = distribute_permission_update(identity, profile)
-    logger.info(f"[console] 权限档案更新 {identity}（下发 {'成功' if distributed else '未送达，仅存档'}）")
-    return JSONResponse({"identity": identity, "profile": entry, "distributed": distributed})
+        return _json_error("请求体须为 JSON 对象")
+    return JSONResponse({"ok": True})
 
 
-async def console_metrics(request: Request):
-    """指标页：各 daemon 最新指标 + hub 概览（在线/注册/消息数/ns 分布）"""
-    ns_summary: Dict[str, int] = {}
-    for key in _sessions.keys():
-        ns_summary[_ns_of(key)] = ns_summary.get(_ns_of(key), 0) + 1
+async def api_ns_delete(request: Request):
+    user = hub_auth.current_user(request)
+    if user["role"] != "super_admin":
+        return _json_error("forbidden", 403)
+    hub_accounts.delete_namespace(DB_CONN, DYNSEC_CLIENT, request.path_params["ns"])
+    return JSONResponse({"ok": True})
+
+
+async def api_accounts_list(request: Request):
+    user = hub_auth.current_user(request)
+    ns = request.query_params.get("ns")
+    if ns:
+        if not _can_manage_ns(user, ns):
+            return _json_error("forbidden", 403)
+        names = hub_store.list_members(DB_CONN, ns)
+    else:
+        if user["role"] != "super_admin":
+            return _json_error("forbidden", 403)
+        names = hub_store.list_users(DB_CONN)
+    return JSONResponse([{"username": n, "role": hub_store.get_user(DB_CONN, n)["role"]} for n in names])
+
+
+async def api_account_create(request: Request):
+    user = hub_auth.current_user(request)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error("请求体须为 JSON 对象")
+    body = body or {}
+    ns = body.get("ns")   # 可选：建号同时入组
+    if ns and not _can_manage_ns(user, ns):
+        return _json_error("forbidden", 403)
+    try:
+        hub_accounts.create_account(DB_CONN, DYNSEC_CLIENT, body["username"], body["password"])
+        if ns:
+            hub_accounts.bind(DB_CONN, DYNSEC_CLIENT, ns, body["username"])
+    except (ValueError, KeyError) as e:
+        return _json_error(str(e))
+    except hub_dynsec.DynsecError as e:
+        return _json_error(f"broker 侧失败: {e}", 502)
+    return JSONResponse({"ok": True})
+
+
+async def api_account_delete(request: Request):
+    user = hub_auth.current_user(request)
+    target = request.path_params["username"]
+    if user["role"] not in ("super_admin", "ns_admin"):
+        return _json_error("forbidden", 403)
+    if user["role"] != "super_admin" and target == user["username"]:
+        return _json_error("forbidden", 403)
+    hub_accounts.delete_account(DB_CONN, DYNSEC_CLIENT, target)
+    return JSONResponse({"ok": True})
+
+
+async def api_account_password(request: Request):
+    user = hub_auth.current_user(request)
+    target = request.path_params["username"]
+    if user["role"] not in ("super_admin", "ns_admin") and target != user["username"]:
+        return _json_error("forbidden", 403)
+    if hub_store.get_user(DB_CONN, target) is None:
+        return _json_error("账号不存在", 404)
+    try:
+        body = await request.json()
+        hub_accounts.reset_password(DB_CONN, DYNSEC_CLIENT, target, body["password"])
+    except KeyError:
+        return _json_error("缺少 password 字段")
+    except hub_dynsec.DynsecError as e:
+        return _json_error(f"broker 侧失败: {e}", 502)
+    return JSONResponse({"ok": True})
+
+
+async def api_member_put(request: Request):
+    user = hub_auth.current_user(request)
+    ns, username = request.path_params["ns"], request.path_params["username"]
+    if not _can_manage_ns(user, ns):
+        return _json_error("forbidden", 403)
+    try:
+        hub_accounts.bind(DB_CONN, DYNSEC_CLIENT, ns, username)
+    except hub_dynsec.DynsecError as e:
+        return _json_error(f"broker 侧失败: {e}", 502)
+    return JSONResponse({"ok": True})
+
+
+async def api_member_delete(request: Request):
+    user = hub_auth.current_user(request)
+    ns, username = request.path_params["ns"], request.path_params["username"]
+    if not _can_manage_ns(user, ns):
+        return _json_error("forbidden", 403)
+    hub_accounts.unbind(DB_CONN, DYNSEC_CLIENT, ns, username)
+    return JSONResponse({"ok": True})
+
+
+async def api_connect_command(request: Request):
+    """接入命令模板：密码单向哈希不可回显，前端在用户重输密码后拼接完整命令"""
+    user = hub_auth.current_user(request)
+    ns = (request.query_params.get("ns") or "").strip()
+    if not ns or not _ns_visible(user, ns):
+        return _json_error("forbidden", 403)
+    broker = f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}"
     return JSONResponse({
-        "daemons": _metrics_store.snapshot(),
+        "broker": broker,
+        "user": user["username"],
+        "ns": ns,
+        "template": f"agentbus init --broker {broker} --user {user['username']} --password <密码> --ns {ns}",
+        "note": "命令含密码，注意 shell 历史",
+    })
+
+
+def _filtered_snapshot(ns: str) -> Dict[str, dict]:
+    """指标库快照按 ns 过滤：只保留身份（ns/cid）前缀匹配的条目"""
+    prefix = f"{ns}/"
+    return {k: v for k, v in _metrics_store.snapshot().items() if k.startswith(prefix)}
+
+
+async def api_metrics(request: Request):
+    """指标页：该 ns 下各 daemon 最新指标 + ns 内概览（?ns= 必填，未授权 403）"""
+    user = hub_auth.current_user(request)
+    ns = (request.query_params.get("ns") or "").strip()
+    if not ns:
+        return _json_error("缺少 ns 参数")
+    if not _ns_visible(user, ns):
+        return _json_error("forbidden", 403)
+    prefix = f"{ns}/"
+    return JSONResponse({
+        "daemons": _filtered_snapshot(ns),
         "overview": {
-            "online_agents": list(_sessions.keys()),
-            "registered_agents": [k for k, info in _agent_info.items() if info.registered],
+            "online_agents": [k for k in _sessions.keys() if k.startswith(prefix)],
+            "registered_agents": [k for k, info in _agent_info.items()
+                                  if info.registered and k.startswith(prefix)],
             "total_messages": len(_messages),
-            "namespaces": ns_summary,
         },
     })
 
 
-async def console_metrics_summary(request: Request):
-    """指标页：全部 daemon 指标汇总（吞吐/丢弃/去重/排队总量）"""
-    return JSONResponse(build_metric_summary(_metrics_store.snapshot()))
-
-
-# TASK-21：控制台前端单页（web/index.html 直出，无构建步骤；三页：ns/权限/指标）
-CONSOLE_HTML = Path(__file__).resolve().parent / "web" / "index.html"
-
-
-async def console_page(request: Request):
-    if not CONSOLE_HTML.exists():
-        return JSONResponse({"error": "控制台页面缺失（web/index.html）"}, status_code=500)
-    return Response(CONSOLE_HTML.read_text(encoding="utf-8"), media_type="text/html; charset=utf-8")
+async def api_metrics_summary(request: Request):
+    """指标页：该 ns 全部 daemon 指标汇总（?ns= 必填，未授权 403）"""
+    user = hub_auth.current_user(request)
+    ns = (request.query_params.get("ns") or "").strip()
+    if not ns:
+        return _json_error("缺少 ns 参数")
+    if not _ns_visible(user, ns):
+        return _json_error("forbidden", 403)
+    return JSONResponse(build_metric_summary(_filtered_snapshot(ns)))
 
 
 # TASK-28：一键安装脚本托管（架构 6.6 / PLAN T24：中心节点静态服务，干净机器一条命令接入的下载源）
@@ -1223,46 +1161,15 @@ async def sse_endpoint(request: Request):
 # 不能用 Route 包一层，否则 starlette 会尝试调用返回的 None 导致 TypeError
 @asynccontextmanager
 async def hub_lifespan(app):
-    # TASK-24：随应用生命周期启停 hub 唯一共享 MQTT 连接（含 TASK-19 metric 订阅）
+    # 四期：账号体系初始化（SQLite + 超管引导 + dynsec 客户端），
+    # 随后 TASK-24 共享 MQTT 连接随应用生命周期启停（含 TASK-19 metric 订阅）
+    init_hub_state()
+    global DYNSEC_CLIENT
+    if DYNSEC_CLIENT is None:  # 测试可预置假客户端；生产在此注入共享连接发布函数
+        DYNSEC_CLIENT = hub_dynsec.DynsecClient(publish_shared)
     start_shared_client()
     yield
     stop_shared_client()
-
-
-_teams_store = TeamStore()
-
-
-async def console_teams_list(request: Request):
-    """团队页：团队清单（TASK-26）"""
-    return JSONResponse({"teams": list(_teams_store.list().values())})
-
-
-async def console_team_create(request: Request):
-    """团队页：创建团队（团队名即 ns，broker 账号 team-<名>，ACL 由同步脚本落地）"""
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "请求体须为 JSON 对象"}, status_code=400)
-    body = body or {}
-    name = (body.get("name") or "").strip()
-    if not _TEAM_NAME_RE.match(name):
-        return JSONResponse(
-            {"error": "团队名须为小写字母/数字/中划线（同 ns 命名规则）"}, status_code=400)
-    members = body.get("members", [])
-    if not isinstance(members, list):
-        return JSONResponse({"error": "members 须为字符串数组"}, status_code=400)
-    entry = _teams_store.create(name, members=members)
-    if entry is None:
-        return JSONResponse({"error": f"团队已存在: {name}"}, status_code=409)
-    return JSONResponse({"status": "created", "team": entry})
-
-
-async def console_team_delete(request: Request):
-    """团队页：删除团队（broker 账号/ACL 需再跑同步脚本才会失效）"""
-    name = request.path_params["name"]
-    if _teams_store.delete(name):
-        return JSONResponse({"status": "deleted", "name": name})
-    return JSONResponse({"error": f"团队不存在: {name}"}, status_code=404)
 
 
 app = Starlette(
@@ -1270,32 +1177,34 @@ app = Starlette(
         Route("/health", health),
         Route("/sse", sse_endpoint),
         Mount("/messages/", app=sse_transport.handle_post_message),
-        # TASK-20：Web 控制台后端 API（前端三页：ns/权限/指标）
-        Route("/api/console/namespaces", console_namespaces, methods=["GET"]),
-        Route("/api/console/namespaces", console_declare_namespace, methods=["POST"]),
-        Route("/api/console/identities", console_identities, methods=["GET"]),
-        Route("/api/console/permissions", console_permissions_list, methods=["GET"]),
-        Route("/api/console/permissions/{identity:path}", console_permission_get, methods=["GET"]),
-        Route("/api/console/permissions/{identity:path}", console_permission_put, methods=["PUT"]),
-        Route("/api/console/metrics", console_metrics, methods=["GET"]),
-        Route("/api/console/metrics/summary", console_metrics_summary, methods=["GET"]),
-        # TASK-21：控制台前端页面
-        Route("/console", console_page, methods=["GET"]),
+        # 四期：控制台 API v4（session 鉴权；403 由 handler 内显式返回）
+        Route("/api/auth/login", hub_auth.session_guard(api_login), methods=["POST"]),
+        Route("/api/auth/logout", hub_auth.session_guard(api_logout), methods=["POST"]),
+        Route("/api/me", hub_auth.session_guard(api_me), methods=["GET"]),
+        Route("/api/console/namespaces", hub_auth.session_guard(api_ns_list), methods=["GET"]),
+        Route("/api/console/namespaces", hub_auth.session_guard(api_ns_create), methods=["POST"]),
+        Route("/api/console/namespaces/{ns}", hub_auth.session_guard(api_ns_delete), methods=["DELETE"]),
+        Route("/api/console/namespaces/{ns}/members/{username}", hub_auth.session_guard(api_member_put), methods=["PUT"]),
+        Route("/api/console/namespaces/{ns}/members/{username}", hub_auth.session_guard(api_member_delete), methods=["DELETE"]),
+        Route("/api/console/accounts", hub_auth.session_guard(api_accounts_list), methods=["GET"]),
+        Route("/api/console/accounts", hub_auth.session_guard(api_account_create), methods=["POST"]),
+        Route("/api/console/accounts/{username}", hub_auth.session_guard(api_account_delete), methods=["DELETE"]),
+        Route("/api/console/accounts/{username}/password", hub_auth.session_guard(api_account_password), methods=["POST"]),
+        Route("/api/console/connect-command", hub_auth.session_guard(api_connect_command), methods=["GET"]),
+        Route("/api/console/metrics", hub_auth.session_guard(api_metrics), methods=["GET"]),
+        Route("/api/console/metrics/summary", hub_auth.session_guard(api_metrics_summary), methods=["GET"]),
         # TASK-28：一键安装脚本（引导资源，鉴权豁免）
         Route("/install.ps1", install_script, methods=["GET"]),
         Route("/install.sh", install_script, methods=["GET"]),
-        # TASK-26：团队管理（一团队一账号 ACL）
-        Route("/api/console/teams", console_teams_list, methods=["GET"]),
-        Route("/api/console/teams", console_team_create, methods=["POST"]),
-        Route("/api/console/teams/{name}", console_team_delete, methods=["DELETE"]),
     ],
     lifespan=hub_lifespan,
 )
 
 
-# ─── TASK-25：SSE/控制台接入鉴权（安全基线） ───────────────────────────────
-# 契约：MCP_API_TOKEN 非空时启用——/sse、/messages/*、/console、/api/console/*
-# 须携带 ?token= 或 Authorization: Bearer；/health 与 /install.*（引导资源，装机时尚无 token）开放。
+# ─── TASK-25：MCP 通道接入鉴权（安全基线） ───────────────────────────────────
+# 契约（四期收窄）：MCP_API_TOKEN 非空时启用——仅 /sse 与 /messages/*（MCP 通道）
+# 须携带 ?token= 或 Authorization: Bearer；控制台 API 走 session 鉴权（hub/auth），
+# 与本中间件互不影响。/health 与 /install.*（引导资源，装机时尚无 token）开放；
 # 未设 token 时保持全开放（内网/开发兼容）。
 
 def check_auth_token(enabled: bool, provided: Optional[str]) -> bool:
@@ -1335,6 +1244,7 @@ class TokenAuthMiddleware:
             or path.startswith("/health")
             or path.startswith("/install.")
             or not expected
+            or not (path.startswith("/sse") or path.startswith("/messages/"))
         ):
             await self.inner(scope, receive, send)
             return
