@@ -134,7 +134,7 @@ curl -fsSL https://<hub地址>:8000/install.sh | bash
 ### 方式二：npm 手动安装
 
 ```bash
-npm i -g @agenthub/agentbus        # 或本地包目录
+npm i -g @xiebin1998/agentbus        # 或本地包目录
 cd 你的项目目录
 agentbus init                    # 交互式：broker 地址/凭证/命名空间/工具选择 → 写配置、注册 MCP、装 skill、拉起 daemon
 agentbus doctor                  # 体检：配置/broker/SSE/CLI/MCP 注册/daemon/隔离 逐项检查
