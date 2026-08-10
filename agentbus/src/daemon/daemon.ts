@@ -66,11 +66,11 @@ interface QueueItem {
   msg: BusMessage;
 }
 
-/** ack/回复回发 topic：ns 形态身份 → ns topic；纯 client_id → flat topic */
-export function senderTopic(from: string): string {
+/** ack/回复回发 topic：ns 形态身份 → ns topic；四期 flat 已删除，无 ns 段返回 null（调用方告警跳过） */
+export function senderTopic(from: string): string | null {
   const slash = from.indexOf("/");
-  if (slash < 0) return `/agenthub/ai/channel/${from}/message`;
-  return `/agenthub/ai/channel/${from.slice(0, slash)}/${from.slice(slash + 1)}/message`;
+  if (slash < 0 || slash === from.length - 1) return null;
+  return `/agentbus/ai/channel/${from.slice(0, slash)}/${from.slice(slash + 1)}/message`;
 }
 
 /** OpenCode/Kilo 同族：会话 id 由 CLI 侧生成（事件流提取），非 daemon 预生成 */
@@ -154,7 +154,7 @@ export class Daemon {
     this.router = new Router(routerCfg, { knownSenders: knownSenders(this.registry) });
 
     // 4. MQTT 层：首次连接失败不致命，mqtt.js 内部持续重连
-    const topic = `/agenthub/ai/channel/${cfg.ns}/${cfg.client_id}/message`;
+    const topic = `/agentbus/ai/channel/${cfg.ns}/${cfg.client_id}/message`;
     this.listener = createListener({
       broker: cfg.broker,
       clientId: `agentbus-${cfg.ns}-${cfg.client_id}`,
@@ -432,19 +432,34 @@ export class Daemon {
 
   private async publishAck(ack: BusMessage): Promise<void> {
     const to = Array.isArray(ack.to) ? ack.to[0] : ack.to;
-    await this.publish(senderTopic(to), ack);
+    const topic = senderTopic(to ?? "");
+    if (!topic) {
+      this.logger.warn(`ack 丢弃：目标 ${to} 非 ns 形态身份（flat 兼容已删除）`);
+      return;
+    }
+    await this.publish(topic, ack);
     this.logger.info(`ack 已回发 → ${to}（原消息 ${ack.reply_to}）`);
   }
 
   /** 代回（4.6 步骤 3）：reply_to=原消息 / hop+1 / expect_reply=false 终止互询 */
   private async publishReply(original: BusMessage, output: string): Promise<void> {
+    const topic = senderTopic(original.from);
+    if (!topic) {
+      this.logger.warn(`代回丢弃：发件人 ${original.from} 非 ns 形态身份（flat 兼容已删除）`);
+      return;
+    }
     const reply = makeReply(this.selfIdentity, original, output);
-    await this.publish(senderTopic(original.from), reply);
+    await this.publish(topic, reply);
     this.logger.info(`代回已发送 → ${original.from}（原消息 ${original.id}，${output.length} 字符）`);
   }
 
   /** 注入失败通知（4.6 兜底）：control 类型不触发对方回合 */
   private async publishFailure(original: BusMessage, reason: string): Promise<void> {
+    const topic = senderTopic(original.from);
+    if (!topic) {
+      this.logger.warn(`失败通知丢弃：发件人 ${original.from} 非 ns 形态身份（flat 兼容已删除）`);
+      return;
+    }
     const notice: BusMessage = {
       id: newMsgId(),
       from: this.selfIdentity,
@@ -457,7 +472,7 @@ export class Daemon {
       expect_reply: false,
       timestamp: new Date().toISOString(),
     };
-    await this.publish(senderTopic(original.from), notice);
+    await this.publish(topic, notice);
     this.logger.warn(`失败通知已发送 → ${original.from}: ${reason}`);
   }
 
@@ -468,7 +483,7 @@ export class Daemon {
     await this.listener.publish(topic, JSON.stringify(msg));
   }
 
-  /** 指标上报（TASK-19）：publish 到 /agenthub/ai/metric/<ns>/<client_id>；连接未就绪静默跳过 */
+  /** 指标上报（TASK-19）：publish 到 /agentbus/ai/metric/<ns>/<client_id>；连接未就绪静默跳过 */
   private publishMetric(): void {
     if (!this.started || !this.listener || !this.listener.isConnected()) return;
     const cfg = this.opts.config;

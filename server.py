@@ -15,7 +15,7 @@ MCP MQTT Bridge Server — Agent 实时通信版
 }
 
 Topic:
-    /agenthub/ai/channel/{client_id}/message
+    /agentbus/ai/channel/{client_id}/message
 
 MCP 工具：
 ├── register_agent(name, description, capabilities)  注册 Agent
@@ -69,16 +69,15 @@ MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
 
 # ─── Topic ────────────────────────────────────────────────────────────────────
-TOPIC_MESSAGE = "/agenthub/ai/channel/{client_id}/message"
+TOPIC_MESSAGE = "/agentbus/ai/channel/{client_id}/message"
 
 # TASK-19：daemon 指标上报通道（与消息 topic 平行命名，hub 通配订阅汇总）
-TOPIC_METRIC_PREFIX = "/agenthub/ai/metric/"
-TOPIC_METRIC_WILDCARD = "/agenthub/ai/metric/#"
+TOPIC_METRIC_PREFIX = "/agentbus/ai/metric/"
+TOPIC_METRIC_WILDCARD = "/agentbus/ai/metric/#"
 
-# TASK-24：共享连接通配订阅（架构 11.8 演进方案 2）：flat + ns 两条 message 通配
-TOPIC_MESSAGE_PREFIX = "/agenthub/ai/channel/"
-TOPIC_MESSAGE_WILDCARD_FLAT = "/agenthub/ai/channel/+/message"
-TOPIC_MESSAGE_WILDCARD_NS = "/agenthub/ai/channel/+/+/message"
+# 四期：共享连接通配订阅（flat 兼容已删除，仅 ns 形态）
+TOPIC_MESSAGE_PREFIX = "/agentbus/ai/channel/"
+TOPIC_MESSAGE_WILDCARD_NS = "/agentbus/ai/channel/+/+/message"
 
 # 消息体上限（架构 11.8 缺陷 5）：防止异常大包占满 broker 与内存
 MAX_TEXT_BYTES = 64 * 1024
@@ -90,7 +89,7 @@ def build_sub_topic(client_id: str, ns: Optional[str] = None) -> str:
     """构造订阅/推送 topic。ns=None → 旧 flat topic（兼容存量）；显式 ns → ns topic"""
     if ns is None:
         return TOPIC_MESSAGE.format(client_id=client_id)
-    return f"/agenthub/ai/channel/{ns}/{client_id}/message"
+    return f"/agentbus/ai/channel/{ns}/{client_id}/message"
 
 
 def resolve_target(t: str) -> tuple:
@@ -151,28 +150,24 @@ def check_text_size(text: Optional[str]) -> None:
 
 
 def parse_metric_topic(topic: str) -> Optional[str]:
-    """TASK-19：metric topic → daemon 身份。/agenthub/ai/metric/<ns>/<cid> → "ns/cid"；
-    flat 兼容 /agenthub/ai/metric/<cid> → "cid"；非法/超段返回 None"""
+    """TASK-19：metric topic → daemon 身份。/agentbus/ai/metric/<ns>/<cid> → "ns/cid"；
+    四期：flat 兼容已删除，旧格式/非法/超段返回 None"""
     if not topic or not topic.startswith(TOPIC_METRIC_PREFIX):
         return None
     parts = topic[len(TOPIC_METRIC_PREFIX):].split("/")
-    if len(parts) == 1 and parts[0]:
-        return parts[0]
     if len(parts) == 2 and parts[0] and parts[1]:
         return f"{parts[0]}/{parts[1]}"
     return None
 
 
 def parse_message_topic(topic: str) -> Optional[tuple]:
-    """TASK-24：message topic → (ns_or_None, client_id)。共享连接按 topic 路由的第一步：
-    flat /agenthub/ai/channel/<cid>/message → (None, cid)；
-    ns /agenthub/ai/channel/<ns>/<cid>/message → (ns, cid)；其余（含 metric）返回 None"""
+    """TASK-24：message topic → (ns, client_id)。共享连接按 topic 路由的第一步：
+    ns /agentbus/ai/channel/<ns>/<cid>/message → (ns, cid)；
+    四期：flat 兼容已删除，其余（含 metric）返回 None"""
     if (not topic or not topic.startswith(TOPIC_MESSAGE_PREFIX)
             or not topic.endswith("/message")):
         return None
     parts = topic[len(TOPIC_MESSAGE_PREFIX):-len("/message")].split("/")
-    if len(parts) == 1 and parts[0]:
-        return (None, parts[0])
     if len(parts) == 2 and parts[0] and parts[1]:
         return (parts[0], parts[1])
     return None
@@ -260,8 +255,8 @@ def render_broker_acl(hub_user: str, teams: List[dict]) -> str:
         ns = t["name"]
         lines += [
             f"user {team_broker_user(ns)}",
-            f"topic readwrite /agenthub/ai/channel/{ns}/#",
-            f"topic write /agenthub/ai/metric/{ns}/#",
+            f"topic readwrite /agentbus/ai/channel/{ns}/#",
+            f"topic write /agentbus/ai/metric/{ns}/#",
             "",
         ]
     return "\n".join(lines)
@@ -606,13 +601,11 @@ def start_shared_client() -> None:
     def on_connect(c, userdata, flags, rc, properties=None):
         if rc == 0:
             c.subscribe([
-                (TOPIC_MESSAGE_WILDCARD_FLAT, 2),
                 (TOPIC_MESSAGE_WILDCARD_NS, 2),
                 (TOPIC_METRIC_WILDCARD, 1),
             ])
             _shared_ready.set()
-            logger.info(f"[hub-shared] subscribed to {TOPIC_MESSAGE_WILDCARD_FLAT}, "
-                        f"{TOPIC_MESSAGE_WILDCARD_NS}, {TOPIC_METRIC_WILDCARD}")
+            logger.info(f"[hub-shared] subscribed to {TOPIC_MESSAGE_WILDCARD_NS}, {TOPIC_METRIC_WILDCARD}")
         else:
             logger.error(f"[hub-shared] connect failed: rc={rc}")
 

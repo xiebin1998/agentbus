@@ -2,8 +2,8 @@
 
 契约（架构 3.1.1 / 三期清单）：
 - 团队名即 ns（小写字母/数字/中划线），broker 账号 = team-<团队名>
-- ACL 渲染：hub 账号全量 readwrite #；团队账号 readwrite /agenthub/ai/channel/<ns>/#、
-  write /agenthub/ai/metric/<ns>/#（跨团队 publish 被 broker 拒，验收项）
+- ACL 渲染：hub 账号全量 readwrite #；团队账号 readwrite /agentbus/ai/channel/<ns>/#、
+  write /agentbus/ai/metric/<ns>/#（跨团队 publish 被 broker 拒，验收项）
 - 控制台 API：GET/POST /api/console/teams、DELETE /api/console/teams/{name}，
   受 TASK-25 token 鉴权保护
 """
@@ -30,8 +30,8 @@ def test_render_broker_acl():
     # 团队账号仅本 ns 前缀
     assert "user team-iot" in acl
     iot_block = acl.split("user team-iot", 1)[1].split("user ", 1)[0]
-    assert "topic readwrite /agenthub/ai/channel/iot/#" in iot_block
-    assert "topic write /agenthub/ai/metric/iot/#" in iot_block
+    assert "topic readwrite /agentbus/ai/channel/iot/#" in iot_block
+    assert "topic write /agentbus/ai/metric/iot/#" in iot_block
     assert "pay" not in iot_block
     assert "user team-pay" in acl
 

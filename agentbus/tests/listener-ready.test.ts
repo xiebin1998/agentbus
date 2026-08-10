@@ -45,7 +45,7 @@ describe("listener 就绪门控", () => {
       }, 300);
     };
 
-    const topic = "/agenthub/ai/channel/default/gate-test/message";
+    const topic = "/agentbus/ai/channel/default/gate-test/message";
     const received: string[] = [];
     const listener = createListener({
       broker: { host: "127.0.0.1", port },

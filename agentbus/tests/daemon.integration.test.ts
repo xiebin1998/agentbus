@@ -10,7 +10,7 @@ import aedes from "aedes";
 import mqtt, { type MqttClient } from "mqtt";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { AgentBusConfig } from "../src/config.js";
-import { Daemon, type InjectContext } from "../src/daemon/daemon.js";
+import { Daemon, senderTopic, type InjectContext } from "../src/daemon/daemon.js";
 import type { BusMessage } from "../src/protocol.js";
 
 let broker: aedes.Aedes;
@@ -58,13 +58,13 @@ afterAll(async () => {
   server.close();
 });
 
-/** 发件人客户端：订阅自身 flat topic 收 ack/代回/失败通知 */
+/** 发件人客户端：订阅自身 ns 形态 topic 收 ack/代回/失败通知（四期：flat 已删除） */
 async function makeSender(): Promise<{ client: MqttClient; received: BusMessage[] }> {
   const received: BusMessage[] = [];
   const client = mqtt.connect(`mqtt://127.0.0.1:${port}`, { clientId: "be-svc" });
   await new Promise<void>((resolve) => client.on("connect", () => resolve()));
   await new Promise<void>((resolve) =>
-    client.subscribe("/agenthub/ai/channel/be-svc/message", { qos: 1 }, () => resolve()),
+    client.subscribe("/agentbus/ai/channel/default/be-svc/message", { qos: 1 }, () => resolve()),
   );
   client.on("message", (_t, payload) => {
     received.push(JSON.parse(payload.toString("utf-8")) as BusMessage);
@@ -75,13 +75,20 @@ async function makeSender(): Promise<{ client: MqttClient; received: BusMessage[
 function publishToDaemon(msg: Record<string, unknown>): void {
   broker.publish({
     cmd: "publish",
-    topic: "/agenthub/ai/channel/default/fe-test/message",
+    topic: "/agentbus/ai/channel/default/fe-test/message",
     payload: JSON.stringify({ type: "text", hop: 0, expect_reply: true, ...msg }),
     qos: 1,
     retain: false,
     dup: false,
   }, () => {});
 }
+
+describe("四期：senderTopic flat 兼容已删除（纯函数）", () => {
+  it("ns 形态身份 → ns topic；无 ns 段（flat）返回 null", () => {
+    expect(senderTopic("pay/c1")).toBe("/agentbus/ai/channel/pay/c1/message");
+    expect(senderTopic("be-svc")).toBeNull();
+  });
+});
 
 describe("daemon 端到端：路由 + ack + 会话", () => {
   const records: Recorded[] = [];
@@ -111,10 +118,10 @@ describe("daemon 端到端：路由 + ack + 会话", () => {
   });
 
   it("入站注入默认工具，信封携带 [AgentBus] 元数据与 readonly 指令", async () => {
-    publishToDaemon({ id: "msg-e2e-1", from: "be-svc", to: "fe-test", text: "你好" });
+    publishToDaemon({ id: "msg-e2e-1", from: "default/be-svc", to: "fe-test", text: "你好" });
     await waitFor(() => records.length === 1);
     const env = records[0]!.ctx.envelope;
-    expect(env.split("\n")[0]).toBe("[AgentBus] id=msg-e2e-1 from=be-svc hop=0 expect_reply=true mode=readonly");
+    expect(env.split("\n")[0]).toBe("[AgentBus] id=msg-e2e-1 from=default/be-svc hop=0 expect_reply=true mode=readonly");
     expect(env).toContain("禁止修改任何文件");
     expect(env.trimEnd().endsWith("你好")).toBe(true);
     expect(records[0]!.ctx.mode).toBe("readonly");
@@ -135,18 +142,18 @@ describe("daemon 端到端：路由 + ack + 会话", () => {
 
   it("会话写入 sessions.json（UUID），同一发件人复用", async () => {
     const reg = JSON.parse(readFileSync(join(dir, "sessions.json"), "utf-8"));
-    const firstSession = reg.senders["be-svc"].kilo.sessionId;
+    const firstSession = reg.senders["default/be-svc"].kilo.sessionId;
     expect(firstSession).toMatch(/^[0-9a-f-]{36}$/);
     expect(records[0]!.ctx.sessionId).toBe(firstSession);
 
-    publishToDaemon({ id: "msg-e2e-2", from: "be-svc", to: "fe-test", text: "再来一条" });
+    publishToDaemon({ id: "msg-e2e-2", from: "default/be-svc", to: "fe-test", text: "再来一条" });
     await waitFor(() => records.length === 2);
     expect(records[1]!.ctx.sessionId).toBe(firstSession);
     expect(records[1]!.ctx.isNew).toBe(false);
   });
 
   it("重复 msg id 被去重", async () => {
-    publishToDaemon({ id: "msg-e2e-1", from: "be-svc", to: "fe-test", text: "重复投递" });
+    publishToDaemon({ id: "msg-e2e-1", from: "default/be-svc", to: "fe-test", text: "重复投递" });
     await new Promise((r) => setTimeout(r, 300));
     expect(records.length).toBe(2);
   });
@@ -179,7 +186,7 @@ describe("代回通道分支语义", () => {
     sender = await makeSender();
     await waitFor(() => daemon.status().connected);
 
-    publishToDaemon({ id: "msg-nr-1", from: "be-svc", to: "fe-test", text: "通知你一下", expect_reply: false });
+    publishToDaemon({ id: "msg-nr-1", from: "default/be-svc", to: "fe-test", text: "通知你一下", expect_reply: false });
     await waitFor(() => records.length === 1);
     expect(records[0]!.ctx.envelope).toContain("无需回复");
     await new Promise((r) => setTimeout(r, 400));
@@ -203,7 +210,7 @@ describe("代回通道分支语义", () => {
     sender = await makeSender();
     await waitFor(() => daemon.status().connected);
 
-    publishToDaemon({ id: "msg-fail-1", from: "be-svc", to: "fe-test", text: "请处理" });
+    publishToDaemon({ id: "msg-fail-1", from: "default/be-svc", to: "fe-test", text: "请处理" });
     await waitFor(() => sender.received.length >= 1);
     const notice = sender.received[0]!;
     expect(notice.type).toBe("control");
@@ -220,7 +227,7 @@ describe("代回通道分支语义", () => {
     dir = mkdtempSync(join(tmpdir(), "agentbus-daemon-trust-"));
     const records: Recorded[] = [];
     const daemon = new Daemon({
-      config: makeConfig({ trust_map: { "be-svc": "full" }, ack: false }),
+      config: makeConfig({ trust_map: { "default/be-svc": "full" }, ack: false }),
       workDir: dir,
       inject: async (ctx) => {
         records.push({ ctx });
@@ -231,7 +238,7 @@ describe("代回通道分支语义", () => {
     sender = await makeSender();
     await waitFor(() => daemon.status().connected);
 
-    publishToDaemon({ id: "msg-trust-1", from: "be-svc", to: "fe-test", text: "全权处理" });
+    publishToDaemon({ id: "msg-trust-1", from: "default/be-svc", to: "fe-test", text: "全权处理" });
     await waitFor(() => records.length === 1);
     expect(records[0]!.ctx.mode).toBe("full");
     expect(records[0]!.ctx.envelope.split("\n")[0]).toContain("mode=full");
@@ -264,7 +271,7 @@ describe("一期安全验收（架构第 10 章）", () => {
     const dir = mkdtempSync(join(tmpdir(), "agentbus-sec-"));
     const records: Recorded[] = [];
     const daemon = new Daemon({
-      config: makeConfig({ allowed_senders: ["trusted-only"] }),
+      config: makeConfig({ allowed_senders: ["default/trusted-only"] }),
       workDir: dir,
       inject: async (ctx) => {
         records.push({ ctx });
@@ -274,7 +281,7 @@ describe("一期安全验收（架构第 10 章）", () => {
     expect(daemon.start()).toMatchObject({ started: true });
     await waitFor(() => daemon.status().connected);
 
-    publishToDaemon({ id: "msg-sec-1", from: "evil-src", to: "fe-test", text: "恶意试探" });
+    publishToDaemon({ id: "msg-sec-1", from: "default/evil-src", to: "fe-test", text: "恶意试探" });
     await new Promise((r) => setTimeout(r, 400));
     expect(records.length).toBe(0);
     const log = readFileSync(join(dir, "logs", "daemon.log"), "utf-8");
@@ -299,7 +306,7 @@ describe("一期安全验收（架构第 10 章）", () => {
     expect(daemon.start()).toMatchObject({ started: true });
     await waitFor(() => daemon.status().connected);
 
-    publishToDaemon({ id: "msg-hop-1", from: "be-svc", to: "fe-test", text: "环路消息", hop: 4 });
+    publishToDaemon({ id: "msg-hop-1", from: "default/be-svc", to: "fe-test", text: "环路消息", hop: 4 });
     await new Promise((r) => setTimeout(r, 400));
     expect(records.length).toBe(0);
     const log = readFileSync(join(dir, "logs", "daemon.log"), "utf-8");
@@ -332,7 +339,7 @@ describe("TASK-29：并发不串话（同一发件人回合串行，PLAN T25）"
     await waitFor(() => daemon.status().connected);
 
     for (let i = 1; i <= 3; i++) {
-      publishToDaemon({ id: `msg-conc-${i}`, from: "be-svc", to: "fe-test", text: `第${i}条` });
+      publishToDaemon({ id: `msg-conc-${i}`, from: "default/be-svc", to: "fe-test", text: `第${i}条` });
     }
     await waitFor(() => order.length === 3, 8000);
     expect(maxActive).toBe(1); // 不串话核心：同一会话零重叠
@@ -370,7 +377,7 @@ describe("TASK-29：重连自愈（broker 抖动后自动恢复，PLAN T25）", 
     await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
     await waitFor(() => daemon.status().connected, 15_000);
 
-    publishToDaemon({ id: "msg-recon-1", from: "be-svc", to: "fe-test", text: "重连后第一条" });
+    publishToDaemon({ id: "msg-recon-1", from: "default/be-svc", to: "fe-test", text: "重连后第一条" });
     await waitFor(() => records.length === 1, 8000);
     expect(records[0]!.ctx.msg.id).toBe("msg-recon-1");
 

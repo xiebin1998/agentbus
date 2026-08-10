@@ -14,7 +14,7 @@ export interface ListenerOptions {
   broker: BrokerConfig;
   /** 连接 clientId：agentbus-<ns>-<client_id> */
   clientId: string;
-  /** 订阅 topic：/agenthub/ai/channel/<ns>/<client_id>/message */
+  /** 订阅 topic：/agentbus/ai/channel/<ns>/<client_id>/message */
   topic: string;
   /** 收到消息（原始 JSON 字符串）；解析与路由在 daemon 侧 */
   onMessage: (payloadJson: string, topic: string) => void;

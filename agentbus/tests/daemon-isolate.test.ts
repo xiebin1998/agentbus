@@ -42,7 +42,7 @@ afterAll(async () => {
 function publish(from: string, id: string, text: string): void {
   broker.publish({
     cmd: "publish",
-    topic: "/agenthub/ai/channel/default/fe-iso/message",
+    topic: "/agentbus/ai/channel/default/fe-iso/message",
     payload: JSON.stringify({ id, from, to: "fe-iso", text, type: "text", hop: 0, expect_reply: false }),
     qos: 1,
     retain: false,

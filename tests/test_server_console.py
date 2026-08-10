@@ -210,7 +210,7 @@ def test_distribute_permission_waits_for_puback():
     try:
         assert server.distribute_permission_update("ns/a", {"inbound_mode": "readonly"}) is True
         topic, payload, qos = ok.published[0]
-        assert topic == "/agenthub/ai/channel/ns/a/message" and qos == 1
+        assert topic == "/agentbus/ai/channel/ns/a/message" and qos == 1
         import json as _json
         msg = _json.loads(payload)
         assert msg["type"] == "control" and msg["kind"] == "config_update"
@@ -255,7 +255,7 @@ def test_metric_client_publish_delivers_end_to_end():
     except Exception:
         import pytest
         pytest.skip("本地 broker 不可达，跳过端到端验证")
-    sub.subscribe("/agenthub/ai/metric/#", qos=1)
+    sub.subscribe("/agentbus/ai/metric/#", qos=1)
     sub.loop_start()
     for _ in range(30):
         if conn["rc"] is not None:
@@ -272,13 +272,13 @@ def test_metric_client_publish_delivers_end_to_end():
     _apply_auth(pub)
     pub.connect(host, port, keepalive=30)
     pub.loop_start()
-    info = pub.publish("/agenthub/ai/metric/pytest/x", '{"type":"metric"}', qos=1)
+    info = pub.publish("/agentbus/ai/metric/pytest/x", '{"type":"metric"}', qos=1)
     info.wait_for_publish(timeout=5.0)
     assert info.is_published()
     time.sleep(1.5)
     sub.loop_stop(); sub.disconnect()
     pub.loop_stop(); pub.disconnect()
-    assert any(t == "/agenthub/ai/metric/pytest/x" for t, _ in received), \
+    assert any(t == "/agentbus/ai/metric/pytest/x" for t, _ in received), \
         f"PUBACK 已到但订阅者未收到（broker={host}:{port}）"
 
 

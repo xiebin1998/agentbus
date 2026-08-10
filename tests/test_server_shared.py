@@ -16,25 +16,26 @@ import server
 
 # ─── parse_message_topic：message topic → (ns_or_None, client_id) ────────────
 
-def test_parse_message_topic_flat():
-    assert server.parse_message_topic("/agenthub/ai/channel/qwenpaw/message") == (None, "qwenpaw")
+def test_parse_message_topic_flat_removed():
+    """四期：flat 兼容已删除，旧格式一律 None"""
+    assert server.parse_message_topic("/agentbus/ai/channel/qwenpaw/message") is None
 
 
 def test_parse_message_topic_ns():
-    assert server.parse_message_topic("/agenthub/ai/channel/team-a/dev-1/message") == ("team-a", "dev-1")
+    assert server.parse_message_topic("/agentbus/ai/channel/team-a/dev-1/message") == ("team-a", "dev-1")
 
 
 def test_parse_message_topic_invalid():
-    assert server.parse_message_topic("/agenthub/ai/channel/message") is None          # 缺身份段
-    assert server.parse_message_topic("/agenthub/ai/channel/a/b/c/message") is None    # 超段
-    assert server.parse_message_topic("/agenthub/ai/channel//message") is None         # 空身份
-    assert server.parse_message_topic("/agenthub/ai/metric/a") is None                 # 非 message topic
+    assert server.parse_message_topic("/agentbus/ai/channel/message") is None          # 缺身份段
+    assert server.parse_message_topic("/agentbus/ai/channel/a/b/c/message") is None    # 超段
+    assert server.parse_message_topic("/agentbus/ai/channel//message") is None         # 空身份
+    assert server.parse_message_topic("/agentbus/ai/metric/a") is None                 # 非 message topic
     assert server.parse_message_topic("") is None
 
 
-def test_route_message_key_flat_and_ns():
-    assert server.route_message_key("/agenthub/ai/channel/qwenpaw/message") == "qwenpaw"
-    assert server.route_message_key("/agenthub/ai/channel/team-a/dev-1/message") == "team-a/dev-1"
+def test_route_message_key_flat_removed_and_ns():
+    assert server.route_message_key("/agentbus/ai/channel/qwenpaw/message") is None
+    assert server.route_message_key("/agentbus/ai/channel/team-a/dev-1/message") == "team-a/dev-1"
     assert server.route_message_key("/other/topic") is None
 
 
@@ -63,7 +64,7 @@ def test_send_message_publishes_via_shared_client(monkeypatch):
     result = s.send_message("hello", "other")
     assert result["status"] == "sent"
     assert len(calls) == 1
-    assert calls[0]["topic"] == "/agenthub/ai/channel/loadns/other/message"
+    assert calls[0]["topic"] == "/agentbus/ai/channel/loadns/other/message"
     assert calls[0]["qos"] == 2
     assert '"hello"' in calls[0]["payload"]
 
@@ -92,8 +93,8 @@ def test_publish_shared_delegates_to_client(monkeypatch):
         publish=lambda topic, payload, qos=0: calls.append((topic, payload, qos)) or SimpleNamespace(rc=0),
     )
     monkeypatch.setattr(server, "_shared_client", client)
-    server.publish_shared("/agenthub/ai/channel/x/message", "{}", qos=1)
-    assert calls == [("/agenthub/ai/channel/x/message", "{}", 1)]
+    server.publish_shared("/agentbus/ai/channel/x/message", "{}", qos=1)
+    assert calls == [("/agentbus/ai/channel/x/message", "{}", 1)]
 
 
 def test_publish_shared_without_client_returns_false(monkeypatch):

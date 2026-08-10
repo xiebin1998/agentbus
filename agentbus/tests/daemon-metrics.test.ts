@@ -1,15 +1,15 @@
 /**
  * TASK-19: Daemon 指标上报（架构二期：通信指标统计）
  * 通道选型：metric 类 MQTT 消息 —— daemon 周期性 publish 到
- * `/agenthub/ai/metric/<ns>/<client_id>`，hub（server.py）订阅 `/agenthub/ai/metric/#` 汇总可查。
+ * `/agentbus/ai/metric/<ns>/<client_id>`，hub（server.py）订阅 `/agentbus/ai/metric/#` 汇总可查。
  * 本文件覆盖纯逻辑层：计数器、topic 构造、payload 装配。
  */
 import { describe, expect, it } from "vitest";
 import { MetricsCollector, buildMetricPayload, metricTopic } from "../src/daemon/metrics.js";
 
 describe("metricTopic", () => {
-  it("ns 形态：/agenthub/ai/metric/<ns>/<client_id>", () => {
-    expect(metricTopic("iot", "fe-zhangsan")).toBe("/agenthub/ai/metric/iot/fe-zhangsan");
+  it("ns 形态：/agentbus/ai/metric/<ns>/<client_id>", () => {
+    expect(metricTopic("iot", "fe-zhangsan")).toBe("/agentbus/ai/metric/iot/fe-zhangsan");
   });
 });
 

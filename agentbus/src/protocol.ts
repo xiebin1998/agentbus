@@ -1,16 +1,16 @@
 /**
  * AgentBus 总线消息协议（架构 3.2）—— daemon/adapter 的单一事实来源
  *
- * 设计红线：normalize 对任何非法输入都不抛异常（旧客户端兼容 + 防恶意消息打挂路由）
+ * 设计红线：normalize 对任何非法输入都不抛异常（防恶意消息打挂路由；四期起 flat 身份已废弃）
  */
 import { randomBytes } from "node:crypto";
 
-/** 总线消息（qwenpaw 兼容格式 + v1.1 新增字段） */
+/** 总线消息（v1.1）：四期起身份一律 ns 形态 <ns>/<client_id> */
 export interface BusMessage {
   id: string;
-  /** 发送方总线身份（flat 客户端为 client_id；ns 客户端为 <ns>/<client_id>） */
+  /** 发送方总线身份 <ns>/<client_id> */
   from: string;
-  /** 兼容 qwenpaw 的冗余发送方字段 */
+  /** 冗余发送方字段（历史兼容，与 from 同值） */
   redirect_client_id: string;
   /** 目标：client_id / <ns>/<client_id> / 带 @tool 后缀 / 数组群发 */
   to: string | string[];
