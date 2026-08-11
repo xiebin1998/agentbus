@@ -4,7 +4,7 @@
  * 随指标周期 GET {hub}/api/agent/snapshot?ns=..（Basic=broker 凭证，同 init 注册上报）
  * → 原子写 workDir/agents.json（tmp+rename）；任何失败静默保留旧文件（快照是缓存，不是事实源）。
  */
-import { renameSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface SnapshotSyncOptions {
@@ -54,5 +54,28 @@ export async function syncAgentsSnapshot(opts: SnapshotSyncOptions): Promise<Sna
     return { ok: true };
   } catch {
     return { ok: false };
+  }
+}
+
+/**
+ * Plan 3 问题 1：按 client_id 查快照里的 Agent 名称（会话标题用名称而非裸 ID）。
+ * 快照是缓存不是事实源：文件缺失/损坏/未命中/名称非法一律 null，调用方回退 client_id。
+ */
+export function lookupAgentName(workDir: string, clientId: string): string | null {
+  try {
+    const raw = readFileSync(join(workDir, "agents.json"), "utf-8");
+    const parsed: unknown = JSON.parse(raw);
+    const agents = (parsed as { agents?: unknown }).agents;
+    if (!Array.isArray(agents)) return null;
+    for (const entry of agents) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const e = entry as { client_id?: unknown; name?: unknown };
+      if (e.client_id === clientId && typeof e.name === "string" && e.name.trim()) {
+        return e.name.trim();
+      }
+    }
+    return null;
+  } catch {
+    return null;
   }
 }

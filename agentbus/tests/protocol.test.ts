@@ -89,6 +89,7 @@ describe("makeAck", () => {
     reply_to: null,
     hop: 1,
     expect_reply: true,
+    session: null,
     timestamp: "t0",
   };
 
@@ -119,6 +120,7 @@ describe("makeReply（daemon 代回）", () => {
     reply_to: null,
     hop: 1,
     expect_reply: true,
+    session: null,
     timestamp: "t0",
   };
 
@@ -131,4 +133,41 @@ describe("makeReply（daemon 代回）", () => {
     expect(reply.hop).toBe(2);
     expect(reply.expect_reply).toBe(false);
   });
+});
+
+describe("session 字段（Plan 3 问题 2：会话回注路由依据）", () => {
+  it("合法字符串保留（发送方本地会话 ID）", () => {
+    expect(normalize({ from: "a", session: "ses_abc123" })!.session).toBe("ses_abc123");
+  });
+
+  it("缺失/非法/空串回退 null（旧客户端不带此字段，兼容不变）", () => {
+    expect(normalize({ from: "a" })!.session).toBeNull();
+    expect(normalize({ from: "a", session: 42 })!.session).toBeNull();
+    expect(normalize({ from: "a", session: "" })!.session).toBeNull();
+  });
+
+  it("代回回显原消息 session（发起方据此把回复注回原会话而非新建）", () => {
+    const withSession = { ...original, session: "ses_origin" };
+    expect(makeReply("fe-zhangsan", withSession, "ok").session).toBe("ses_origin");
+    expect(makeReply("fe-zhangsan", original, "ok").session).toBeNull();
+  });
+
+  it("ack 不携带 session（控制消息不参与会话路由）", () => {
+    const withSession = { ...original, session: "ses_origin" };
+    expect(makeAck("fe-zhangsan", withSession).session).toBeNull();
+  });
+
+  const original: BusMessage = {
+    id: "msg-orig",
+    from: "be-svc",
+    redirect_client_id: "be-svc",
+    to: "fe-zhangsan",
+    text: "请查一下",
+    type: "text",
+    reply_to: null,
+    hop: 1,
+    expect_reply: true,
+    session: null,
+    timestamp: "t0",
+  };
 });

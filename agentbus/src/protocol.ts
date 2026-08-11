@@ -23,6 +23,11 @@ export interface BusMessage {
   hop: number;
   /** 是否期望对方回复；自动回复/ack 一律 false（终止互询） */
   expect_reply: boolean;
+  /**
+   * 发送方本地会话 id（可选，Plan 3 问题 2）：发起新消息时携带，
+   * 代回时协议层自动回显（makeReply），发起方 daemon 据此把回复注回原会话而非新建。
+   */
+  session: string | null;
   timestamp: string;
 }
 
@@ -64,6 +69,7 @@ export function normalize(raw: unknown): BusMessage | null {
     reply_to: typeof obj.reply_to === "string" && obj.reply_to ? obj.reply_to : null,
     hop,
     expect_reply: typeof obj.expect_reply === "boolean" ? obj.expect_reply : true,
+    session: typeof obj.session === "string" && obj.session ? obj.session : null,
     timestamp:
       typeof obj.timestamp === "string" && obj.timestamp
         ? obj.timestamp
@@ -85,12 +91,14 @@ export function makeAck(selfId: string, original: BusMessage): BusMessage {
     reply_to: original.id,
     hop: original.hop + 1,
     expect_reply: false,
+    session: null,
     timestamp: new Date().toISOString(),
   };
 }
 
 /**
  * 组装代回复（架构 4.6）：daemon 捕获注入输出后回传给发件人，expect_reply=false 终止链条。
+ * session 回显原消息携带的发起方会话 id：发起方 daemon 据此把回复注回原会话（Plan 3 问题 2）。
  */
 export function makeReply(selfId: string, original: BusMessage, text: string): BusMessage {
   return {
@@ -103,6 +111,7 @@ export function makeReply(selfId: string, original: BusMessage, text: string): B
     reply_to: original.id,
     hop: original.hop + 1,
     expect_reply: false,
+    session: original.session,
     timestamp: new Date().toISOString(),
   };
 }

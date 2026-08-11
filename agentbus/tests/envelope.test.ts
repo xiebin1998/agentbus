@@ -66,3 +66,23 @@ describe("expect_reply 语义", () => {
     expect(env).not.toContain("无需调用 send_message");
   });
 });
+
+describe("session 字段（Plan 3 问题 2：会话路由上下文）", () => {
+  it("携带注入会话：信封出现 session=<本地会话ID>（发消息时用作 session_id）", () => {
+    const env = buildEnvelope(msg(), "readonly", "ses_local");
+    expect(env).toContain("session=ses_local");
+  });
+
+  it("原消息带发送方会话：显示 reply_session（手动回复时用作 session_id 回传）", () => {
+    const env = buildEnvelope(msg({ session: "ses_remote" }), "readonly", "ses_local");
+    expect(env).toContain("reply_session=ses_remote");
+  });
+
+  it("兼容：不传注入会话且原消息无 session 时无会话行；原消息无 session 时不出现 reply_session", () => {
+    const env = buildEnvelope(msg(), "readonly");
+    expect(env).not.toContain("session=");
+    expect(env).not.toContain("reply_session=");
+    const env2 = buildEnvelope(msg(), "readonly", "ses_local");
+    expect(env2).not.toContain("reply_session=");
+  });
+});

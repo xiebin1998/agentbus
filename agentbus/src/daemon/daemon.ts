@@ -26,7 +26,7 @@ import { knownSenders, loadRegistry, saveRegistry, touchSession, type RegistryDa
 import { Router, type RouterConfig } from "./router.js";
 import { ServeManager } from "./serve-manager.js";
 import { SessionLock } from "./session-lock.js";
-import { syncAgentsSnapshot } from "./snapshot.js";
+import { syncAgentsSnapshot, lookupAgentName } from "./snapshot.js";
 import { buildEnvelope } from "./envelope.js";
 import { resolveTrust } from "./trust.js";
 import { applyReadonly, removeReadonly } from "../isolate.js";
@@ -235,8 +235,16 @@ export class Daemon {
       () => randomUUID(),
       Date.now(),
     );
+    // Plan 3 问题 2：回复携带发起方会话 id → 注回原会话（不按发件人身份新建），
+    // 注册表同步回写，同一发件人后续消息续接同一会话
+    const replyToSession =
+      Boolean(message!.reply_to) && typeof message!.session === "string" && message!.session !== "";
+    if (replyToSession) {
+      entry.sessionId = message!.session!;
+      this.logger.info(`回复 ${message!.id} 携带 session，注回原会话 ${entry.sessionId}`);
+    }
     saveRegistry(this.regPath, this.registry!);
-    if (isNew) {
+    if (isNew && !replyToSession) {
       this.logger.info(`新发件人 ${message!.from}，创建 ${decision.tool} 会话 ${entry.sessionId}`);
     }
 
@@ -249,7 +257,7 @@ export class Daemon {
       return;
     }
 
-    void this.runLocked(decision.tool, entry.sessionId, message!, isNew);
+    void this.runLocked(decision.tool, entry.sessionId, message!, replyToSession ? false : isNew);
   }
 
   /** 按 工具|发件人 串行排队（同源同会话回合不重叠）；限速队列续排也走同一入口 */
@@ -264,8 +272,9 @@ export class Daemon {
     const cfg = this.opts.config;
     // 信任分级 + 信封（4.6/4.7）：参数层与提示层一致
     const mode = resolveTrust(msg.from, cfg.inbound_mode, cfg.trust_map);
-    const envelope = buildEnvelope(msg, mode);
-    const senderName = msg.from.includes("/") ? msg.from.slice(msg.from.indexOf("/") + 1) : msg.from;
+    // Plan 3 问题 1：会话标题优先用快照里的 Agent 名称（如"心语大师"），未命中回退 client_id
+    const senderClientId = msg.from.includes("/") ? msg.from.slice(msg.from.indexOf("/") + 1) : msg.from;
+    const senderName = lookupAgentName(this.opts.workDir, senderClientId) ?? senderClientId;
 
     // TASK-30 隔离层（可选）：readonly 回合在 OS 层物理禁写，参数层被绕过时仍安全
     let isolated = false;
@@ -276,17 +285,39 @@ export class Daemon {
     let output = "";
     let failed = false;
     let failReason = "";
+    // Plan 3 问题 2：回复带 session 须注回原会话；注入失败（原会话已删）回退现状新建一次
+    const replyToSession = Boolean(msg.reply_to) && typeof msg.session === "string" && msg.session !== "";
     try {
       const handler = this.opts.inject ?? this.defaultInject();
-      const turn = await handler({ tool, sessionId, envelope, msg, mode, senderName, isNew });
-      output = turn.output;
-      // kilo 族会话 id 由 CLI 侧生成：回写注册表保持续接正确
-      if (turn.sessionId && turn.sessionId !== sessionId) {
-        const perTool = this.registry!.senders[msg.from];
-        if (perTool?.[tool]) {
-          perTool[tool]!.sessionId = turn.sessionId;
-          saveRegistry(this.regPath, this.registry!);
-          sessionId = turn.sessionId;
+      const attempts = replyToSession ? 2 : 1;
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        // 信封携带本次注入的会话 id（agent 发消息时用作 session_id）
+        const envelope = buildEnvelope(msg, mode, sessionId);
+        try {
+          const turn = await handler({ tool, sessionId, envelope, msg, mode, senderName, isNew });
+          output = turn.output;
+          // kilo 族会话 id 由 CLI 侧生成：回写注册表保持续接正确
+          if (turn.sessionId && turn.sessionId !== sessionId) {
+            const perTool = this.registry!.senders[msg.from];
+            if (perTool?.[tool]) {
+              perTool[tool]!.sessionId = turn.sessionId;
+              saveRegistry(this.regPath, this.registry!);
+              sessionId = turn.sessionId;
+            }
+          }
+          break;
+        } catch (e) {
+          if (attempt >= attempts) throw e;
+          // 原会话可能已被删：回退现状行为（新建会话）重试一次
+          const freshId = randomUUID();
+          const perTool = this.registry!.senders[msg.from];
+          if (perTool?.[tool]) {
+            perTool[tool]!.sessionId = freshId;
+            saveRegistry(this.regPath, this.registry!);
+          }
+          this.logger.warn(`注回原会话失败（${(e as Error).message}），回退新建会话 ${freshId}`);
+          sessionId = freshId;
+          isNew = true;
         }
       }
     } catch (e) {
@@ -487,6 +518,7 @@ export class Daemon {
       reply_to: original.id,
       hop: original.hop + 1,
       expect_reply: false,
+      session: null,
       timestamp: new Date().toISOString(),
     };
     await this.publish(topic, notice);

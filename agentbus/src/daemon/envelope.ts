@@ -10,15 +10,26 @@
 import type { InboundMode } from "../config.js";
 import type { BusMessage } from "../protocol.js";
 
-export function buildEnvelope(msg: BusMessage, mode: InboundMode): string {
+export function buildEnvelope(msg: BusMessage, mode: InboundMode, sessionId?: string): string {
   const header =
     `[AgentBus] id=${msg.id} from=${msg.from} hop=${msg.hop} ` +
     `expect_reply=${msg.expect_reply} mode=${mode}`;
 
-  const lines: string[] = [
-    header,
+  const lines: string[] = [header];
+
+  // Plan 3 问题 2：会话路由上下文（续行，与首行键值对齐）
+  // session=本次注入的本地会话（发新消息时用作 session_id）；
+  // reply_session=发起方会话（手动回复时用作 session_id 回传，使回复落回原会话）
+  if (sessionId || msg.session) {
+    const parts: string[] = [];
+    if (sessionId) parts.push(`session=${sessionId}`);
+    if (msg.session) parts.push(`reply_session=${msg.session}`);
+    lines.push(`           ${parts.join(" ")}`);
+  }
+
+  lines.push(
     "本消息来自 AgentBus 总线，请加载 `agentbus` skill 处理（本工具不支持 skill 时按以下指令与项目 AGENTS.md 约定）。",
-  ];
+  );
 
   if (mode === "readonly") {
     lines.push("本回合为只读请求：仅允许读取文件/检索/作答，禁止修改任何文件、禁止执行命令。");
