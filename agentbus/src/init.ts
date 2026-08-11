@@ -8,6 +8,7 @@
  *   步骤 5 拉起守护进程（detached spawn daemon start）
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -29,6 +30,12 @@ export interface InitCliOptions {
   /** 四期：broker 接入凭证（控制台发放，dynsec 强制认证） */
   user?: string;
   password?: string;
+  /** TASK-32：档案名称（≤50，注册上报用；交互模式必答） */
+  agentName?: string;
+  /** TASK-32：档案描述（可选） */
+  agentDescription?: string;
+  /** TASK-32：源 config.json 路径——继承 broker/ns/凭证/tools，client_id 重随机 */
+  from?: string;
 }
 
 export interface InitReport {
@@ -45,6 +52,14 @@ export interface InitDeps {
   runner?: CliRunner;
   spawnDaemon?: (cmd: string, args: string[]) => void;
   prompter?: Prompter;
+  /** TASK-32：注册上报 HTTP 注入点（测试 mock；生产走全局 fetch） */
+  fetcher?: (url: string, init: { method: string; headers: Record<string, string>; body: string }) =>
+    Promise<{ ok: boolean; status: number }>;
+}
+
+/** TASK-32：默认身份 ag- + 8 位 hex（跨项目克隆不再撞名） */
+export function randomClientId(): string {
+  return `ag-${randomBytes(4).toString("hex")}`;
 }
 
 export interface RawInitConfig {
@@ -82,7 +97,7 @@ export function buildInitConfig(
   if (tools.length === 0) {
     throw new Error("未选择任何工具（至少接入一个 AI CLI）");
   }
-  const client_id = opts.clientId?.trim() || basename(projectRoot);
+  const client_id = opts.clientId?.trim() || randomClientId();
   const ns = opts.ns?.trim() || "default";
   const broker = parseBroker(opts.broker?.trim() || "localhost:18830");
   const sse_url =
@@ -111,15 +126,18 @@ const defaultSpawnDaemon = (cmd: string, args: string[]) => {
   spawn(cmd, args, { detached: true, stdio: "ignore" }).unref();
 };
 
-/** 幂等追加 .agentbus/ 到项目 .gitignore（不存在则创建） */
+/** 幂等追加托管条目到项目 .gitignore（不存在则创建）：
+ * .agentbus/（凭证）+ .agentbus/agents.json（TASK-32 daemon 同伴快照，勿提交） */
+const GITIGNORE_ENTRIES = [".agentbus/", ".agentbus/agents.json"];
+
 function ensureGitignoreEntry(projectRoot: string): void {
   const giPath = join(projectRoot, ".gitignore");
   const existing = existsSync(giPath) ? readFileSync(giPath, "utf-8") : "";
-  if (existing.split(/\r?\n/).some((l) => l.trim() === ".agentbus/")) {
-    return;
-  }
+  const lines = existing.split(/\r?\n/).map((l) => l.trim());
+  const missing = GITIGNORE_ENTRIES.filter((e) => !lines.includes(e));
+  if (missing.length === 0) return;
   const body = existing && !existing.endsWith("\n") ? `${existing}\n` : existing;
-  writeFileSync(giPath, `${body}.agentbus/\n`, "utf-8");
+  writeFileSync(giPath, `${body}${missing.join("\n")}\n`, "utf-8");
 }
 
 /** 五步编排；任何一步失败立即收敛进报告（ok=false），不带病推进 */
@@ -127,11 +145,51 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   const lines: string[] = [];
   const { projectRoot, homeDir } = deps;
 
+  // TASK-32：存量 config 保留原 client_id（幂等重跑不撞名）
+  const existingConfigPath = join(projectRoot, ".agentbus", "config.json");
+  let existingClientId = "";
+  if (existsSync(existingConfigPath)) {
+    try {
+      const prev = JSON.parse(readFileSync(existingConfigPath, "utf-8")) as { client_id?: unknown };
+      if (typeof prev.client_id === "string" && prev.client_id.trim()) existingClientId = prev.client_id.trim();
+    } catch {
+      /* 存量不可解析则按新建处理 */
+    }
+  }
+
+  // TASK-32：--from 克隆源配置（继承 broker/ns/凭证/tools；client_id 重随机，名称重答）
+  let eff = { ...opts };
+  if (opts.from) {
+    if (!existsSync(opts.from)) {
+      return { ok: false, lines: [`✗ --from 源配置不存在：${opts.from}`] };
+    }
+    let src: Record<string, unknown>;
+    try {
+      src = JSON.parse(readFileSync(opts.from, "utf-8")) as Record<string, unknown>;
+    } catch {
+      return { ok: false, lines: [`✗ --from 源配置非法 JSON：${opts.from}`] };
+    }
+    const sb = (src.broker ?? {}) as { host?: string; port?: number; username?: string; password?: string };
+    const srcTools = Object.keys((src.tools ?? {}) as Record<string, unknown>);
+    eff = {
+      ...eff,
+      broker: eff.broker ?? (sb.host ? `${sb.host}:${sb.port ?? 18830}` : undefined),
+      ns: eff.ns ?? (typeof src.ns === "string" ? src.ns : undefined),
+      user: eff.user ?? sb.username,
+      password: eff.password ?? sb.password,
+      tools: eff.tools ?? (srcTools.length > 0 ? srcTools : undefined),
+    };
+    lines.push(`✓ 已从 --from 继承 broker/ns/凭证/tools（client_id 重新随机）`);
+  }
+
   // 步骤 1：交互确认（--yes 全部取默认/传参）
   let answers: Required<Pick<InitCliOptions, "tools" | "scope" | "ns" | "broker" | "sseUrl">> & { clientId: string };
-  if (opts.yes) {
+  let agentName: string;
+  let agentDescription: string;
+  const defaultClientId = eff.clientId?.trim() || existingClientId || randomClientId();
+  if (eff.yes) {
     // TASK-28 一键安装契约：--yes 未指定工具时自动探测全部已知 CLI，取已安装集
-    let tools = opts.tools ?? [];
+    let tools = eff.tools ?? [];
     if (tools.length === 0) {
       const scan = await detectClis(Object.keys(TOOL_BINARIES), deps.runner);
       tools = scan.filter((d) => d.installed).map((d) => d.tool);
@@ -143,31 +201,41 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
       }
     }
     answers = {
-      ns: opts.ns ?? "default",
-      clientId: opts.clientId ?? "",
+      ns: eff.ns ?? "default",
+      clientId: defaultClientId,
       tools,
-      scope: opts.scope ?? "project",
-      broker: opts.broker ?? "localhost:18830",
-      sseUrl: opts.sseUrl ?? "",
+      scope: eff.scope ?? "project",
+      broker: eff.broker ?? "localhost:18830",
+      sseUrl: eff.sseUrl ?? "",
     };
+    // TASK-32：--yes 名称兜底目录名；--agent-name/--agent-description 覆盖
+    agentName = (eff.agentName ?? "").trim() || basename(projectRoot);
+    agentDescription = (eff.agentDescription ?? "").trim();
   } else {
     const prompter = deps.prompter;
     if (!prompter) {
       return { ok: false, lines: ["非 --yes 模式需要交互问答器（终端环境请走 CLI 入口）"] };
     }
     answers = {
-      ns: String(await prompter("ns", opts.ns ?? "default")),
-      clientId: String(await prompter("clientId", opts.clientId ?? basename(projectRoot))),
-      tools: (await prompter("tools", opts.tools ?? [])) as string[],
-      scope: (await prompter("scope", opts.scope ?? "project")) as McpScope,
-      broker: String(await prompter("broker", opts.broker ?? "localhost:18830")),
-      sseUrl: String(await prompter("sseUrl", opts.sseUrl ?? "")),
+      ns: String(await prompter("ns", eff.ns ?? "default")),
+      clientId: String(await prompter("clientId", defaultClientId)),
+      tools: (await prompter("tools", eff.tools ?? [])) as string[],
+      scope: (await prompter("scope", eff.scope ?? "project")) as McpScope,
+      broker: String(await prompter("broker", eff.broker ?? "localhost:18830")),
+      sseUrl: String(await prompter("sseUrl", eff.sseUrl ?? "")),
     };
+    // TASK-32：名称必答（默认建议目录名，空值重问）；描述可选（回车跳过）
+    agentName = "";
+    while (!agentName.trim()) {
+      agentName = String(await prompter("agentName", eff.agentName?.trim() || basename(projectRoot)));
+    }
+    agentName = agentName.trim();
+    agentDescription = String(await prompter("agentDescription", eff.agentDescription ?? "")).trim();
   }
 
   let raw: RawInitConfig;
   try {
-    raw = buildInitConfig({ ...answers, user: opts.user, password: opts.password }, projectRoot);
+    raw = buildInitConfig({ ...answers, user: eff.user, password: eff.password }, projectRoot);
   } catch (e) {
     return { ok: false, lines: [`✗ ${(e as Error).message}`] };
   }
@@ -191,9 +259,9 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8");
   lines.push(`✓ 已写入 .agentbus/config.json（身份 ${raw.ns}/${raw.client_id}）`);
 
-  // 四期：凭证落盘时保障 .agentbus/ 入 .gitignore（防误提交，幂等）
+  // TASK-32：托管条目无条件入 .gitignore（凭证 + daemon 同伴快照 agents.json，幂等）
+  ensureGitignoreEntry(projectRoot);
   if (raw.broker.password) {
-    ensureGitignoreEntry(projectRoot);
     lines.push("✓ 已保障 .agentbus/ 入 .gitignore（config.json 含接入凭证，勿提交）");
   }
 
@@ -256,6 +324,57 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   spawnDaemon(process.execPath, [binPath, "daemon", "start", "-c", configPath]);
   lines.push(`✓ 守护进程已拉起（日志: .agentbus/logs/daemon.log）`);
 
+  // TASK-32：注册上报（hub 由 sse_url 派生去路径；Basic=broker 凭证；失败不阻断）
+  await reportRegistration(raw, agentName, agentDescription, deps.fetcher, lines);
+
   lines.push(`完成！本项目已以身份 "${raw.ns}/${raw.client_id}" 接入 MQTT 总线。`);
   return { ok: true, lines };
+}
+
+/** TASK-32：向 hub 上报档案（POST /api/agent/register）；任何失败仅提示，不阻断 init */
+async function reportRegistration(
+  raw: RawInitConfig,
+  agentName: string,
+  agentDescription: string,
+  fetcher: InitDeps["fetcher"],
+  lines: string[],
+): Promise<void> {
+  const { username, password } = raw.broker;
+  if (!username || !password) {
+    lines.push("⚠ 未提供 broker 凭证，跳过注册上报（可稍后重跑 agentbus init 补注册）");
+    return;
+  }
+  let hub: string;
+  try {
+    hub = new URL(raw.sse_url).origin;
+  } catch {
+    lines.push("⚠ sse_url 非法，跳过注册上报（可稍后重跑 agentbus init 补注册）");
+    return;
+  }
+  const doFetch = fetcher ?? ((url, init) => globalThis.fetch(url, init as RequestInit)
+    .then((r) => ({ ok: r.ok, status: r.status })));
+  try {
+    const resp = await doFetch(`${hub}/api/agent/register`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+      },
+      body: JSON.stringify({
+        ns: raw.ns,
+        client_id: raw.client_id,
+        name: agentName,
+        description: agentDescription,
+        capabilities: [],
+        tools: Object.keys(raw.tools),
+      }),
+    });
+    if (resp.ok) {
+      lines.push(`✓ 注册上报成功（hub ${hub}，名称 "${agentName}"）`);
+    } else {
+      lines.push(`⚠ 注册上报失败（HTTP ${resp.status}），可稍后重跑 agentbus init 补注册`);
+    }
+  } catch (e) {
+    lines.push(`⚠ 注册上报失败（${(e as Error).message}），可稍后重跑 agentbus init 补注册`);
+  }
 }

@@ -81,6 +81,10 @@ function makeInteractivePrompter(): Prompter {
         const v = await input({ message: "MCP Server SSE URL（回车自动派生）", default: "" });
         return v;
       }
+      case "agentName":
+        return input({ message: "Agent 名称（必填，默认建议目录名）", default: String(defaultValue) });
+      case "agentDescription":
+        return input({ message: "Agent 描述（可空，回车跳过）", default: String(defaultValue || "") });
       default:
         return defaultValue;
     }
@@ -106,7 +110,10 @@ export function buildProgram(): Command {
     .option("--user <user>", "broker 接入用户名（控制台发放，四期 dynsec 强制认证）")
     .option("--password <password>", "broker 接入密码（写入 .agentbus/config.json，自动保障入 .gitignore）")
     .option("--sse-url <url>", "MCP Server SSE URL（默认按 broker host 派生）")
-    .action(async (opts: { yes?: boolean; clientId?: string; tools?: string[]; scope?: string; ns?: string; broker?: string; user?: string; password?: string; sseUrl?: string }) => {
+    .option("--agent-name <name>", "Agent 档案名称（≤50，注册上报用；默认取目录名）")
+    .option("--agent-description <desc>", "Agent 档案描述（可选，注册上报用）")
+    .option("--from <path>", "源 config.json 路径：继承 broker/ns/凭证/tools，client_id 重新随机")
+    .action(async (opts: { yes?: boolean; clientId?: string; tools?: string[]; scope?: string; ns?: string; broker?: string; user?: string; password?: string; sseUrl?: string; agentName?: string; agentDescription?: string; from?: string }) => {
       const projectRoot = process.cwd();
       const scope = (opts.scope ?? "project") as McpScope;
       const report = await runInit(
@@ -120,6 +127,9 @@ export function buildProgram(): Command {
           user: opts.user,
           password: opts.password,
           sseUrl: opts.sseUrl,
+          agentName: opts.agentName,
+          agentDescription: opts.agentDescription,
+          from: opts.from,
         },
         {
           projectRoot,

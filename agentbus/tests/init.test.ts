@@ -42,9 +42,9 @@ afterEach(() => {
 });
 
 describe("buildInitConfig 默认值生成", () => {
-  it("client_id 默认取项目目录名；ns 默认 default；broker 默认 localhost:18830", () => {
+  it("client_id 默认随机 ag-8hex（TASK-32）；ns 默认 default；broker 默认 localhost:18830", () => {
     const raw = buildInitConfig({ tools: ["qoder"] }, root);
-    expect(raw.client_id).toBe(root.split(/[\\/]/).pop());
+    expect(raw.client_id).toMatch(/^ag-[0-9a-f]{8}$/);
     expect(raw.ns).toBe("default");
     expect(raw.broker).toMatchObject({ host: "localhost", port: 18830 });
   });
@@ -172,12 +172,15 @@ describe("runInit --yes 全链路（非交互）", () => {
       { projectRoot: root, homeDir: home, runner: deps.runner, spawnDaemon: deps.spawnDaemon },
     );
     const gi = readFileSync(join(root, ".gitignore"), "utf-8");
-    expect(gi.split(".agentbus/").length - 1).toBe(1);
+    expect(gi.split("\n").filter((l) => l.trim() === ".agentbus/").length).toBe(1);
+    expect(gi.split("\n").filter((l) => l.trim() === ".agentbus/agents.json").length).toBe(1);
   });
 
-  it("四期：不传凭证时不碰 .gitignore", async () => {
+  it("TASK-32：不传凭证时仍无条件托管 .gitignore 双条目（agents.json 快照勿提交）", async () => {
     await init();
-    expect(existsSync(join(root, ".gitignore"))).toBe(false);
+    const gi = readFileSync(join(root, ".gitignore"), "utf-8");
+    expect(gi).toContain(".agentbus/");
+    expect(gi).toContain(".agentbus/agents.json");
   });
 
   it("报告包含各步骤结果且 exitCode 为 0", async () => {
@@ -260,6 +263,8 @@ describe("runInit 交互路径", () => {
       scope: "project" as const,
       broker: "localhost:18830",
       sseUrl: "",
+      agentName: "demo-agent",
+      agentDescription: "",
     };
     const prompted: string[] = [];
     const prompter = async (q: string, def?: unknown) => {
