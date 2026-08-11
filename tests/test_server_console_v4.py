@@ -296,7 +296,8 @@ def test_connect_command_install_urls(client):
     client.post("/api/console/namespaces", json={"id": "pay", "name": "支付", "description": "",
                                                  "admin_username": "pay-admin", "admin_password": "pw1"})
     data = client.get("/api/console/connect-command", params={"ns": "pay"}).json()
-    assert data["install_ps1"].startswith("iwr ") and data["install_ps1"].endswith("/install.ps1 | iex")
+    # PS 为“下载临时文件再 iex”形态（PS 5.1 的 iwr .Content 按 ANSI 解码致中文乱码）
+    assert data["install_ps1"].startswith("$env:AGENTBUS_INSTALL=") and "-OutFile" in data["install_ps1"]
     assert data["install_sh"].startswith("curl -fsSL ") and data["install_sh"].endswith("/install.sh | bash")
 
 
@@ -366,7 +367,7 @@ def test_connect_command_one_line_scripts(client):
     ps1, sh = data["install_cmd_ps1"], data["install_cmd_sh"]
     assert "$env:AGENTBUS_BROKER=" in ps1 and "$env:AGENTBUS_USER=" in ps1
     assert "$env:AGENTBUS_PASSWORD='<密码>'" in ps1 and "$env:AGENTBUS_NS=" in ps1
-    assert ps1.endswith("| iex")
+    assert ps1.endswith("iex $env:AGENTBUS_INSTALL") and "-OutFile $env:AGENTBUS_INSTALL" in ps1
     assert sh.startswith("AGENTBUS_BROKER=") and "AGENTBUS_USER=" in sh
     assert "AGENTBUS_PASSWORD='<密码>'" in sh and "AGENTBUS_NS=" in sh
     assert sh.endswith("| bash")

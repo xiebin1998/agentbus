@@ -26,12 +26,16 @@ def test_install_scripts_served(client):
 
 
 def test_install_scripts_content_matches_files(client):
-    """路由直出 scripts/ 下真实文件内容（防漂移）"""
+    """路由直出 scripts/ 下真实文件内容（防漂移）；
+    ps1 额外前置 UTF-8 BOM（PS 5.1 无 BOM 按 ANSI 解码，中文乱码）"""
     from pathlib import Path
 
     root = Path(server.__file__).resolve().parent
-    assert client.get("/install.ps1").text == (root / "scripts" / "install.ps1").read_text(encoding="utf-8")
-    assert client.get("/install.sh").text == (root / "scripts" / "install.sh").read_text(encoding="utf-8")
+    # 按字节比对（免文本模式换行符转换干扰）；ps1 前置 UTF-8 BOM
+    ps1 = client.get("/install.ps1").content
+    assert ps1.startswith(b"\xef\xbb\xbf")
+    assert ps1[3:] == (root / "scripts" / "install.ps1").read_bytes()
+    assert client.get("/install.sh").content == (root / "scripts" / "install.sh").read_bytes()
 
 
 def test_install_scripts_token_exempt(monkeypatch):

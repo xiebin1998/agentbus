@@ -1,7 +1,8 @@
 # AgentBus 一键安装（Windows）—— 架构 6.6 / TASK-28
 #
 # 用法（干净机器一条命令接入；控制台“接入命令”弹窗会生成带凭证的一行式命令）：
-#   iwr https://<host>/install.ps1 | iex
+#   下载临时文件再执行（推荐，任意 PowerShell 版本中文不乱码）：
+#   $env:AGENTBUS_INSTALL="$env:TEMP\agentbus-install.ps1";iwr https://<host>/install.ps1 -OutFile $env:AGENTBUS_INSTALL;iex $env:AGENTBUS_INSTALL
 #
 # 可选环境变量（均自动透传给 agentbus init，全程无交互）：
 #   AGENTBUS_PACKAGE   npm 包来源（默认 @xiebin1998/agentbus@latest；可指本地目录/tarball 供离线安装）
@@ -16,13 +17,15 @@
 #
 # 内部流程（架构 6.6）：装 agentbus CLI（npm 全局）→ agentbus init --yes（client_id 默认目录名、
 # 自动探测可接入工具）→ agentbus doctor 输出报告。任何一步失败即停并给出提示。
+# 注意：全程不用 exit（iex 模式下 exit 会关闭整个 PowerShell 窗口导致“闪退”），
+# 失败用 throw 停在错误现场，成功/失败结果都能留在屏幕上。
 
 $ErrorActionPreference = "Stop"
 
 function Fail([string]$msg) {
     Write-Host ""
     Write-Host "[install] ✗ $msg" -ForegroundColor Red
-    exit 1
+    throw "[install] $msg"   # 不用 exit：iex 模式下 exit 会直接关掉终端窗口，错误信息随之消失
 }
 
 try {
@@ -77,11 +80,16 @@ try {
 
     Write-Host ""
     Write-Host "[install] ✓ 接入完成：本项目已接入 AgentBus 总线（详见上方 doctor 报告）" -ForegroundColor Green
+    Write-Host "[install] 若接入异常，可稍后在项目目录运行 agentbus doctor 复查；卸载用 agentbus uninstall" -ForegroundColor Green
 
 } finally {
-    # 清理一行式命令注入的凭证/broker/命名空间：不残留终端会话（也避免明文密码留在 Env:），
-    # 不影响其他项目——项目接入信息只读各自 .agentbus/config.json
-    foreach ($k in @("AGENTBUS_BROKER", "AGENTBUS_USER", "AGENTBUS_PASSWORD", "AGENTBUS_NS")) {
+    # 删除下载的临时脚本（一行式“下载再执行”形态）
+    if ($env:AGENTBUS_INSTALL -and (Test-Path $env:AGENTBUS_INSTALL)) {
+        Remove-Item $env:AGENTBUS_INSTALL -ErrorAction SilentlyContinue
+    }
+    # 清理一行式命令注入的凭证/broker/命名空间（含 AGENTBUS_INSTALL 自身）：不残留终端会话
+    # （也避免明文密码留在 Env:），不影响其他项目——项目接入信息只读各自 .agentbus/config.json
+    foreach ($k in @("AGENTBUS_BROKER", "AGENTBUS_USER", "AGENTBUS_PASSWORD", "AGENTBUS_NS", "AGENTBUS_INSTALL")) {
         if (Test-Path "env:$k") { Remove-Item "env:$k" }
     }
 }

@@ -1170,7 +1170,11 @@ async def api_connect_command(request: Request):
         broker = f"{host}:{PUBLIC_BROKER_PORT or MQTT_BROKER_PORT}"
     else:
         broker = f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}"
-    env_ps1 = (f"$env:AGENTBUS_BROKER='{broker}';$env:AGENTBUS_USER='{user['username']}';"
+    # PS 用“下载到临时文件再 iex”：PS 5.1 的 iwr .Content 按 ANSI 解码致中文乱码，
+    # 文件路径下 5.1/pwsh 7 均按 BOM 识别 UTF-8；临时文件与 AGENTBUS_INSTALL 由脚本 finally 清理
+    ps_exec = f"iwr {origin}/install.ps1 -OutFile $env:AGENTBUS_INSTALL;iex $env:AGENTBUS_INSTALL"
+    env_ps1 = (f"$env:AGENTBUS_INSTALL=\"$env:TEMP\\agentbus-install.ps1\";"
+               f"$env:AGENTBUS_BROKER='{broker}';$env:AGENTBUS_USER='{user['username']}';"
                f"$env:AGENTBUS_PASSWORD='<密码>';$env:AGENTBUS_NS='{ns}';")
     env_sh = (f"AGENTBUS_BROKER='{broker}' AGENTBUS_USER='{user['username']}' "
               f"AGENTBUS_PASSWORD='<密码>' AGENTBUS_NS='{ns}' ")
@@ -1179,9 +1183,9 @@ async def api_connect_command(request: Request):
         "user": user["username"],
         "ns": ns,
         "template": f"agentbus init --broker {broker} --user {user['username']} --password <密码> --ns {ns}",
-        "install_ps1": f"iwr {origin}/install.ps1 | iex",
+        "install_ps1": f"$env:AGENTBUS_INSTALL=\"$env:TEMP\\agentbus-install.ps1\";{ps_exec}",
         "install_sh": f"curl -fsSL {origin}/install.sh | bash",
-        "install_cmd_ps1": f"{env_ps1}iwr {origin}/install.ps1 | iex",
+        "install_cmd_ps1": f"{env_ps1}{ps_exec}",
         "install_cmd_sh": f"{env_sh}curl -fsSL {origin}/install.sh | bash",
         "note": "命令含密码，注意 shell 历史",
     })
@@ -1235,7 +1239,12 @@ async def install_script(request: Request):
     path, media = INSTALL_SCRIPTS[request.url.path]
     if not path.exists():
         return JSONResponse({"error": f"安装脚本缺失（{path.name}）"}, status_code=500)
-    return Response(path.read_text(encoding="utf-8"), media_type=media)
+    body = path.read_bytes()
+    if path.suffix == ".ps1" and not body.startswith(b"\xef\xbb\xbf"):
+        # Windows PowerShell 5.1 无 BOM 时按 ANSI 解码（iwr .Content 还无视 charset），中文乱码；
+        # BOM 是 5.1/pwsh 7 通用的 UTF-8 识别锚点
+        body = b"\xef\xbb\xbf" + body
+    return Response(body, media_type=media)
 
 
 # 四期：Web 控制台构建产物目录（存在时才挂载 /console）
