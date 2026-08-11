@@ -1,4 +1,5 @@
 import { ButtonHTMLAttributes, InputHTMLAttributes, HTMLAttributes, SelectHTMLAttributes, TdHTMLAttributes, ThHTMLAttributes, ReactNode, forwardRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -158,13 +159,20 @@ export function Modal({
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // 锁住背景滚动；遮罩 z-[100] 须高于 sticky 顶栏（z-40，backdrop-blur 合成层）
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
   }, [open, onClose]);
 
   if (!open) return null;
-  return (
+  // Portal 到 body：避开 sticky 顶栏合成层与任何祖先堆叠上下文，确保遮罩全屏盖顶
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -183,7 +191,8 @@ export function Modal({
         </div>
         <div className="p-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

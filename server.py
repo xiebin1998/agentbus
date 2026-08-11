@@ -901,9 +901,15 @@ def _ns_visible(user, ns_id: str) -> bool:
 
 
 def _can_manage_ns(user, ns_id: str) -> bool:
-    """管理权：super_admin 或该 ns 的 ns_admin"""
-    return user["role"] == "super_admin" or (
-        user["role"] == "ns_admin" and ns_id in hub_store.list_user_namespaces(DB_CONN, user["username"]))
+    """管理权：super_admin 或该 ns 的 owner；历史 ns（owner 为空）回退旧规则（ns_admin 且属该 ns）"""
+    if user["role"] == "super_admin":
+        return True
+    ns = hub_store.get_namespace(DB_CONN, ns_id)
+    if ns is None:
+        return False
+    if ns["owner"] is not None:
+        return ns["owner"] == user["username"]
+    return user["role"] == "ns_admin" and ns_id in hub_store.list_user_namespaces(DB_CONN, user["username"])
 
 
 async def api_login(request: Request):
@@ -919,7 +925,8 @@ async def api_login(request: Request):
     now = datetime.now(timezone.utc)
     hub_store.create_session(DB_CONN, token, user["username"], now.isoformat(),
                              (now + timedelta(days=hub_auth.SESSION_TTL_DAYS)).isoformat())
-    resp = JSONResponse({"username": user["username"], "role": user["role"]})
+    resp = JSONResponse({"username": user["username"], "role": user["role"],
+                         "display_name": user["display_name"]})
     hub_auth.set_session_cookie(resp, token)
     return resp
 
@@ -936,6 +943,7 @@ async def api_logout(request: Request):
 async def api_me(request: Request):
     user = hub_auth.current_user(request)
     return JSONResponse({"username": user["username"], "role": user["role"],
+                         "display_name": user["display_name"],
                          "namespaces": hub_store.list_user_namespaces(DB_CONN, user["username"])})
 
 
@@ -946,7 +954,14 @@ async def api_ns_list(request: Request):
     else:
         allowed = set(hub_store.list_user_namespaces(DB_CONN, user["username"]))
         items = [n for n in hub_store.list_namespaces(DB_CONN) if n["id"] in allowed]
-    return JSONResponse(items)
+    # 附带 owner 昵称，供控制台“拥有者”列展示
+    out = []
+    for n in items:
+        n = dict(n)
+        u = hub_store.get_user(DB_CONN, n["owner"]) if n.get("owner") else None
+        n["owner_display_name"] = u["display_name"] if u else ""
+        out.append(n)
+    return JSONResponse(out)
 
 
 async def api_ns_create(request: Request):
@@ -955,9 +970,10 @@ async def api_ns_create(request: Request):
         return _json_error("forbidden", 403)
     try:
         body = await request.json()
+        # owner 记为随 ns 创建的管理员账号：ns_admin 对“自己的 ns”有编辑/成员管理权
         hub_accounts.create_namespace_with_admin(
             DB_CONN, DYNSEC_CLIENT, body["id"], body["name"], body.get("description", ""),
-            body["admin_username"], body["admin_password"])
+            body["admin_username"], body["admin_password"], owner=body["admin_username"])
     except (ValueError, KeyError) as e:
         return _json_error(str(e))
     except hub_dynsec.DynsecError as e:
@@ -1006,18 +1022,21 @@ async def api_accounts_list(request: Request):
         if user["role"] != "super_admin":
             return _json_error("forbidden", 403)
         names = hub_store.list_users(DB_CONN)
-    return JSONResponse([{"username": n, "role": hub_store.get_user(DB_CONN, n)["role"]} for n in names])
+    return JSONResponse([{"username": n,
+                          "role": hub_store.get_user(DB_CONN, n)["role"],
+                          "display_name": hub_store.get_user(DB_CONN, n)["display_name"]} for n in names])
 
 
 async def api_accounts_search(request: Request):
-    """账号检索（成员添加用）：任意已登录用户可用，仅返回 username/role，上限 10 条"""
+    """账号检索（成员添加用）：任意已登录用户可用，用户名/昵称包含匹配，上限 10 条"""
     hub_auth.current_user(request)
     q = (request.query_params.get("q") or "").strip()
     if not q:
         return _json_error("缺少 q 参数")
     ql = q.lower()
-    hits = [n for n in hub_store.list_users(DB_CONN) if ql in n.lower()][:10]
-    return JSONResponse([{"username": n, "role": hub_store.get_user(DB_CONN, n)["role"]} for n in hits])
+    hits = [u for u in hub_store.list_users_detail(DB_CONN)
+            if ql in u["username"].lower() or ql in u["display_name"].lower()][:10]
+    return JSONResponse(hits)
 
 
 async def api_account_create(request: Request):
@@ -1027,11 +1046,17 @@ async def api_account_create(request: Request):
     except Exception:
         return _json_error("请求体须为 JSON 对象")
     body = body or {}
-    ns = body.get("ns")   # 可选：建号同时入组
+    ns = body.get("ns")   # 可选：建号同时入组（ns_admin 必填）
+    if user["role"] == "user":
+        return _json_error("forbidden", 403)
+    if user["role"] == "ns_admin" and not ns:
+        return _json_error("ns_admin 建号必须指定归属命名空间", 403)
     if ns and not _can_manage_ns(user, ns):
         return _json_error("forbidden", 403)
+    display_name = str(body.get("display_name") or "").strip()
     try:
-        hub_accounts.create_account(DB_CONN, DYNSEC_CLIENT, body["username"], body["password"])
+        hub_accounts.create_account(DB_CONN, DYNSEC_CLIENT, body["username"], body["password"],
+                                    display_name=display_name)
         if ns:
             hub_accounts.bind(DB_CONN, DYNSEC_CLIENT, ns, body["username"])
     except (ValueError, KeyError) as e:
@@ -1044,18 +1069,37 @@ async def api_account_create(request: Request):
 async def api_account_delete(request: Request):
     user = hub_auth.current_user(request)
     target = request.path_params["username"]
-    if user["role"] not in ("super_admin", "ns_admin"):
-        return _json_error("forbidden", 403)
-    if user["role"] != "super_admin" and target == user["username"]:
+    if user["role"] != "super_admin":
         return _json_error("forbidden", 403)
     hub_accounts.delete_account(DB_CONN, DYNSEC_CLIENT, target)
     return JSONResponse({"ok": True})
 
 
-async def api_account_password(request: Request):
+async def api_account_update(request: Request):
+    """编辑账号昵称（仅 display_name）：super_admin 可改任何人，其余仅可改自己"""
     user = hub_auth.current_user(request)
     target = request.path_params["username"]
-    if user["role"] not in ("super_admin", "ns_admin") and target != user["username"]:
+    if user["role"] != "super_admin" and target != user["username"]:
+        return _json_error("forbidden", 403)
+    if hub_store.get_user(DB_CONN, target) is None:
+        return _json_error("账号不存在", 404)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error("请求体须为 JSON 对象")
+    if not isinstance(body, dict) or not body or not set(body) <= {"display_name"}:
+        return _json_error("仅支持 display_name 字段")
+    if not isinstance(body["display_name"], str):
+        return _json_error("display_name 须为字符串")
+    hub_store.update_user_display_name(DB_CONN, target, body["display_name"].strip())
+    return JSONResponse({"ok": True})
+
+
+async def api_account_password(request: Request):
+    """改密：仅 super_admin 可改他人；任何角色可改自己（ns_admin 无权改成员密码）"""
+    user = hub_auth.current_user(request)
+    target = request.path_params["username"]
+    if user["role"] != "super_admin" and target != user["username"]:
         return _json_error("forbidden", 403)
     if hub_store.get_user(DB_CONN, target) is None:
         return _json_error("账号不存在", 404)
@@ -1099,11 +1143,14 @@ async def api_connect_command(request: Request):
     if not ns or not _ns_visible(user, ns):
         return _json_error("forbidden", 403)
     broker = f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}"
+    hub_base = f"http://{MQTT_BROKER_HOST}:{MCP_PORT}"
     return JSONResponse({
         "broker": broker,
         "user": user["username"],
         "ns": ns,
         "template": f"agentbus init --broker {broker} --user {user['username']} --password <密码> --ns {ns}",
+        "install_ps1": f"iwr {hub_base}/install.ps1 | iex",
+        "install_sh": f"curl -fsSL {hub_base}/install.sh | bash",
         "note": "命令含密码，注意 shell 历史",
     })
 
@@ -1229,6 +1276,7 @@ app = Starlette(
         Route("/api/console/accounts/search", hub_auth.session_guard(api_accounts_search), methods=["GET"]),
         Route("/api/console/accounts", hub_auth.session_guard(api_account_create), methods=["POST"]),
         Route("/api/console/accounts/{username}", hub_auth.session_guard(api_account_delete), methods=["DELETE"]),
+        Route("/api/console/accounts/{username}", hub_auth.session_guard(api_account_update), methods=["PATCH"]),
         Route("/api/console/accounts/{username}/password", hub_auth.session_guard(api_account_password), methods=["POST"]),
         Route("/api/console/connect-command", hub_auth.session_guard(api_connect_command), methods=["GET"]),
         Route("/api/console/metrics", hub_auth.session_guard(api_metrics), methods=["GET"]),

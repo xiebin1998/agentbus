@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
-import { Copy, TerminalSquare, Loader2, Eye, EyeOff, Sparkles, Download } from "lucide-react";
+import { Copy, TerminalSquare, Loader2, Eye, EyeOff, Sparkles, Download, Stethoscope } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Modal,
 } from "@/components/ui";
 import { api, ConnectCommand } from "@/lib/api";
 import { useNs } from "@/context/NsContext";
 import { useToast } from "@/components/Toaster";
+import { cn } from "@/lib/utils";
 
-/** CLI 全局安装命令（与 README 一致） */
+/** CLI 手动安装命令（与 README 一致） */
 const INSTALL_CMD = "npm i -g @xiebin1998/agentbus";
 
 export function Connect() {
@@ -49,11 +50,14 @@ export function Connect() {
   );
 }
 
-/* ── 接入命令弹窗：密码重输 + 命令展示 + 一键复制 ── */
+/* ── 接入命令弹窗：双安装方式 + 密码重输 + 命令展示 + 一键复制 ── */
+type InstallMethod = "script" | "npm";
+
 function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean; onClose: () => void }) {
   const { toast } = useToast();
   const [cmd, setCmd] = useState<ConnectCommand | null>(null);
   const [loading, setLoading] = useState(false);
+  const [method, setMethod] = useState<InstallMethod>("script");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
 
@@ -61,6 +65,7 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
     if (!open || !ns) return;
     setPassword("");
     setShowPw(false);
+    setMethod("script");
     setLoading(true);
     api.connectCommand(ns)
       .then(setCmd)
@@ -100,19 +105,56 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
             </div>
           </div>
 
-          {/* 第 1 步：安装 CLI */}
-          <div className="space-y-1.5">
+          {/* 第 1 步：安装 CLI（两种方式） */}
+          <div className="space-y-2">
             <div className="flex items-center gap-2">
               <Badge className="h-5 w-5 justify-center rounded-full p-0">1</Badge>
               <Label className="flex items-center gap-1.5"><Download className="h-3.5 w-3.5" />安装 AgentBus CLI（全局一次）</Label>
-              <Button variant="ghost" size="sm" className="ml-auto h-7 px-2 text-xs" onClick={() => void copy(INSTALL_CMD)}>
-                <Copy className="h-3.5 w-3.5" />复制
-              </Button>
             </div>
-            <pre className="overflow-auto rounded-md border bg-muted/50 p-3 text-sm font-mono">{INSTALL_CMD}</pre>
+
+            {/* 方式切换 */}
+            <div className="flex gap-2" role="tablist" aria-label="安装方式">
+              {(["script", "npm"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="tab"
+                  aria-selected={method === m}
+                  onClick={() => setMethod(m)}
+                  className={cn(
+                    "rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+                    method === m
+                      ? "border-primary bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                  )}
+                >
+                  {m === "script" ? "一键脚本（推荐）" : "npm 手动"}
+                </button>
+              ))}
+            </div>
+
+            {method === "script" ? (
+              <div className="space-y-3">
+                <CmdBlock label="Windows PowerShell" text={cmd.install_ps1} onCopy={copy} />
+                <CmdBlock label="macOS / Linux" text={cmd.install_sh} onCopy={copy} />
+                <p className="text-xs text-muted-foreground">
+                  脚本自动完成：Node 环境检查 → 安装 CLI → 交互式初始化（init）→ 体检（doctor）。
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-end">
+                  <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => void copy(INSTALL_CMD)}>
+                    <Copy className="h-3.5 w-3.5" />复制
+                  </Button>
+                </div>
+                <pre className="-mt-1 overflow-auto rounded-md border bg-muted/50 p-3 text-sm font-mono">{INSTALL_CMD}</pre>
+              </div>
+            )}
           </div>
 
-          {/* 第 2 步：项目目录初始化 */}
+          {/* 第 2 步：仅 npm 手动方式需要（脚本方式自带 init） */}
+          {method === "npm" && (
           <div className="space-y-3">
             <div className="flex items-center gap-2">
               <Badge className="h-5 w-5 justify-center rounded-full p-0">2</Badge>
@@ -152,6 +194,21 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
               <p className="text-xs text-muted-foreground">{cmd.note}</p>
             </div>
           </div>
+          )}
+
+          {/* 第 3 步（npm 方式）：接入后体检 */}
+          {method === "npm" && (
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <Badge className="h-5 w-5 justify-center rounded-full p-0">3</Badge>
+                <Label className="flex items-center gap-1.5"><Stethoscope className="h-3.5 w-3.5" />验证接入（可选）</Label>
+                <Button variant="ghost" size="sm" className="ml-auto h-7 px-2 text-xs" onClick={() => void copy("agentbus doctor")}>
+                  <Copy className="h-3.5 w-3.5" />复制
+                </Button>
+              </div>
+              <pre className="overflow-auto rounded-md border bg-muted/50 p-3 text-sm font-mono">agentbus doctor</pre>
+            </div>
+          )}
 
           <div className="flex justify-end">
             <Button variant="ghost" onClick={onClose}>关闭</Button>
@@ -167,6 +224,21 @@ function Info({ label, value }: { label: string; value: string }) {
     <div>
       <div className="text-xs text-muted-foreground mb-1">{label}</div>
       <div className="text-sm font-medium font-mono">{value}</div>
+    </div>
+  );
+}
+
+/* ── 命令块：标签 + 命令 + 复制按钮 ── */
+function CmdBlock({ label, text, onCopy }: { label: string; text: string; onCopy: (t: string) => void }) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <Label className="text-xs text-muted-foreground">{label}</Label>
+        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => onCopy(text)}>
+          <Copy className="h-3.5 w-3.5" />复制
+        </Button>
+      </div>
+      <pre className="overflow-auto rounded-md border bg-muted/50 p-3 text-sm font-mono whitespace-pre-wrap break-all">{text}</pre>
     </div>
   );
 }

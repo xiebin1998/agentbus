@@ -4,22 +4,32 @@ export type Role = "super_admin" | "ns_admin" | "user";
 export interface Me {
   username: string;
   role: Role;
+  display_name: string;
   namespaces: string[];
 }
 export interface Namespace {
   id: string;
   name: string;
   description: string;
+  /** 拥有者（创建时指定的 ns 管理员账号）；历史数据可能为 null */
+  owner: string | null;
+  /** 拥有者昵称（后端附带，可能为空串） */
+  owner_display_name: string;
 }
 export interface Account {
   username: string;
   role: Role;
+  display_name: string;
 }
 export interface ConnectCommand {
   broker: string;
   user: string;
   ns: string;
   template: string;
+  /** 一键安装脚本（Windows PowerShell） */
+  install_ps1: string;
+  /** 一键安装脚本（macOS / Linux） */
+  install_sh: string;
   note: string;
 }
 export interface MetricTotals {
@@ -114,10 +124,16 @@ export const api = {
     http<Account[]>(`/api/console/accounts${ns ? `?ns=${encodeURIComponent(ns)}` : ""}`),
   searchAccounts: (q: string) =>
     http<Account[]>(`/api/console/accounts/search?q=${encodeURIComponent(q)}`),
-  createAccount: (b: { username: string; password: string; ns?: string }) =>
+  createAccount: (b: { username: string; password: string; ns?: string; display_name?: string }) =>
     http<{ ok: boolean }>("/api/console/accounts", json(b)),
   deleteAccount: (username: string) =>
     http<{ ok: boolean }>(`/api/console/accounts/${encodeURIComponent(username)}`, { method: "DELETE" }),
+  updateAccount: (username: string, b: { display_name: string }) =>
+    http<{ ok: boolean }>(`/api/console/accounts/${encodeURIComponent(username)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(b),
+    }),
   setPassword: (username: string, password: string) =>
     http<{ ok: boolean }>(`/api/console/accounts/${encodeURIComponent(username)}/password`, json({ password })),
 

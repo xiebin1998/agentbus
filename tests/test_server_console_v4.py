@@ -160,7 +160,8 @@ def test_ns_patch_update(client):
     # 超管改名称+描述
     assert client.patch("/api/console/namespaces/pay", json={"name": "支付中台", "description": "新"}).status_code == 200
     pay = next(n for n in client.get("/api/console/namespaces").json() if n["id"] == "pay")
-    assert pay == {"id": "pay", "name": "支付中台", "description": "新"}
+    assert pay == {"id": "pay", "name": "支付中台", "description": "新",
+                   "owner": "pay-admin", "owner_display_name": ""}
     # id 不可改：未知字段一律 400
     assert client.patch("/api/console/namespaces/pay", json={"id": "pay2"}).status_code == 400
     assert client.patch("/api/console/namespaces/pay", json={}).status_code == 400
@@ -174,3 +175,126 @@ def test_ns_patch_update(client):
     # 未登录 401
     client.post("/api/auth/logout")
     assert client.patch("/api/console/namespaces/pay", json={"name": "x"}).status_code == 401
+
+
+def test_permission_matrix_password_and_delete(client):
+    """改密仅超管（或本人改自己）；删号仅超管；ns_admin 两者均无权"""
+    _login(client, "root", "rootpw")
+    client.post("/api/console/namespaces", json={"id": "pay", "name": "支付", "description": "",
+                                                 "admin_username": "pay-admin", "admin_password": "pw1"})
+    client.post("/api/console/accounts", json={"username": "bob", "password": "pw2"})
+    client.put("/api/console/namespaces/pay/members/bob")
+    client.post("/api/auth/logout")
+
+    # ns_admin 改成员密码 → 403；删成员账号 → 403
+    _login(client, "pay-admin", "pw1")
+    assert client.post("/api/console/accounts/bob/password", json={"password": "x"}).status_code == 403
+    assert client.delete("/api/console/accounts/bob").status_code == 403
+    # ns_admin 可改自己密码
+    assert client.post("/api/console/accounts/pay-admin/password", json={"password": "pw1b"}).status_code == 200
+    client.post("/api/auth/logout")
+
+    # 普通用户改他人 403，改自己 200
+    _login(client, "bob", "pw2")
+    assert client.post("/api/console/accounts/pay-admin/password", json={"password": "x"}).status_code == 403
+    assert client.post("/api/console/accounts/bob/password", json={"password": "pw2b"}).status_code == 200
+    assert client.delete("/api/console/accounts/pay-admin").status_code == 403
+    client.post("/api/auth/logout")
+
+    # 超管改他人/删号均可
+    _login(client, "root", "rootpw")
+    assert client.post("/api/console/accounts/bob/password", json={"password": "pw2c"}).status_code == 200
+    assert client.delete("/api/console/accounts/bob").status_code == 200
+
+
+def test_ns_admin_create_account_constraints(client):
+    """ns_admin 建号：必须挂自己可管理的 ns，角色固定普通用户；user 无权建号"""
+    _login(client, "root", "rootpw")
+    for ns, adm in [("pay", "pay-admin"), ("iot", "iot-admin")]:
+        client.post("/api/console/namespaces", json={"id": ns, "name": ns, "description": "",
+                                                     "admin_username": adm, "admin_password": "pw"})
+    client.post("/api/console/accounts", json={"username": "bob", "password": "pw2"})
+    client.post("/api/auth/logout")
+
+    _login(client, "pay-admin", "pw")
+    # 不带 ns → 403；挂他人 ns → 403
+    assert client.post("/api/console/accounts", json={"username": "c1", "password": "p"}).status_code == 403
+    assert client.post("/api/console/accounts", json={"username": "c1", "password": "p", "ns": "iot"}).status_code == 403
+    # 挂自己 ns → 200，且角色固定 user（即使恶意传 role 也无效）
+    r = client.post("/api/console/accounts",
+                    json={"username": "c1", "password": "p", "ns": "pay", "display_name": "成员一"})
+    assert r.status_code == 200
+    client.post("/api/auth/logout")
+
+    _login(client, "root", "rootpw")
+    assert {m["username"] for m in client.get("/api/console/accounts?ns=pay").json()} == {"pay-admin", "c1"}
+    c1 = next(a for a in client.get("/api/console/accounts").json() if a["username"] == "c1")
+    assert c1["role"] == "user" and c1["display_name"] == "成员一"
+
+    # 普通用户建号 → 403
+    client.post("/api/auth/logout")
+    _login(client, "bob", "pw2")
+    assert client.post("/api/console/accounts", json={"username": "c2", "password": "p"}).status_code == 403
+
+
+def test_owner_column_and_non_owner_member_readonly(app_ctx, client):
+    """ns 列表带 owner；非 owner 的成员（即使 ns_admin 角色）只读"""
+    _login(client, "root", "rootpw")
+    client.post("/api/console/namespaces", json={"id": "pay", "name": "支付", "description": "",
+                                                 "admin_username": "pay-admin", "admin_password": "pw1"})
+    client.post("/api/console/accounts", json={"username": "other-admin", "password": "pw"})
+    from hub import store as hub_store
+    hub_store.set_role(app_ctx.DB_CONN, "other-admin", "ns_admin")
+    client.put("/api/console/namespaces/pay/members/other-admin")
+    assert client.get("/api/console/namespaces").json()[0]["owner"] == "pay-admin"
+    client.post("/api/auth/logout")
+
+    # other-admin 是成员且是 ns_admin 角色，但非 owner：编辑/成员管理均 403
+    _login(client, "other-admin", "pw")
+    assert client.patch("/api/console/namespaces/pay", json={"name": "越权"}).status_code == 403
+    assert client.put("/api/console/namespaces/pay/members/pay-admin").status_code == 403
+
+
+def test_null_owner_fallback_legacy_ns(app_ctx, client):
+    """历史 ns（owner 为 NULL）回退旧规则：属该 ns 的 ns_admin 仍可管理"""
+    from hub import store as hub_store, auth as hub_auth
+    db = app_ctx.DB_CONN
+    hub_store.create_namespace(db, "legacy", "遗留", "", owner=None)
+    hub_store.create_user(db, "legacy-admin", hub_auth.hash_password("pw"), "ns_admin")
+    hub_store.bind_member(db, "legacy", "legacy-admin")
+
+    _login(client, "legacy-admin", "pw")
+    assert client.patch("/api/console/namespaces/legacy", json={"description": "可改"}).status_code == 200
+    assert client.post("/api/console/accounts", json={"username": "m1", "password": "p", "ns": "legacy"}).status_code == 200
+
+
+def test_display_name_lifecycle(client):
+    """昵称：建号写入、列表/检索/me 返回、PATCH 修改（超管改他人/本人改自己/越权 403）"""
+    _login(client, "root", "rootpw")
+    client.post("/api/console/accounts", json={"username": "bob", "password": "pw", "display_name": "张三"})
+    assert next(a for a in client.get("/api/console/accounts").json()
+                if a["username"] == "bob")["display_name"] == "张三"
+    # 昵称也可被检索
+    assert [a["username"] for a in client.get("/api/console/accounts/search", params={"q": "张"}).json()] == ["bob"]
+    # 超管改他人昵称
+    assert client.patch("/api/console/accounts/bob", json={"display_name": "李四"}).status_code == 200
+    assert client.patch("/api/console/accounts/bob", json={"role": "user"}).status_code == 400  # 仅 display_name
+    assert client.patch("/api/console/accounts/ghost", json={"display_name": "x"}).status_code == 404
+    # login/me 带昵称
+    client.post("/api/auth/logout")
+    r = _login(client, "bob", "pw")
+    assert r.json()["display_name"] == "李四"
+    assert client.get("/api/me").json()["display_name"] == "李四"
+    # 本人改自己 200；改他人 403
+    assert client.patch("/api/console/accounts/bob", json={"display_name": "王五"}).status_code == 200
+    assert client.patch("/api/console/accounts/root", json={"display_name": "x"}).status_code == 403
+
+
+def test_connect_command_install_urls(client):
+    """接入命令返回两种安装方式的脚本 URL"""
+    _login(client, "root", "rootpw")
+    client.post("/api/console/namespaces", json={"id": "pay", "name": "支付", "description": "",
+                                                 "admin_username": "pay-admin", "admin_password": "pw1"})
+    data = client.get("/api/console/connect-command", params={"ns": "pay"}).json()
+    assert data["install_ps1"].startswith("iwr ") and data["install_ps1"].endswith("/install.ps1 | iex")
+    assert data["install_sh"].startswith("curl -fsSL ") and data["install_sh"].endswith("/install.sh | bash")

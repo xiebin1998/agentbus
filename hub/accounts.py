@@ -12,31 +12,36 @@ def _check_ns_id(ns_id: str) -> None:
 
 
 def create_namespace_with_admin(db, dynsec, ns_id, name, description,
-                                admin_username, admin_password) -> None:
+                                admin_username, admin_password, owner=None) -> None:
     _check_ns_id(ns_id)
     if store.get_namespace(db, ns_id):
         raise ValueError(f"ns 已存在: {ns_id}")
     if store.get_user(db, admin_username):
         raise ValueError(f"账号已存在: {admin_username}")
     pw_hash = auth.hash_password(admin_password)
-    store.create_namespace(db, ns_id, name, description or "")
+    store.create_namespace(db, ns_id, name, description or "", owner=owner)
     store.create_user(db, admin_username, pw_hash, "ns_admin")
     store.bind_member(db, ns_id, admin_username)
+    # 超管创建时把自己绑为成员（超管无 broker 身份，bind 内自动跳过 dynsec）
+    if owner and owner != admin_username and store.get_user(db, owner):
+        store.bind_member(db, ns_id, owner)
     try:
         dynsec.create_client(admin_username, admin_password)
         dynsec.create_ns_group(ns_id)
         dynsec.add_group_client(ns_id, admin_username)
     except Exception:
+        if owner and owner != admin_username:
+            store.unbind_member(db, ns_id, owner)
         store.unbind_member(db, ns_id, admin_username)
         store.delete_user(db, admin_username)
         store.delete_namespace(db, ns_id)
         raise
 
 
-def create_account(db, dynsec, username, password, role="user") -> None:
+def create_account(db, dynsec, username, password, role="user", display_name="") -> None:
     if store.get_user(db, username):
         raise ValueError(f"账号已存在: {username}")
-    store.create_user(db, username, auth.hash_password(password), role)
+    store.create_user(db, username, auth.hash_password(password), role, display_name=display_name)
     try:
         dynsec.create_client(username, password)
     except Exception:

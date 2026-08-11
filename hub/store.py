@@ -5,10 +5,11 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(
   username TEXT PRIMARY KEY, password_hash TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('super_admin','ns_admin','user')),
-  created_at TEXT NOT NULL);
+  display_name TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS namespaces(
   id TEXT PRIMARY KEY, name TEXT NOT NULL,
-  description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+  description TEXT NOT NULL DEFAULT '', owner TEXT,
+  created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS ns_members(
   ns_id TEXT NOT NULL REFERENCES namespaces(id) ON DELETE CASCADE,
   username TEXT NOT NULL REFERENCES users(username) ON DELETE CASCADE,
@@ -30,21 +31,45 @@ def open_store(path) -> sqlite3.Connection:
 
 def init_schema(conn) -> None:
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
 
 
-def create_user(conn, username, password_hash, role) -> None:
-    conn.execute("INSERT INTO users VALUES(?,?,?,datetime('now'))", (username, password_hash, role))
+def _migrate(conn) -> None:
+    """存量库补列（幂等）：namespaces.owner / users.display_name"""
+    cols = lambda table: {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if "owner" not in cols("namespaces"):
+        conn.execute("ALTER TABLE namespaces ADD COLUMN owner TEXT")
+    if "display_name" not in cols("users"):
+        conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+
+
+def create_user(conn, username, password_hash, role, display_name="") -> None:
+    # 显式列名：存量库经 ALTER 追加的列在表尾，位置式 INSERT 会列错位
+    conn.execute("INSERT INTO users(username,password_hash,role,display_name,created_at) VALUES(?,?,?,?,datetime('now'))",
+                 (username, password_hash, role, display_name))
     conn.commit()
 
 
 def get_user(conn, username):
-    row = conn.execute("SELECT username,password_hash,role FROM users WHERE username=?", (username,)).fetchone()
-    return {"username": row[0], "password_hash": row[1], "role": row[2]} if row else None
+    row = conn.execute("SELECT username,password_hash,role,display_name FROM users WHERE username=?",
+                       (username,)).fetchone()
+    return {"username": row[0], "password_hash": row[1], "role": row[2], "display_name": row[3]} if row else None
 
 
 def list_users(conn):
     return [r[0] for r in conn.execute("SELECT username FROM users ORDER BY username")]
+
+
+def list_users_detail(conn):
+    """账号列表（含角色与昵称），按 username 排序"""
+    return [{"username": r[0], "role": r[1], "display_name": r[2]}
+            for r in conn.execute("SELECT username,role,display_name FROM users ORDER BY username")]
+
+
+def update_user_display_name(conn, username, display_name) -> None:
+    conn.execute("UPDATE users SET display_name=? WHERE username=?", (display_name, username))
+    conn.commit()
 
 
 def set_password_hash(conn, username, password_hash) -> None:
@@ -62,14 +87,16 @@ def delete_user(conn, username) -> None:
     conn.commit()
 
 
-def create_namespace(conn, ns_id, name, description) -> None:
-    conn.execute("INSERT INTO namespaces VALUES(?,?,?,datetime('now'))", (ns_id, name, description))
+def create_namespace(conn, ns_id, name, description, owner=None) -> None:
+    # 显式列名：存量库经 ALTER 追加的列在表尾，位置式 INSERT 会列错位
+    conn.execute("INSERT INTO namespaces(id,name,description,owner,created_at) VALUES(?,?,?,?,datetime('now'))",
+                 (ns_id, name, description, owner))
     conn.commit()
 
 
 def get_namespace(conn, ns_id):
-    row = conn.execute("SELECT id,name,description FROM namespaces WHERE id=?", (ns_id,)).fetchone()
-    return {"id": row[0], "name": row[1], "description": row[2]} if row else None
+    row = conn.execute("SELECT id,name,description,owner FROM namespaces WHERE id=?", (ns_id,)).fetchone()
+    return {"id": row[0], "name": row[1], "description": row[2], "owner": row[3]} if row else None
 
 
 def update_namespace(conn, ns_id, name=None, description=None) -> None:
@@ -82,8 +109,8 @@ def update_namespace(conn, ns_id, name=None, description=None) -> None:
 
 
 def list_namespaces(conn):
-    return [{"id": r[0], "name": r[1], "description": r[2]}
-            for r in conn.execute("SELECT id,name,description FROM namespaces ORDER BY id")]
+    return [{"id": r[0], "name": r[1], "description": r[2], "owner": r[3]}
+            for r in conn.execute("SELECT id,name,description,owner FROM namespaces ORDER BY id")]
 
 
 def delete_namespace(conn, ns_id) -> None:

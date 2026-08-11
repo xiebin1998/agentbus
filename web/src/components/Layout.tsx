@@ -15,9 +15,11 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "connect", label: "接入命令" },
 ];
 
-/** 普通用户仅可见指标/接入命令；管理员见全部 */
+/** Tab 可见性按角色收敛：普通用户仅指标/接入；ns_admin 无账号 Tab；超管全部 */
 export function tabsForRole(role?: string): Tab[] {
-  return role === "user" ? ["metrics", "connect"] : TABS.map((t) => t.id);
+  if (role === "user") return ["metrics", "connect"];
+  if (role === "ns_admin") return ["namespaces", "metrics", "connect"];
+  return TABS.map((t) => t.id);
 }
 
 const roleLabel: Record<string, string> = {
@@ -51,14 +53,14 @@ export function Layout({
           </div>
 
           {/* 全局命名空间切换：pill 胶囊样式（原生 select 本体，图标叠层不拦截点击），与 logo 以分隔线视觉分离 */}
-          <div className="h-5 border-l pl-4">
-            <div className="relative">
+          <div className="flex h-5 items-center border-l pl-4">
+            <div className="relative flex h-8 items-center">
               <Layers className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-primary" />
               <select
                 value={current}
                 onChange={(e) => setCurrent(e.target.value)}
                 aria-label="切换命名空间"
-                className="h-8 max-w-56 cursor-pointer appearance-none rounded-full bg-secondary pl-9 pr-8 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="h-8 max-w-56 cursor-pointer appearance-none rounded-full bg-secondary pl-9 pr-8 text-sm font-medium leading-none transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 {isSuper && <option value="">全部命名空间</option>}
                 {options.map((n) => (
@@ -96,7 +98,8 @@ export function Layout({
             </Button>
             {me && (
               <div className="flex items-center gap-2 pl-2 text-sm">
-                <span className="font-medium">{me.username}</span>
+                <span className="font-medium">{me.display_name || me.username}</span>
+                {me.display_name && <span className="text-xs text-muted-foreground">@{me.username}</span>}
                 <span className="text-xs text-muted-foreground">{roleLabel[me.role] ?? me.role}</span>
                 <Button variant="ghost" size="icon" onClick={() => void logout()} title="退出登录">
                   <LogOut className="h-4 w-4" />
