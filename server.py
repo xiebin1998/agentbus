@@ -645,16 +645,24 @@ def build_tools() -> List[Tool]:
     return [
         Tool(
             name="update_agent",
-            description="更新本 Agent 在 AgentBus hub 上的档案（名称/描述/能力/元信息，自述用途）。",
+            description="更新本 Agent 在 AgentBus hub 上的档案（自述用途：名称/描述/能力直接写入 hub 档案库，重启不丢）。",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Agent 名称（≤50 字符）",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Agent 描述（职责/用途一句话）",
+                    },
                     "capabilities": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "新的能力列表",
                     },
-                    "metadata": {"type": "object", "description": "更新的元信息"},
+                    "metadata": {"type": "object", "description": "更新的元信息（仅本次会话内存）"},
                 },
             },
         ),
@@ -748,10 +756,33 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
     async def handle_tool(name: str, arguments: dict) -> List[TextContent]:
         # TASK-32：去门控（TASK-31 双门控已删除）——档案由 hub 中心化，工具全放行
         if name == "update_agent":
+            # TASK-32：自述直写 hub 档案库（name/description/capabilities），重启不丢
+            new_name = arguments.get("name")
+            new_desc = arguments.get("description")
+            new_caps = arguments.get("capabilities")
+            if isinstance(new_name, str) and len(new_name.strip()) > AGENT_NAME_MAX:
+                return [TextContent(type="text", text=json.dumps(
+                    {"error": f"name 长度须 ≤ {AGENT_NAME_MAX} 字符"}, ensure_ascii=False, indent=2))]
             session.info.update(
-                capabilities=arguments.get("capabilities"),
+                capabilities=new_caps,
                 metadata=arguments.get("metadata"),
             )
+            if isinstance(new_name, str) and new_name.strip():
+                session.info.name = new_name.strip()
+            if isinstance(new_desc, str):
+                session.info.description = new_desc.strip()
+            if DB_CONN is not None and session.ns:
+                name_v = new_name.strip() if isinstance(new_name, str) and new_name.strip() else None
+                desc_v = new_desc.strip() if isinstance(new_desc, str) else None
+                caps_v = list(new_caps) if isinstance(new_caps, list) else None
+                ok = hub_store.update_agent(DB_CONN, session.ns, client_id,
+                                            name=name_v, description=desc_v, capabilities=caps_v)
+                if not ok:
+                    # 无占位行：自述即建档（owner 留空待 init 注册补齐）
+                    hub_store.upsert_agent(DB_CONN, session.ns, client_id,
+                                           name=name_v or client_id,
+                                           description=desc_v or "",
+                                           capabilities=caps_v or [], owner="", fill=True)
             return [TextContent(type="text", text=json.dumps({"status": "updated", "client_id": client_id}, indent=2))]
         
         elif name == "send_message":
@@ -842,8 +873,9 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             return [TextContent(type="text", text=json.dumps(found, ensure_ascii=False, indent=2))]
         
         elif name == "get_status":
-            entry = _metrics_store.snapshot().get(session.key)
-            return [TextContent(type="text", text=json.dumps({
+            snapshot = _metrics_store.snapshot()
+            entry = snapshot.get(session.key)
+            status = {
                 "client_id": client_id,
                 "registered": session.is_registered(),
                 "mqtt_connected": session.connected,
@@ -851,7 +883,16 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
                 "mqtt_broker": f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}",
                 "metric_last_seen": (entry or {}).get("last_seen"),
                 **session.info.to_dict(),
-            }, ensure_ascii=False, indent=2))]
+            }
+            # TASK-32：自身档案读 DB（重启不丢）+ 在线态（90s 指标窗口）
+            if DB_CONN is not None and session.ns:
+                row = hub_store.get_agent(DB_CONN, session.ns, client_id)
+                if row:
+                    status.update({"name": row["name"], "description": row["description"],
+                                   "capabilities": row["capabilities"], "tools": row["tools"],
+                                   "owner": row["owner"]})
+            status["online"] = not _offline_targets([session.key], snapshot, datetime.now(timezone.utc))
+            return [TextContent(type="text", text=json.dumps(status, ensure_ascii=False, indent=2))]
         
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
     
@@ -899,7 +940,7 @@ DYNSEC_CLIENT = None   # lifespan 注入真实客户端（共享连接发布函�
 
 
 def init_hub_state() -> None:
-    """建 SQLite + 引导超管（幂等）。env 在调用时读取，便于测试预置。"""
+    """建 SQLite + 引导超管（幂等）+ 从 agents 表恢复档案入内存（TASK-32）。env 在调用时读取，便于测试预置。"""
     global DB_CONN
     db_path = os.getenv("AGENTBUS_DB_PATH", "data/agentbus.db")
     admin_user = os.getenv("AGENTBUS_ADMIN_USER", "")
@@ -911,6 +952,23 @@ def init_hub_state() -> None:
     hub_store.init_schema(DB_CONN)
     if not hub_store.list_users(DB_CONN) and admin_user:
         hub_store.create_user(DB_CONN, admin_user, hub_auth.hash_password(admin_password), "super_admin")
+
+    # TASK-32：hub 重启恢复——agents 表加载入 _agent_info（registered=True）；
+    # 已存在的活体条目不覆盖（在线态优先）
+    for row in hub_store.list_all_agents(DB_CONN):
+        key = f"{row['ns_id']}/{row['client_id']}"
+        if key in _agent_info:
+            continue
+        info = AgentInfo(key)
+        info.name = row["name"]
+        info.description = row["description"]
+        info.capabilities = row["capabilities"]
+        info.registered = True
+        try:
+            info.registered_at = datetime.fromisoformat(str(row["created_at"])).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            info.registered_at = datetime.now(timezone.utc)
+        _agent_info[key] = info
 
     def _resolve(token):
         username = hub_store.get_session_user(DB_CONN, token)
@@ -1270,44 +1328,103 @@ async def api_metrics_summary(request: Request):
 # ─── TASK-31：Agent 明细（注册信息 × 在线状态 × daemon 指标 三源合并）───────
 
 def build_agent_detail(ns: str, agent_info: Dict[str, Any], sessions: Dict[str, Any],
-                       metrics: Dict[str, dict]) -> List[dict]:
-    """纯函数三源合并（便于单测）：key 取并集按 ns 前缀过滤，字典序稳定输出。
+                       metrics: Dict[str, dict], db_agents: Optional[Dict[str, dict]] = None) -> List[dict]:
+    """纯函数多源合并（便于单测）：key 取并集按 ns 前缀过滤，字典序稳定输出。
 
     - agent_info（_agent_info）→ name/description/capabilities/registered
     - sessions（_sessions）→ online（SSE 会话存活）
     - metrics（MetricsStore 快照）→ metrics/last_seen/report_count
+    - db_agents（TASK-32，按 client_id 索引的 agents 表行）→ 档案真源：
+      tools/registered_at/owner/placeholder，并进 key 并集（仅有档案的也可见）
     """
+    db_agents = db_agents or {}
     prefix = f"{ns}/"
     keys = sorted({k for k in list(agent_info) + list(sessions) + list(metrics)
-                   if k.startswith(prefix)})
+                   if k.startswith(prefix)}
+                  | {f"{prefix}{cid}" for cid in db_agents})
     out: List[dict] = []
     for k in keys:
         info = agent_info.get(k)
         m = metrics.get(k) or {}
+        row = db_agents.get(k[len(prefix):])
         out.append({
             "client_id": k[len(prefix):],
-            "name": info.name if info else None,
-            "description": info.description if info else None,
-            "capabilities": list(info.capabilities) if info else [],
-            "registered": bool(info and info.registered),
+            "name": row["name"] if row else (info.name if info else None),
+            "description": row["description"] if row else (info.description if info else None),
+            "capabilities": (list(row["capabilities"]) if row
+                             else (list(info.capabilities) if info else [])),
+            "registered": bool(row) or bool(info and info.registered),
             "online": k in sessions,
             "last_seen": m.get("last_seen"),
             "report_count": m.get("report_count", 0),
             "metrics": m.get("metrics") or {},
+            "tools": list(row["tools"]) if row else [],
+            "registered_at": row["created_at"] if row else (
+                info.registered_at.isoformat() if info and info.registered_at else None),
+            "owner": row["owner"] if row else "",
+            "placeholder": bool(row) and not row["owner"] and row["name"] == row["client_id"],
         })
     return out
 
 
+def _owner_display_names(owners) -> Dict[str, str]:
+    """owner 用户名 → users.display_name 缓存查询（空 owner/无库返回空）"""
+    if DB_CONN is None:
+        return {}
+    cache: Dict[str, str] = {}
+    for o in owners:
+        if o and o not in cache:
+            u = hub_store.get_user(DB_CONN, o)
+            cache[o] = u["display_name"] if u else ""
+    return cache
+
+
 async def api_console_agents(request: Request):
-    """Agent 明细页：该 ns 下注册/在线/指标三源合并（?ns= 必填，未授权 403）"""
+    """Agent 明细页：该 ns 下 DB 档案/注册/在线/指标多源合并（?ns= 必填，未授权 403）"""
     user = hub_auth.current_user(request)
     ns = (request.query_params.get("ns") or "").strip()
     if not ns:
         return _json_error("缺少 ns 参数")
     if not _ns_visible(user, ns):
         return _json_error("forbidden", 403)
-    return JSONResponse({"agents": build_agent_detail(ns, _agent_info, _sessions,
-                                                      _metrics_store.snapshot())})
+    db_rows = {a["client_id"]: a for a in hub_store.list_agents(DB_CONN, ns)} if DB_CONN is not None else {}
+    rows = build_agent_detail(ns, _agent_info, _sessions, _metrics_store.snapshot(), db_rows)
+    disp = _owner_display_names({r["owner"] for r in rows})
+    for r in rows:
+        r["owner_display_name"] = disp.get(r["owner"], "")
+    return JSONResponse({"agents": rows})
+
+
+async def api_console_agent_patch(request: Request):
+    """TASK-32：控制台编辑 Agent 档案（name/description/capabilities 直写 DB）。
+    session_guard + _can_manage_ns；越权 403；无此行 404；name 超 50 → 400。"""
+    user = hub_auth.current_user(request)
+    ns = (request.query_params.get("ns") or "").strip()
+    cid = request.path_params.get("cid", "").strip()
+    if not ns or not cid:
+        return _json_error("缺少 ns/client_id")
+    if not _can_manage_ns(user, ns):
+        return _json_error("forbidden", 403)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error("请求体须为 JSON 对象")
+    if not isinstance(body, dict):
+        return _json_error("请求体须为 JSON 对象")
+    name = body.get("name")
+    if isinstance(name, str) and len(name.strip()) > AGENT_NAME_MAX:
+        return _json_error(f"name 长度须 ≤ {AGENT_NAME_MAX} 字符")
+    caps = body.get("capabilities")
+    caps_v = ([str(x).strip() for x in caps if str(x).strip()] if isinstance(caps, list) else None)
+    ok = hub_store.update_agent(
+        DB_CONN, ns, cid,
+        name=name.strip() if isinstance(name, str) and name.strip() else None,
+        description=str(body["description"]).strip() if "description" in body else None,
+        capabilities=caps_v)
+    if not ok:
+        return _json_error("未找到该 Agent 档案", 404)
+    logger.info(f"[agent-profile] console patched {ns}/{cid} by {user['username']}")
+    return JSONResponse({"status": "updated", "client_id": cid})
 
 
 # ─── TASK-32：Agent 档案注册（init HTTP 上报，Basic auth=broker 凭证） ─────────
@@ -1364,6 +1481,39 @@ async def api_agent_register(request: Request):
                            owner=owner or "", fill=True)
     logger.info(f"[agent-profile] registered {ns}/{cid} owner={owner or '(token)'}")
     return JSONResponse({"status": "registered", "client_id": cid})
+
+
+async def api_agent_snapshot(request: Request):
+    """TASK-32：ns 内全量 Agent 档案快照（daemon 轮询同步 agents.json 用）。
+    鉴权同注册端点；online=last_seen 90s 窗口。"""
+    owner = _agent_basic_auth(request)
+    if owner is None:
+        expected = os.getenv("MCP_API_TOKEN") or ""
+        if not (expected and extract_token(request.scope) == expected):
+            return _json_error("unauthorized（需 Basic auth 或 token）", 401)
+    ns = (request.query_params.get("ns") or "").strip()
+    if not ns:
+        return _json_error("缺少 ns 参数")
+    rows = hub_store.list_agents(DB_CONN, ns) if DB_CONN is not None else []
+    disp = _owner_display_names({r["owner"] for r in rows})
+    snapshot = _metrics_store.snapshot()
+    now = datetime.now(timezone.utc)
+    agents = []
+    for r in rows:
+        key = f"{ns}/{r['client_id']}"
+        item = {
+            "client_id": r["client_id"],
+            "name": r["name"],
+            "description": r["description"],
+            "capabilities": r["capabilities"],
+            "tools": r["tools"],
+            "online": key not in _offline_targets([key], snapshot, now),
+        }
+        dn = disp.get(r["owner"], "")
+        if dn:
+            item["owner_display_name"] = dn
+        agents.append(item)
+    return JSONResponse({"generated_at": now.isoformat(), "agents": agents})
 
 
 # TASK-28：一键安装脚本托管（架构 6.6 / PLAN T24：中心节点静态服务，干净机器一条命令接入的下载源）
@@ -1460,8 +1610,10 @@ app = Starlette(
         Route("/api/console/metrics", hub_auth.session_guard(api_metrics), methods=["GET"]),
         Route("/api/console/metrics/summary", hub_auth.session_guard(api_metrics_summary), methods=["GET"]),
         Route("/api/console/agents", hub_auth.session_guard(api_console_agents), methods=["GET"]),
+        Route("/api/console/agents/{cid}", hub_auth.session_guard(api_console_agent_patch), methods=["PATCH"]),
         # TASK-32：Agent 档案注册（Basic auth=broker 凭证；不走 session 鉴权）
         Route("/api/agent/register", api_agent_register, methods=["POST"]),
+        Route("/api/agent/snapshot", api_agent_snapshot, methods=["GET"]),
         # TASK-28：一键安装脚本（引导资源，鉴权豁免）
         Route("/install.ps1", install_script, methods=["GET"]),
         Route("/install.sh", install_script, methods=["GET"]),

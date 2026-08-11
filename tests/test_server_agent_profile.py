@@ -344,3 +344,285 @@ def test_sse_disconnect_keeps_agent_info(monkeypatch):
         server.DB_CONN = old_db
         server._sessions.clear(); server._sessions.update(saved[0])
         server._agent_info.clear(); server._agent_info.update(saved[1])
+
+
+# ─── TASK-32 Task 5：快照端点（DB 档案 × 在线态） ────────────────────
+
+
+def test_snapshot_requires_auth(client):
+    assert client.get("/api/agent/snapshot?ns=pay").status_code == 401
+
+
+def test_snapshot_missing_ns_400(client, app_ctx):
+    from hub import store, auth
+    store.create_user(app_ctx.DB_CONN, "alice", auth.hash_password("pw"), "user")
+    r = client.get("/api/agent/snapshot", headers=_basic("alice", "pw"))
+    assert r.status_code == 400
+
+
+def test_snapshot_merges_db_and_online(client, app_ctx):
+    """DB 档案全量下发；online=last_seen 90s 窗口；owner_display_name join users"""
+    from hub import store, auth
+    store.create_user(app_ctx.DB_CONN, "alice", auth.hash_password("pw"), "user",
+                      display_name="小爱")
+    store.upsert_agent(app_ctx.DB_CONN, "pay", "ag-on", name="在线者",
+                       description="d1", capabilities=["chat"], tools=["t1"], owner="alice")
+    store.upsert_agent(app_ctx.DB_CONN, "pay", "ag-off", name="离线者", owner="alice")
+    app_ctx._metrics_store.update("pay/ag-on", {"injected_ok": 1},
+                                  datetime.now(timezone.utc).isoformat())
+    r = client.get("/api/agent/snapshot?ns=pay", headers=_basic("alice", "pw"))
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["generated_at"]
+    by_cid = {a["client_id"]: a for a in data["agents"]}
+    assert set(by_cid) == {"ag-on", "ag-off"}
+    on = by_cid["ag-on"]
+    assert on["online"] is True
+    assert on["name"] == "在线者" and on["description"] == "d1"
+    assert on["capabilities"] == ["chat"] and on["tools"] == ["t1"]
+    assert on["owner_display_name"] == "小爱"
+    off = by_cid["ag-off"]
+    assert off["online"] is False
+    # 无指标记录的目标也下发（online=False）；owner 为空时不带 owner_display_name
+    store.upsert_agent(app_ctx.DB_CONN, "pay", "ag-orphan", name="无主", owner="")
+    r = client.get("/api/agent/snapshot?ns=pay", headers=_basic("alice", "pw"))
+    orphan = {a["client_id"]: a for a in r.json()["agents"]}["ag-orphan"]
+    assert orphan["online"] is False
+    assert "owner_display_name" not in orphan or not orphan["owner_display_name"]
+
+
+def test_snapshot_token_channel(client, app_ctx, monkeypatch):
+    """MCP_API_TOKEN 通道亦可读快照（daemon 轮询同凭证）"""
+    from hub import store
+    store.upsert_agent(app_ctx.DB_CONN, "pay", "ag-1", name="A")
+    monkeypatch.setenv("MCP_API_TOKEN", "sekret")
+    assert client.get("/api/agent/snapshot?ns=pay&token=sekret").status_code == 200
+    assert client.get("/api/agent/snapshot?ns=pay&token=nope").status_code == 401
+
+
+# ─── TASK-32 Task 5：update_agent 工具直写 DB（自述） ──────────────────
+
+
+@pytest.fixture()
+def mcp_db_env(monkeypatch, tmp_path):
+    """临时 DB + 隔离会话/指标全局态 + 就绪事件已置位（自述工具直写库验证用）"""
+    monkeypatch.setenv("AGENTBUS_DB_PATH", str(tmp_path / "agentbus.db"))
+    monkeypatch.setenv("AGENTBUS_ADMIN_USER", "root")
+    monkeypatch.setenv("AGENTBUS_ADMIN_PASSWORD", "rootpw")
+    monkeypatch.delenv("MCP_API_TOKEN", raising=False)
+
+    class FakeDynsec:
+        def __getattr__(self, name):
+            def call(*a, **k):
+                pass
+            return call
+
+    import server
+    server.DYNSEC_CLIENT = FakeDynsec()
+    server.init_hub_state()
+    saved = (dict(server._sessions), dict(server._agent_info))
+    server._sessions.clear()
+    server._agent_info.clear()
+    old_metrics, old_ready = server._metrics_store, server._shared_ready
+    server._metrics_store = server.MetricsStore()
+    ev = threading.Event()
+    ev.set()
+    server._shared_ready = ev
+    yield server
+    server._metrics_store, server._shared_ready = old_metrics, old_ready
+    server._sessions.clear(); server._sessions.update(saved[0])
+    server._agent_info.clear(); server._agent_info.update(saved[1])
+    if server.DB_CONN is not None:
+        server.DB_CONN.close()
+        server.DB_CONN = None
+
+
+def test_update_agent_tool_writes_db(mcp_db_env):
+    """自述 name/description/capabilities 直接落库（占位行已有）"""
+    from hub import store
+    mcp_db_env._handle_metric_message(_metric("pay", "alice"))  # 占位行 name=alice
+    out = _tool(None, "update_agent", {"name": "支付助手", "description": "处理支付",
+                                       "capabilities": ["pay"]})
+    assert out["status"] == "updated"
+    a = store.get_agent(mcp_db_env.DB_CONN, "pay", "alice")
+    assert a["name"] == "支付助手"
+    assert a["description"] == "处理支付"
+    assert a["capabilities"] == ["pay"]
+
+
+def test_update_agent_tool_creates_row_when_absent(mcp_db_env):
+    """无占位行时自述也能建档（owner 留空待注册补齐）"""
+    from hub import store
+    out = _tool(None, "update_agent", {"name": "自述者", "capabilities": ["x"]})
+    assert out["status"] == "updated"
+    a = store.get_agent(mcp_db_env.DB_CONN, "pay", "alice")
+    assert a is not None and a["name"] == "自述者"
+    assert a["capabilities"] == ["x"]
+    assert a["owner"] == ""
+
+
+def test_update_agent_tool_name_too_long(mcp_db_env):
+    out = _tool(None, "update_agent", {"name": "x" * 51})
+    assert "error" in out
+
+
+def test_update_agent_schema_declares_self_profile_fields():
+    """工具 schema 声明 name/description 自述参数，描述声明自述用法"""
+    from server import build_tools
+    t = {x.name: x for x in build_tools()}["update_agent"]
+    props = t.inputSchema["properties"]
+    assert "name" in props and "description" in props
+    assert "自述" in t.description
+
+
+def test_get_status_reads_db_profile(mcp_db_env):
+    """get_status 返回读 DB 的自身档案 + 在线态"""
+    from hub import store
+    store.upsert_agent(mcp_db_env.DB_CONN, "pay", "alice", name="支付助手",
+                       description="d", capabilities=["pay"])
+    out = _tool(None, "get_status", {})
+    assert out["name"] == "支付助手"
+    assert out["description"] == "d"
+    assert out["capabilities"] == ["pay"]
+    assert out["online"] is False  # 无近期指标
+    mcp_db_env._metrics_store.update("pay/alice", {"injected_ok": 1},
+                                     datetime.now(timezone.utc).isoformat())
+    out = _tool(None, "get_status", {})
+    assert out["online"] is True
+
+
+# ─── TASK-32 Task 5：PATCH /api/console/agents/{cid} ─────────────────────
+
+
+@pytest.fixture()
+def console_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("AGENTBUS_DB_PATH", str(tmp_path / "agentbus.db"))
+    monkeypatch.setenv("AGENTBUS_ADMIN_USER", "root")
+    monkeypatch.setenv("AGENTBUS_ADMIN_PASSWORD", "rootpw")
+
+    class FakeDynsec:
+        def __getattr__(self, name):
+            def call(*a, **k):
+                pass
+            return call
+
+    import server
+    server.DYNSEC_CLIENT = FakeDynsec()
+    server.init_hub_state()
+    monkeypatch.setattr(server, "_agent_info", {})
+    monkeypatch.setattr(server, "_sessions", {})
+    monkeypatch.setattr(server, "_metrics_store", server.MetricsStore())
+    yield TestClient(server.app)
+    if server.DB_CONN is not None:
+        server.DB_CONN.close()
+        server.DB_CONN = None
+
+
+def _mk_ns(client):
+    client.post("/api/console/namespaces", json={"id": "iot", "name": "iot", "description": "",
+                                                  "admin_username": "iot-adm", "admin_password": "pw"})
+
+
+def test_patch_agent_requires_login(console_env):
+    assert console_env.patch("/api/console/agents/ag-1?ns=iot",
+                             json={"name": "x"}).status_code == 401
+
+
+def test_patch_agent_forbidden_for_plain_member(console_env):
+    console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
+    _mk_ns(console_env)
+    console_env.post("/api/console/accounts", json={"username": "bob", "password": "pw2"})
+    console_env.post("/api/auth/logout")
+    console_env.post("/api/auth/login", json={"username": "bob", "password": "pw2"})
+    assert console_env.patch("/api/console/agents/ag-1?ns=iot",
+                             json={"name": "x"}).status_code == 403
+
+
+def test_patch_agent_success_writes_db(console_env):
+    import server
+    from hub import store
+    console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
+    _mk_ns(console_env)
+    store.upsert_agent(server.DB_CONN, "iot", "ag-1", name="旧名", description="旧述",
+                       capabilities=["a"], owner="root")
+    r = console_env.patch("/api/console/agents/ag-1?ns=iot",
+                          json={"name": "新名", "description": "新述", "capabilities": ["b"]})
+    assert r.status_code == 200, r.text
+    a = store.get_agent(server.DB_CONN, "iot", "ag-1")
+    assert a["name"] == "新名" and a["description"] == "新述"
+    assert a["capabilities"] == ["b"]
+    assert a["owner"] == "root"  # PATCH 不改 owner
+
+
+def test_patch_agent_name_too_long_400(console_env):
+    import server
+    from hub import store
+    console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
+    _mk_ns(console_env)
+    store.upsert_agent(server.DB_CONN, "iot", "ag-1", name="旧")
+    r = console_env.patch("/api/console/agents/ag-1?ns=iot", json={"name": "x" * 51})
+    assert r.status_code == 400
+
+
+def test_patch_agent_unknown_404(console_env):
+    console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
+    _mk_ns(console_env)
+    assert console_env.patch("/api/console/agents/ghost?ns=iot",
+                             json={"name": "x"}).status_code == 404
+
+
+# ─── TASK-32 Task 5：明细 API 补 DB 字段 + hub 重启恢复 ─────────────────
+
+
+def test_console_agents_detail_includes_db_fields(console_env):
+    """/api/console/agents 合并 DB 档案：tools/registered_at/owner/owner_display_name/placeholder"""
+    import server
+    from hub import store, auth
+    console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
+    _mk_ns(console_env)
+    store.create_user(server.DB_CONN, "alice", auth.hash_password("pw"), "user",
+                      display_name="小爱")
+    store.upsert_agent(server.DB_CONN, "iot", "ag-1", name="真身", tools=["t1"], owner="alice")
+    store.upsert_agent(server.DB_CONN, "iot", "ag-ph", name="ag-ph", owner="")  # 占位行
+    r = console_env.get("/api/console/agents?ns=iot")
+    assert r.status_code == 200
+    by_cid = {a["client_id"]: a for a in r.json()["agents"]}
+    real = by_cid["ag-1"]
+    assert real["tools"] == ["t1"]
+    assert real["owner"] == "alice"
+    assert real["owner_display_name"] == "小爱"
+    assert real["registered_at"]
+    assert real["placeholder"] is False
+    ph = by_cid["ag-ph"]
+    assert ph["placeholder"] is True
+
+
+def test_build_agent_detail_db_rows_join_union():
+    """纯函数：DB 行并入 key 并集（仅有档案无指标/会话的也要可见）"""
+    import server
+    db = {"ag-db": {"name": "档案者", "description": "d", "capabilities": ["c"],
+                    "tools": ["t"], "owner": "alice", "created_at": "2026-08-11 00:00:00",
+                    "updated_at": "2026-08-11 00:00:00"}}
+    rows = server.build_agent_detail("iot", {}, {}, {}, db)
+    assert [r["client_id"] for r in rows] == ["ag-db"]
+    r = rows[0]
+    assert r["name"] == "档案者" and r["registered"] is True
+    assert r["tools"] == ["t"] and r["owner"] == "alice"
+    assert r["online"] is False
+
+
+def test_hub_restart_loads_agents_from_db(app_ctx, monkeypatch):
+    """hub 重启：init_hub_state 后 agents 表加载入 _agent_info（registered=True）"""
+    from hub import store
+    store.upsert_agent(app_ctx.DB_CONN, "pay", "ag-r", name="重启幸存者",
+                       description="d", capabilities=["x"], owner="alice")
+    # 模拟重启：旧连接关闭，全局档案清空，重新 init
+    app_ctx.DB_CONN.close()
+    app_ctx.DB_CONN = None
+    monkeypatch.setattr(app_ctx, "_agent_info", {})
+    app_ctx.init_hub_state()
+    info = app_ctx._agent_info["pay/ag-r"]
+    assert info.registered is True
+    assert info.name == "重启幸存者"
+    assert info.description == "d"
+    assert info.capabilities == ["x"]

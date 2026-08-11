@@ -217,6 +217,13 @@ def list_agents(conn, ns_id):
     return [_agent_row(r) for r in rows]
 
 
+def list_all_agents(conn):
+    """全部 ns 的档案（hub 启动恢复用）"""
+    rows = conn.execute("""SELECT ns_id,client_id,name,description,capabilities,tools,owner,created_at,updated_at
+                           FROM agents ORDER BY ns_id,client_id""")
+    return [_agent_row(r) for r in rows]
+
+
 def update_agent(conn, ns_id, client_id, name=None, description=None, capabilities=None, tools=None) -> bool:
     """部分字段更新（仅非 None 参数）；owner 不经此变更。返回是否命中既有行。"""
     sets, params = [], []

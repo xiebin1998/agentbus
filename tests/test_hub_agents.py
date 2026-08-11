@@ -81,6 +81,14 @@ def test_update_agent_fields_partial(db):
     assert store.update_agent(db, "pay", "ag-none", name="x") is False
 
 
+def test_list_all_agents_across_ns(db):
+    """TASK-32 Task 5：hub 启动恢复需一次性读全部 ns 的档案"""
+    store.upsert_agent(db, "pay", "ag-1", name="A")
+    store.upsert_agent(db, "hr", "ag-2", name="B")
+    rows = store.list_all_agents(db)
+    assert {(r["ns_id"], r["client_id"]) for r in rows} == {("pay", "ag-1"), ("hr", "ag-2")}
+
+
 def test_delete_agent(db):
     store.upsert_agent(db, "pay", "ag-1", name="A")
     store.delete_agent(db, "pay", "ag-1")
