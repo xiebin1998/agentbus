@@ -190,9 +190,10 @@ def upsert_agent(conn, ns_id, client_id, name="", description="", capabilities=N
                         VALUES(?,?,?,?,?,?,?,datetime('now'),datetime('now'))""",
                      (ns_id, client_id, name, description, caps, tls, owner))
     else:
-        # 只补空字段：文本看空串，列表看 '[]'，owner 空串可被后续注册补齐
+        # 只补空字段：文本看空串，列表看 '[]'，owner 空串可被后续注册补齐；
+        # 占位行的 name==client_id 视为空槽，可被真身注册覆盖
         conn.execute("""UPDATE agents SET
-                          name=CASE WHEN name='' THEN ? ELSE name END,
+                          name=CASE WHEN name='' OR name=client_id THEN ? ELSE name END,
                           description=CASE WHEN description='' THEN ? ELSE description END,
                           capabilities=CASE WHEN capabilities='[]' THEN ? ELSE capabilities END,
                           tools=CASE WHEN tools='[]' THEN ? ELSE tools END,

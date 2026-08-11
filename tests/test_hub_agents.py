@@ -37,6 +37,13 @@ def test_upsert_agent_insert_and_fill(db):
     store.upsert_agent(db, "pay", "ag-2", name="占位", fill=True)
     assert store.get_agent(db, "pay", "ag-2")["name"] == "占位"
 
+    # 占位行的 name==client_id 视为空槽，可被真身注册覆盖
+    store.upsert_agent(db, "pay", "ag-3", name="ag-3", owner="", fill=True)
+    store.upsert_agent(db, "pay", "ag-3", name="真名", owner="alice", fill=True)
+    a = store.get_agent(db, "pay", "ag-3")
+    assert a["name"] == "真名"
+    assert a["owner"] == "alice"
+
 
 def test_get_agent_returns_none_when_absent(db):
     assert store.get_agent(db, "pay", "ag-none") is None

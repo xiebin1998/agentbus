@@ -29,6 +29,7 @@ MCP 工具：
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -425,7 +426,28 @@ def _handle_metric_message(msg) -> None:
     from_id = payload.get("from")
     if isinstance(from_id, str) and from_id.strip():
         identity = from_id.strip()
+    # TASK-32 顺序契约：先确保档案行存在（占位插入）再更新指标库，
+    # 使"未注册+在线"状态不可观测；已有行仅刷新 tools（若指标带）
+    _ensure_agent_row(identity, payload)
     _metrics_store.update(identity, payload.get("metrics"), payload.get("timestamp"))
+
+
+def _ensure_agent_row(identity: str, payload: dict) -> None:
+    """TASK-32 指标占位行：未知 ns/cid 先建占位档案（name=cid、owner 空）；
+    已存在行仅刷新 tools（指标带 tools 时），不碰 name/description/capabilities/owner。
+    DB 未初始化（lifespan 未生效）时静默跳过，不影响指标入库。"""
+    if DB_CONN is None or "/" not in identity:
+        return
+    ns, _, cid = identity.partition("/")
+    tools = payload.get("tools")
+    tools = [str(t) for t in tools] if isinstance(tools, list) else None
+    try:
+        if hub_store.get_agent(DB_CONN, ns, cid) is None:
+            hub_store.upsert_agent(DB_CONN, ns, cid, name=cid, owner="", tools=tools)
+        elif tools is not None:
+            hub_store.update_agent(DB_CONN, ns, cid, tools=tools)
+    except Exception as e:  # 占位失败不阻断指标链路
+        logger.error(f"[agent-profile] 占位行写入失败 {identity}: {e}")
 
 
 def start_shared_client() -> None:
@@ -1334,6 +1356,62 @@ async def api_console_agents(request: Request):
                                                       _metrics_store.snapshot())})
 
 
+# ─── TASK-32：Agent 档案注册（init HTTP 上报，Basic auth=broker 凭证） ─────────
+
+AGENT_NAME_MAX = 50  # name 上限（应用层校验）
+
+
+def _agent_basic_auth(request: Request) -> Optional[str]:
+    """Basic auth（broker 凭证对 hub users 表校验）：通过返回 username，否则 None"""
+    header = request.headers.get("authorization", "")
+    if not header.lower().startswith("basic "):
+        return None
+    try:
+        decoded = base64.b64decode(header[6:].strip()).decode("utf-8")
+    except Exception:
+        return None
+    username, _, password = decoded.partition(":")
+    user = hub_store.get_user(DB_CONN, username) if DB_CONN is not None else None
+    return username if hub_auth.login_ok(user, password) else None
+
+
+async def api_agent_register(request: Request):
+    """Agent 档案注册（幂等 upsert）：首写全字段，重跑只补空不覆盖。
+    鉴权：Basic auth（鉴权 username 记为 owner）；MCP_API_TOKEN 配置时亦接受
+    ?token=/Bearer（此通道 owner 留空）。name 超 50 → 400。"""
+    owner = _agent_basic_auth(request)
+    if owner is None:
+        expected = os.getenv("MCP_API_TOKEN") or ""
+        if not (expected and extract_token(request.scope) == expected):
+            return _json_error("unauthorized（需 Basic auth 或 token）", 401)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error("请求体须为 JSON 对象")
+    if not isinstance(body, dict):
+        return _json_error("请求体须为 JSON 对象")
+    ns = str(body.get("ns") or "").strip()
+    cid = str(body.get("client_id") or "").strip()
+    name = str(body.get("name") or "").strip()
+    if not ns or not cid:
+        return _json_error("缺少 ns/client_id")
+    if not name:
+        return _json_error("缺少 name")
+    if len(name) > AGENT_NAME_MAX:
+        return _json_error(f"name 长度须 ≤ {AGENT_NAME_MAX} 字符")
+
+    def _strlist(v):
+        return [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
+
+    hub_store.upsert_agent(DB_CONN, ns, cid, name=name,
+                           description=str(body.get("description") or "").strip(),
+                           capabilities=_strlist(body.get("capabilities")),
+                           tools=_strlist(body.get("tools")),
+                           owner=owner or "", fill=True)
+    logger.info(f"[agent-profile] registered {ns}/{cid} owner={owner or '(token)'}")
+    return JSONResponse({"status": "registered", "client_id": cid})
+
+
 # TASK-28：一键安装脚本托管（架构 6.6 / PLAN T24：中心节点静态服务，干净机器一条命令接入的下载源）
 INSTALL_SCRIPTS = {
     "/install.ps1": (Path(__file__).resolve().parent / "scripts" / "install.ps1", "text/plain; charset=utf-8"),
@@ -1429,6 +1507,8 @@ app = Starlette(
         Route("/api/console/metrics", hub_auth.session_guard(api_metrics), methods=["GET"]),
         Route("/api/console/metrics/summary", hub_auth.session_guard(api_metrics_summary), methods=["GET"]),
         Route("/api/console/agents", hub_auth.session_guard(api_console_agents), methods=["GET"]),
+        # TASK-32：Agent 档案注册（Basic auth=broker 凭证；不走 session 鉴权）
+        Route("/api/agent/register", api_agent_register, methods=["POST"]),
         # TASK-28：一键安装脚本（引导资源，鉴权豁免）
         Route("/install.ps1", install_script, methods=["GET"]),
         Route("/install.sh", install_script, methods=["GET"]),
