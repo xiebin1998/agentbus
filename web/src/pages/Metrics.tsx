@@ -1,45 +1,28 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Activity, Loader2, RefreshCw } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle,
-  Select, Table, TBody, TD, TH, THead, TR,
+  Table, TBody, TD, TH, THead, TR,
 } from "@/components/ui";
-import { api, DaemonEntry, MetricSummary, MetricsPayload, Namespace } from "@/lib/api";
-import { useAuth } from "@/context/AuthContext";
+import { api, DaemonEntry, MetricSummary, MetricsPayload } from "@/lib/api";
+import { useNs } from "@/context/NsContext";
 import { useToast } from "@/components/Toaster";
 import { formatTime } from "@/lib/utils";
 
 const REFRESH_MS = 5000;
 
 export function Metrics() {
-  const { me } = useAuth();
+  const { current, options } = useNs();
   const { toast } = useToast();
-  const isSuper = me?.role === "super_admin";
 
-  const [allNs, setAllNs] = useState<Namespace[]>([]);
-  const [ns, setNs] = useState("");
   const [payload, setPayload] = useState<MetricsPayload | null>(null);
   const [summary, setSummary] = useState<MetricSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // 可选 ns：超管全量，其他取自身绑定
-  const nsOptions = useMemo(
-    () => (isSuper ? allNs.map((n) => n.id) : me?.namespaces ?? []),
-    [isSuper, allNs, me],
-  );
-
-  useEffect(() => {
-    if (isSuper) api.listNamespaces().then(setAllNs).catch(() => {});
-  }, [isSuper]);
-
-  useEffect(() => {
-    if (!ns && nsOptions.length > 0) setNs(nsOptions[0]);
-  }, [ns, nsOptions]);
-
   const load = useCallback(async () => {
-    if (!ns) return;
+    if (!current) return;
     try {
-      const [m, s] = await Promise.all([api.metrics(ns), api.metricsSummary(ns)]);
+      const [m, s] = await Promise.all([api.metrics(current), api.metricsSummary(current)]);
       setPayload(m);
       setSummary(s);
     } catch (e) {
@@ -47,15 +30,15 @@ export function Metrics() {
     } finally {
       setLoading(false);
     }
-  }, [ns, toast]);
+  }, [current, toast]);
 
   useEffect(() => {
-    if (!ns) return;
+    if (!current) return;
     setLoading(true);
     void load();
     const timer = setInterval(() => void load(), REFRESH_MS);
     return () => clearInterval(timer);
-  }, [ns, load]);
+  }, [current, load]);
 
   const daemonRows = Object.entries(payload?.daemons ?? {});
   const totals = summary?.totals;
@@ -66,21 +49,20 @@ export function Metrics() {
         <CardHeader className="flex-row items-center justify-between space-y-0">
           <div className="flex items-center gap-3">
             <CardTitle>指标</CardTitle>
-            <Select value={ns} onChange={(e) => setNs(e.target.value)} className="w-44">
-              {nsOptions.length === 0 && <option value="">无可见命名空间</option>}
-              {nsOptions.map((id) => <option key={id} value={id}>{id}</option>)}
-            </Select>
+            {current && <Badge variant="secondary">{current}</Badge>}
           </div>
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             每 {REFRESH_MS / 1000}s 自动刷新
-            <Button variant="ghost" size="icon" onClick={() => void load()} title="立即刷新">
+            <Button variant="ghost" size="icon" onClick={() => void load()} title="立即刷新" disabled={!current}>
               <RefreshCw className="h-4 w-4" />
             </Button>
           </div>
         </CardHeader>
         <CardContent>
-          {!ns ? (
-            <p className="text-sm text-muted-foreground py-6 text-center">当前账号未绑定任何命名空间</p>
+          {!current ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">
+              {options.length === 0 ? "当前账号未绑定任何命名空间" : "请在顶栏选择一个具体命名空间查看指标"}
+            </p>
           ) : loading && !payload ? (
             <div className="flex items-center gap-2 text-muted-foreground py-6"><Loader2 className="h-4 w-4 animate-spin" />加载中…</div>
           ) : (
@@ -98,7 +80,7 @@ export function Metrics() {
         </CardContent>
       </Card>
 
-      {ns && (
+      {current && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm flex items-center gap-2">

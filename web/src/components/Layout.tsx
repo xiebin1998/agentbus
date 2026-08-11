@@ -1,7 +1,8 @@
 import { ReactNode } from "react";
-import { Bus, Sun, Moon, Palette, LogOut } from "lucide-react";
-import { Button } from "@/components/ui";
+import { Bus, Sun, Moon, Palette, LogOut, Layers } from "lucide-react";
+import { Button, Select } from "@/components/ui";
 import { useAuth } from "@/context/AuthContext";
+import { useNs } from "@/context/NsContext";
 import { useTheme } from "@/context/ThemeContext";
 import { cn } from "@/lib/utils";
 
@@ -30,6 +31,7 @@ export function Layout({
   children: ReactNode;
 }) {
   const { me, logout } = useAuth();
+  const { current, setCurrent, options, isSuper } = useNs();
   const { dark, accent, toggleDark, toggleAccent } = useTheme();
 
   return (
@@ -39,6 +41,23 @@ export function Layout({
           <div className="flex items-center gap-2 font-semibold">
             <Bus className="h-5 w-5 text-primary" />
             AgentBus 控制台
+          </div>
+          {/* 全局命名空间切换（超管可选"全部"） */}
+          <div className="flex items-center gap-1.5 rounded-md border bg-background/50 px-2 py-1">
+            <Layers className="h-3.5 w-3.5 text-muted-foreground" />
+            <Select
+              value={current}
+              onChange={(e) => setCurrent(e.target.value)}
+              className="h-7 w-36 border-0 px-1 text-sm shadow-none focus-visible:ring-0"
+              aria-label="切换命名空间"
+            >
+              {isSuper && <option value="">全部命名空间</option>}
+              {options.map((n) => (
+                <option key={n.id} value={n.id}>
+                  {n.name ? `${n.name}（${n.id}）` : n.id}
+                </option>
+              ))}
+            </Select>
           </div>
           <nav className="ml-6 flex gap-1">
             {TABS.map((t) => (

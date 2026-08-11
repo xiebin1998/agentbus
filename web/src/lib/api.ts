@@ -92,6 +92,12 @@ export const api = {
   }) => http<{ ok: boolean }>("/api/console/namespaces", json(b)),
   deleteNamespace: (ns: string) =>
     http<{ ok: boolean }>(`/api/console/namespaces/${encodeURIComponent(ns)}`, { method: "DELETE" }),
+  updateNamespace: (ns: string, b: { name?: string; description?: string }) =>
+    http<{ ok: boolean }>(`/api/console/namespaces/${encodeURIComponent(ns)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(b),
+    }),
 
   addMember: (ns: string, username: string) =>
     http<{ ok: boolean }>(

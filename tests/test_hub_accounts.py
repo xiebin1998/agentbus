@@ -1,6 +1,6 @@
 import pytest
 
-from hub import accounts, store
+from hub import accounts, auth, dynsec, store
 
 
 class FakeDynsec:
@@ -77,3 +77,38 @@ def test_ns_id_validation(db):
         accounts.create_namespace_with_admin(db, d, "支付", "x", "", "a1", "pw")   # 编号必须英文
     with pytest.raises(ValueError):
         accounts.create_namespace_with_admin(db, d, "pay space", "x", "", "a1", "pw")
+
+
+def test_reset_password_super_admin_skips_dynsec(db):
+    """超管是纯控制台身份（bootstrap 只写 SQLite）：改密不同步 dynsec，broker 报 Client not found 不影响"""
+    store.create_user(db, "root", auth.hash_password("old"), "super_admin")
+
+    class NoClientDynsec:
+        calls = []
+
+        def set_client_password(self, *a):
+            raise dynsec.DynsecError("Client not found")
+
+    accounts.reset_password(db, NoClientDynsec(), "root", "new")
+    assert auth.verify_password("new", store.get_user(db, "root")["password_hash"])
+
+
+def test_delete_account_tolerates_missing_dynsec_client(db):
+    """broker 侧无对应 client 时删号不阻断（SQLite 已删）；其他 dynsec 错误仍报错"""
+    store.create_user(db, "root", auth.hash_password("pw"), "super_admin")
+
+    class NotFoundDynsec:
+        def delete_client(self, *a):
+            raise dynsec.DynsecError("Client not found")
+
+    accounts.delete_account(db, NotFoundDynsec(), "root")
+    assert store.get_user(db, "root") is None
+
+    store.create_user(db, "bob", auth.hash_password("pw"), "user")
+
+    class OtherErrorDynsec:
+        def delete_client(self, *a):
+            raise dynsec.DynsecError("broker offline")
+
+    with pytest.raises(dynsec.DynsecError):
+        accounts.delete_account(db, OtherErrorDynsec(), "bob")

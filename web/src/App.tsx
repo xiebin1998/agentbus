@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { AuthProvider, useAuth } from "@/context/AuthContext";
+import { NsProvider } from "@/context/NsContext";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { ToastProvider } from "@/components/Toaster";
 import { Layout, Tab } from "@/components/Layout";
@@ -38,7 +39,9 @@ export default function App() {
     <ThemeProvider>
       <AuthProvider>
         <ToastProvider>
-          <Shell />
+          <NsProvider>
+            <Shell />
+          </NsProvider>
         </ToastProvider>
       </AuthProvider>
     </ThemeProvider>

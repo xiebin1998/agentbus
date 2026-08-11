@@ -113,3 +113,46 @@ def test_connect_command(client):
     data = r.json()
     assert data["broker"] and data["user"] == "root" and data["ns"] == "pay"
     assert "password" not in data  # 服务端不回显真实密码（单向哈希）
+
+
+def test_super_admin_password_change_without_dynsec_client(app_ctx, client):
+    """复现修复：超管在 broker 无 client（set_client_password 报 Client not found），改密仍应成功"""
+    from hub import dynsec as hub_dynsec
+
+    class NotFoundDynsec:
+        def __getattr__(self, name):
+            def call(*a, **k):
+                if name == "set_client_password":
+                    raise hub_dynsec.DynsecError("Client not found")
+            return call
+
+    app_ctx.DYNSEC_CLIENT = NotFoundDynsec()
+    _login(client, "root", "rootpw")
+    assert client.post("/api/console/accounts/root/password", json={"password": "newpw"}).status_code == 200
+    client.post("/api/auth/logout")
+    _login(client, "root", "newpw")   # 新密码可登录
+
+
+def test_ns_patch_update(client):
+    _login(client, "root", "rootpw")
+    client.post("/api/console/namespaces", json={"id": "pay", "name": "支付", "description": "旧",
+                                                 "admin_username": "pay-admin", "admin_password": "pw1"})
+    client.post("/api/console/namespaces", json={"id": "iot", "name": "物联", "description": "",
+                                                 "admin_username": "iot-admin", "admin_password": "pw2"})
+    # 超管改名称+描述
+    assert client.patch("/api/console/namespaces/pay", json={"name": "支付中台", "description": "新"}).status_code == 200
+    pay = next(n for n in client.get("/api/console/namespaces").json() if n["id"] == "pay")
+    assert pay == {"id": "pay", "name": "支付中台", "description": "新"}
+    # id 不可改：未知字段一律 400
+    assert client.patch("/api/console/namespaces/pay", json={"id": "pay2"}).status_code == 400
+    assert client.patch("/api/console/namespaces/pay", json={}).status_code == 400
+    assert client.patch("/api/console/namespaces/pay", json={"name": "  "}).status_code == 400
+    assert client.patch("/api/console/namespaces/ghost", json={"name": "x"}).status_code == 404
+    # ns_admin 只能改自己管的 ns
+    client.post("/api/auth/logout")
+    _login(client, "pay-admin", "pw1")
+    assert client.patch("/api/console/namespaces/pay", json={"description": "成员可改"}).status_code == 200
+    assert client.patch("/api/console/namespaces/iot", json={"name": "越权"}).status_code == 403
+    # 未登录 401
+    client.post("/api/auth/logout")
+    assert client.patch("/api/console/namespaces/pay", json={"name": "x"}).status_code == 401

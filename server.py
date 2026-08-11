@@ -975,6 +975,26 @@ async def api_ns_delete(request: Request):
     return JSONResponse({"ok": True})
 
 
+async def api_ns_update(request: Request):
+    """编辑 ns 元数据（名称/描述）；id 不可改"""
+    user = hub_auth.current_user(request)
+    ns = request.path_params["ns"]
+    if not _can_manage_ns(user, ns):
+        return _json_error("forbidden", 403)
+    if hub_store.get_namespace(DB_CONN, ns) is None:
+        return _json_error("ns 不存在", 404)
+    try:
+        body = await request.json()
+    except Exception:
+        return _json_error("请求体须为 JSON 对象")
+    if not isinstance(body, dict) or not body or not set(body) <= {"name", "description"}:
+        return _json_error("仅支持 name/description 字段（id 不可修改）")
+    if "name" in body and (not isinstance(body["name"], str) or not body["name"].strip()):
+        return _json_error("name 不能为空")
+    hub_store.update_namespace(DB_CONN, ns, body.get("name"), body.get("description"))
+    return JSONResponse({"ok": True})
+
+
 async def api_accounts_list(request: Request):
     user = hub_auth.current_user(request)
     ns = request.query_params.get("ns")
@@ -1189,6 +1209,7 @@ app = Starlette(
         Route("/api/console/namespaces", hub_auth.session_guard(api_ns_list), methods=["GET"]),
         Route("/api/console/namespaces", hub_auth.session_guard(api_ns_create), methods=["POST"]),
         Route("/api/console/namespaces/{ns}", hub_auth.session_guard(api_ns_delete), methods=["DELETE"]),
+        Route("/api/console/namespaces/{ns}", hub_auth.session_guard(api_ns_update), methods=["PATCH"]),
         Route("/api/console/namespaces/{ns}/members/{username}", hub_auth.session_guard(api_member_put), methods=["PUT"]),
         Route("/api/console/namespaces/{ns}/members/{username}", hub_auth.session_guard(api_member_delete), methods=["DELETE"]),
         Route("/api/console/accounts", hub_auth.session_guard(api_accounts_list), methods=["GET"]),

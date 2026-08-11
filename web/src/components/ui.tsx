@@ -1,4 +1,5 @@
-import { ButtonHTMLAttributes, InputHTMLAttributes, HTMLAttributes, SelectHTMLAttributes, TdHTMLAttributes, ThHTMLAttributes, forwardRef } from "react";
+import { ButtonHTMLAttributes, InputHTMLAttributes, HTMLAttributes, SelectHTMLAttributes, TdHTMLAttributes, ThHTMLAttributes, ReactNode, forwardRef, useEffect } from "react";
+import { Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /* ── Button ── */
@@ -136,3 +137,84 @@ export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSel
   ),
 );
 Select.displayName = "Select";
+
+/* ── Modal（遮罩 + 居中卡片，ESC/遮罩关闭）── */
+export function Modal({
+  open,
+  title,
+  onClose,
+  children,
+  className,
+}: {
+  open: boolean;
+  title: ReactNode;
+  onClose: () => void;
+  children: ReactNode;
+  className?: string;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className={cn("w-full max-w-md rounded-lg border bg-card text-card-foreground shadow-lg", className)}>
+        <div className="flex items-center justify-between border-b px-5 py-3">
+          <h3 className="font-semibold leading-none tracking-tight">{title}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted-foreground transition-colors hover:text-foreground"
+            aria-label="关闭"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+/* ── ConfirmDialog（危险操作确认弹窗）── */
+export function ConfirmDialog({
+  open,
+  title,
+  description,
+  confirmText = "确认",
+  busy,
+  onConfirm,
+  onClose,
+}: {
+  open: boolean;
+  title: ReactNode;
+  description: ReactNode;
+  confirmText?: string;
+  busy?: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal open={open} title={title} onClose={onClose}>
+      <div className="text-sm text-muted-foreground">{description}</div>
+      <div className="mt-5 flex justify-end gap-2">
+        <Button variant="ghost" onClick={onClose}>取消</Button>
+        <Button variant="destructive" disabled={busy} onClick={onConfirm}>
+          {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+          {confirmText}
+        </Button>
+      </div>
+    </Modal>
+  );
+}

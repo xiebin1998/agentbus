@@ -72,6 +72,15 @@ def get_namespace(conn, ns_id):
     return {"id": row[0], "name": row[1], "description": row[2]} if row else None
 
 
+def update_namespace(conn, ns_id, name=None, description=None) -> None:
+    """更新 ns 元数据（id 不可改）；仅更新传入的非 None 字段。"""
+    if name is not None:
+        conn.execute("UPDATE namespaces SET name=? WHERE id=?", (name, ns_id))
+    if description is not None:
+        conn.execute("UPDATE namespaces SET description=? WHERE id=?", (description, ns_id))
+    conn.commit()
+
+
 def list_namespaces(conn):
     return [{"id": r[0], "name": r[1], "description": r[2]}
             for r in conn.execute("SELECT id,name,description FROM namespaces ORDER BY id")]

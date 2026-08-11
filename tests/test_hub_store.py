@@ -28,6 +28,17 @@ def test_namespace_crud(db):
     assert store.get_namespace(db, "pay") is None
 
 
+def test_namespace_update(db):
+    """update_namespace 按需更新名称/描述（id 不可改），None 字段不动"""
+    store.create_namespace(db, "pay", "支付", "旧描述")
+    store.update_namespace(db, "pay", name="支付中台")
+    assert store.get_namespace(db, "pay") == {"id": "pay", "name": "支付中台", "description": "旧描述"}
+    store.update_namespace(db, "pay", description="新描述")
+    assert store.get_namespace(db, "pay")["description"] == "新描述"
+    store.update_namespace(db, "pay", name="支付", description="")
+    assert store.get_namespace(db, "pay") == {"id": "pay", "name": "支付", "description": ""}
+
+
 def test_members_bind_unbind(db):
     store.create_user(db, "alice", "h", "user")
     store.create_namespace(db, "pay", "支付", "")

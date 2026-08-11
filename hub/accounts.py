@@ -1,7 +1,7 @@
 """账号/命名空间生命周期编排：SQLite 先写、dynsec 后写、失败回滚。"""
 import re
 
-from hub import auth, store
+from hub import auth, dynsec, store
 
 NS_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
@@ -58,19 +58,28 @@ def unbind(db, dynsec, ns_id, username) -> None:
     dynsec.remove_group_client(ns_id, username)  # 不回滚：SQLite 已删，dynsec 残留无害
 
 
-def reset_password(db, dynsec, username, new_password) -> None:
-    old_hash = store.get_user(db, username)["password_hash"]
+def reset_password(db, dynsec_client, username, new_password) -> None:
+    user = store.get_user(db, username)
+    old_hash = user["password_hash"]
     store.set_password_hash(db, username, auth.hash_password(new_password))
+    # 超管是纯控制台身份（bootstrap 只写 SQLite，broker 无对应 client），无需同步 dynsec
+    if user["role"] == "super_admin":
+        return
     try:
-        dynsec.set_client_password(username, new_password)
+        dynsec_client.set_client_password(username, new_password)
     except Exception:
         store.set_password_hash(db, username, old_hash)
         raise
 
 
-def delete_account(db, dynsec, username) -> None:
+def delete_account(db, dynsec_client, username) -> None:
     store.delete_user(db, username)   # 外键级联删 ns_members
-    dynsec.delete_client(username)
+    try:
+        dynsec_client.delete_client(username)
+    except dynsec.DynsecError as e:
+        # broker 侧本就无此 client（如超管/历史残留）：SQLite 已删，不阻断
+        if "not found" not in str(e).lower():
+            raise
 
 
 def delete_namespace(db, dynsec, ns_id) -> None:
