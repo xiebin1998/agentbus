@@ -3,3 +3,5 @@
 *.sh text eol=lf
 # PowerShell 脚本保持 CRLF（Windows 惯例，无执行障碍）
 *.ps1 text eol=crlf
+# agentbus 包内 skill 模板：frontmatter 解析器对 CRLF 敏感（TASK-32）→ 强制 LF
+agentbus/skills/**/*.md text eol=lf

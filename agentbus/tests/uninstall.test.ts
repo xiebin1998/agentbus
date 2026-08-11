@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { planMcpUninstall, removeMcpJsonEntry } from "../src/mcp-registry.js";
 import { runUninstall } from "../src/uninstall.js";
-import { SKILL_TEMPLATE } from "../src/skill.js";
+import { loadSkillTemplate } from "../src/skill.js";
 import { AGENTBUS_BEGIN, AGENTBUS_END } from "../src/agents-md.js";
 
 let root: string;
@@ -136,9 +136,9 @@ function seedInitProject(daemonPid = process.pid) {
   writeFileSync(join(root, ".kilo", "kilo.json"), JSON.stringify({ mcp: { agentbus: { type: "remote" } } }), "utf-8");
   // skill
   mkdirSync(join(root, ".qoder", "skills", "agentbus"), { recursive: true });
-  writeFileSync(join(root, ".qoder", "skills", "agentbus", "SKILL.md"), SKILL_TEMPLATE, "utf-8");
+  writeFileSync(join(root, ".qoder", "skills", "agentbus", "SKILL.md"), loadSkillTemplate(), "utf-8");
   mkdirSync(join(root, ".kilocode", "skills", "agentbus"), { recursive: true });
-  writeFileSync(join(root, ".kilocode", "skills", "agentbus", "SKILL.md"), SKILL_TEMPLATE, "utf-8");
+  writeFileSync(join(root, ".kilocode", "skills", "agentbus", "SKILL.md"), loadSkillTemplate(), "utf-8");
   // AGENTS.md：托管块 + 用户内容
   writeFileSync(
     join(root, "AGENTS.md"),

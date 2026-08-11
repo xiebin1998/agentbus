@@ -3,14 +3,15 @@
  *
  * 仅为不支持 skill 的工具兜底。插入/更新/删除全部幂等，块外用户内容逐字无损。
  * 块边界用完整标记串匹配（含注释语法），正文提及字样不会误判。
+ * TASK-32 拍板⑩：块正文外置到包内 skills/agents-block.md。
  */
+import { loadAgentsBlock } from "./skill.js";
 
 export const AGENTBUS_BEGIN = "<!-- AGENTBUS:BEGIN（agentbus init 自动生成，勿手动修改块内内容） -->";
 export const AGENTBUS_END = "<!-- AGENTBUS:END -->";
 
-/** 兜底块正文（架构 5.6-B） */
-export const AGENTBUS_BLOCK = `## AgentBus 总线约定
-本项目已接入 AgentBus 总线（身份见 \`.agentbus/config.json\`）。收发总线消息时请加载 \`agentbus\` skill 处理；本工具不支持 skill 时按信封头指令执行：入站默认只读，回复携带 reply_to，仅在用户要求协作时发送。`;
+/** 兜底块正文（架构 5.6-B；真源 skills/agents-block.md，模块加载时读入） */
+export const AGENTBUS_BLOCK = loadAgentsBlock();
 
 function renderBlock(body: string): string {
   return `${AGENTBUS_BEGIN}\n${body}\n${AGENTBUS_END}`;

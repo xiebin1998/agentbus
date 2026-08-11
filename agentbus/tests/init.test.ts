@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildInitConfig, runInit, type InitReport } from "../src/init.js";
-import { SKILL_TEMPLATE } from "../src/skill.js";
+import { loadSkillTemplate } from "../src/skill.js";
 import { AGENTBUS_BEGIN } from "../src/agents-md.js";
 
 let root: string;
@@ -138,8 +138,8 @@ describe("runInit --yes 全链路（非交互）", () => {
 
   it("步骤 3：为每个支持 skill 的工具安装 SKILL.md", async () => {
     await init();
-    expect(readFileSync(join(root, ".qoder", "skills", "agentbus", "SKILL.md"), "utf-8")).toBe(SKILL_TEMPLATE);
-    expect(readFileSync(join(root, ".kilocode", "skills", "agentbus", "SKILL.md"), "utf-8")).toBe(SKILL_TEMPLATE);
+    expect(readFileSync(join(root, ".qoder", "skills", "agentbus", "SKILL.md"), "utf-8")).toBe(loadSkillTemplate());
+    expect(readFileSync(join(root, ".kilocode", "skills", "agentbus", "SKILL.md"), "utf-8")).toBe(loadSkillTemplate());
   });
 
   it("步骤 4：project scope 注册写入 .mcp.json（claude/qoder 共用）与 .kilo/kilo.json", async () => {
