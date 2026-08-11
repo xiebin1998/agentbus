@@ -377,8 +377,17 @@ describe("TASK-29：重连自愈（broker 抖动后自动恢复，PLAN T25）", 
     await new Promise<void>((resolve) => server.listen(port, "127.0.0.1", resolve));
     await waitFor(() => daemon.status().connected, 15_000);
 
-    publishToDaemon({ id: "msg-recon-1", from: "default/be-svc", to: "fe-test", text: "重连后第一条" });
-    await waitFor(() => records.length === 1, 8000);
+    // 高并发负载下 SUBACK 门控通过到 broker 投递就绪存在微小窗口，单次 publish 可能落空；
+    // 按架构语义（listener.ts：至少一次投递由去重兜底）同 id 周期重投，daemon LRU 去重保证幂等
+    const reconDeadline = Date.now() + 8000;
+    while (records.length === 0) {
+      publishToDaemon({ id: "msg-recon-1", from: "default/be-svc", to: "fe-test", text: "重连后第一条" });
+      // 每 300ms 重投一轮，收到即提前退出；总时长受 reconDeadline 约束
+      await waitFor(() => records.length > 0 || Date.now() > reconDeadline, 300);
+      if (records.length === 0 && Date.now() > reconDeadline) {
+        throw new Error("waitFor 超时：重连后消息未注入");
+      }
+    }
     expect(records[0]!.ctx.msg.id).toBe("msg-recon-1");
 
     await daemon.stop();

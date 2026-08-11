@@ -24,6 +24,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 describe("runCommand", () => {
+  // 启动真实子进程的用例统一宽超时：vitest 默认 5s，全量并发负载下进程启动慢会误杀
+  const PROC_TIMEOUT = 20_000;
+
   it("捕获 stdout 与退出码", async () => {
     const result = await runCommand({
       cmd: "node",
@@ -33,7 +36,7 @@ describe("runCommand", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("hello");
     expect(result.timedOut).toBe(false);
-  });
+  }, PROC_TIMEOUT);
 
   it("捕获 stderr 与非零退出码（不抛异常）", async () => {
     const result = await runCommand({
@@ -43,7 +46,7 @@ describe("runCommand", () => {
     });
     expect(result.exitCode).toBe(3);
     expect(result.stderr).toBe("oops");
-  });
+  }, PROC_TIMEOUT);
 
   it("超时 kill 进程并标记 timedOut", async () => {
     const started = Date.now();
@@ -54,7 +57,7 @@ describe("runCommand", () => {
     });
     expect(result.timedOut).toBe(true);
     expect(Date.now() - started).toBeLessThan(10_000);
-  });
+  }, PROC_TIMEOUT);
 
   it("命令不存在返回 spawn 错误（不抛异常）", async () => {
     const result = await runCommand({
@@ -63,7 +66,7 @@ describe("runCommand", () => {
       timeoutMs: 5000,
     });
     expect(result.error).toMatch(/spawn|ENOENT|找不到/i);
-  });
+  }, PROC_TIMEOUT);
 
   it("cwd 参数生效", async () => {
     const result = await runCommand({
@@ -75,7 +78,7 @@ describe("runCommand", () => {
     expect(result.exitCode).toBe(0);
     // Windows 短路径/大小写差异：统一小写比较
     expect(result.stdout.toLowerCase()).toBe((process.env.TEMP ?? process.cwd()).toLowerCase());
-  });
+  }, PROC_TIMEOUT);
 
   it("子进程 stdin 立即关闭（TASK-16 实测：codex 等 stdin EOF 会阻塞回合）", async () => {
     // 脚本等 stdin EOF 后才输出；若 stdin 未关闭将超时
@@ -86,7 +89,7 @@ describe("runCommand", () => {
     });
     expect(result.timedOut).toBe(false);
     expect(result.stdout).toBe("EOF-REACHED");
-  });
+  }, PROC_TIMEOUT);
 
   it.skipIf(process.platform !== "win32")("Windows：.cmd shim 可直接作为 cmd 运行（TASK-16 实测：codex/qodercli 均为 .cmd）", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agentbus-cmd-"));
@@ -100,7 +103,7 @@ describe("runCommand", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, PROC_TIMEOUT);
 
   it.skipIf(process.platform !== "win32")("Windows：无扩展名命令经 PATHEXT 解析（spawn 裸名会 ENOENT）", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agentbus-cmd2-"));
@@ -118,7 +121,7 @@ describe("runCommand", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, PROC_TIMEOUT);
 
   it.skipIf(process.platform !== "win32")("Windows：超时杀整棵进程树（cmd.exe 孙进程持管道实测：单杀 wrapper 会挂死）", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agentbus-tree-"));
@@ -139,7 +142,7 @@ describe("runCommand", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, PROC_TIMEOUT);
 
   it.skipIf(process.platform !== "win32")("Windows：where 同名命中无扩展名 sh 脚本与 .cmd 时优先可执行扩展（npm 全局实测）", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agentbus-cmd3-"));
@@ -157,7 +160,7 @@ describe("runCommand", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, PROC_TIMEOUT);
 
   it.skipIf(process.platform !== "win32")("Windows：.cmd 参数含 cmd 特殊字符不被分割（TASK-22 实测：sse_url 中 & 被当命令分隔符）", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agentbus-amp-"));
@@ -173,5 +176,5 @@ describe("runCommand", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, PROC_TIMEOUT);
 });
