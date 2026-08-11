@@ -103,8 +103,10 @@ export function buildProgram(): Command {
     .option("--scope <scope>", "MCP 注册范围（project/global）")
     .option("--ns <ns>", "命名空间（默认 default）")
     .option("--broker <host:port>", "Broker 地址（默认 localhost:18830）")
+    .option("--user <user>", "broker 接入用户名（控制台发放，四期 dynsec 强制认证）")
+    .option("--password <password>", "broker 接入密码（写入 .agentbus/config.json，自动保障入 .gitignore）")
     .option("--sse-url <url>", "MCP Server SSE URL（默认按 broker host 派生）")
-    .action(async (opts: { yes?: boolean; clientId?: string; tools?: string[]; scope?: string; ns?: string; broker?: string; sseUrl?: string }) => {
+    .action(async (opts: { yes?: boolean; clientId?: string; tools?: string[]; scope?: string; ns?: string; broker?: string; user?: string; password?: string; sseUrl?: string }) => {
       const projectRoot = process.cwd();
       const scope = (opts.scope ?? "project") as McpScope;
       const report = await runInit(
@@ -115,6 +117,8 @@ export function buildProgram(): Command {
           scope,
           ns: opts.ns,
           broker: opts.broker,
+          user: opts.user,
+          password: opts.password,
           sseUrl: opts.sseUrl,
         },
         {

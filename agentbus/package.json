@@ -1,6 +1,6 @@
 {
   "name": "@xiebin1998/agentbus",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "AgentBus CLI/Daemon —— MQTT 总线客户端（架构见 ../ARCHITECTURE.md）",
   "type": "module",
   "bin": {

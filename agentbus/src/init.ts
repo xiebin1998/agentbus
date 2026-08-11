@@ -26,6 +26,9 @@ export interface InitCliOptions {
   broker?: string;
   /** 显式 SSE URL；缺省按 broker host 派生 */
   sseUrl?: string;
+  /** 四期：broker 接入凭证（控制台发放，dynsec 强制认证） */
+  user?: string;
+  password?: string;
 }
 
 export interface InitReport {
@@ -47,7 +50,7 @@ export interface InitDeps {
 export interface RawInitConfig {
   client_id: string;
   ns: string;
-  broker: { host: string; port: number };
+  broker: { host: string; port: number; username?: string; password?: string };
   sse_url: string;
   default_tool: string;
   allowed_senders: string[];
@@ -72,7 +75,7 @@ export function parseBroker(input: string): { host: string; port: number } {
 
 /** 由默认值/传参生成 config.json 原始对象（纯函数，不碰磁盘） */
 export function buildInitConfig(
-  opts: Pick<InitCliOptions, "tools" | "ns" | "clientId" | "broker" | "sseUrl">,
+  opts: Pick<InitCliOptions, "tools" | "ns" | "clientId" | "broker" | "sseUrl" | "user" | "password">,
   projectRoot: string,
 ): RawInitConfig {
   const tools = opts.tools ?? [];
@@ -89,7 +92,12 @@ export function buildInitConfig(
   return {
     client_id,
     ns,
-    broker,
+    // 四期：接入凭证仅在显式传入时写入（写盘前 runInit 保障 .agentbus/ 入 .gitignore）
+    broker: {
+      ...broker,
+      ...(opts.user?.trim() ? { username: opts.user.trim() } : {}),
+      ...(opts.password ? { password: opts.password } : {}),
+    },
     sse_url,
     default_tool: tools[0],
     allowed_senders: [],
@@ -102,6 +110,17 @@ export function buildInitConfig(
 const defaultSpawnDaemon = (cmd: string, args: string[]) => {
   spawn(cmd, args, { detached: true, stdio: "ignore" }).unref();
 };
+
+/** 幂等追加 .agentbus/ 到项目 .gitignore（不存在则创建） */
+function ensureGitignoreEntry(projectRoot: string): void {
+  const giPath = join(projectRoot, ".gitignore");
+  const existing = existsSync(giPath) ? readFileSync(giPath, "utf-8") : "";
+  if (existing.split(/\r?\n/).some((l) => l.trim() === ".agentbus/")) {
+    return;
+  }
+  const body = existing && !existing.endsWith("\n") ? `${existing}\n` : existing;
+  writeFileSync(giPath, `${body}.agentbus/\n`, "utf-8");
+}
 
 /** 五步编排；任何一步失败立即收敛进报告（ok=false），不带病推进 */
 export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<InitReport> {
@@ -148,7 +167,7 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
 
   let raw: RawInitConfig;
   try {
-    raw = buildInitConfig(answers, projectRoot);
+    raw = buildInitConfig({ ...answers, user: opts.user, password: opts.password }, projectRoot);
   } catch (e) {
     return { ok: false, lines: [`✗ ${(e as Error).message}`] };
   }
@@ -171,6 +190,12 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   const configPath = join(agentbusDir, "config.json");
   writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8");
   lines.push(`✓ 已写入 .agentbus/config.json（身份 ${raw.ns}/${raw.client_id}）`);
+
+  // 四期：凭证落盘时保障 .agentbus/ 入 .gitignore（防误提交，幂等）
+  if (raw.broker.password) {
+    ensureGitignoreEntry(projectRoot);
+    lines.push("✓ 已保障 .agentbus/ 入 .gitignore（config.json 含接入凭证，勿提交）");
+  }
 
   let needAgentsMd = false;
   for (const tool of Object.keys(raw.tools)) {

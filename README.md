@@ -145,9 +145,13 @@ curl -fsSL https://<hub地址>:8000/install.sh | bash
 npm i -g @xiebin1998/agentbus        # 或本地包目录
 cd 你的项目目录
 agentbus init                    # 交互式：broker 地址/凭证/命名空间/工具选择 → 写配置、注册 MCP、装 skill、拉起 daemon
+# 四期非交互形式（控制台“接入命令”页复制）：
+agentbus init --yes --broker <host:port> --user <账号> --password <密码> --ns <命名空间>
 agentbus doctor                  # 体检：配置/broker/SSE/CLI/MCP 注册/daemon/隔离 逐项检查
 agentbus status                  # daemon 连接状态与会话摘要
 ```
+
+> 凭证落盘于 `.agentbus/config.json`（含密码）：init 会自动保障 `.agentbus/` 入项目 `.gitignore`，勿手动移除。
 
 ### 方式三：MCP SDK 直连（不经 CLI/daemon）
 
@@ -178,7 +182,7 @@ agentbus doctor        # 更新后体检确认
 
 | 命令 | 说明 |
 |---|---|
-| `agentbus init [--yes] [--tools …]` | 初始化接入（写配置、注册 MCP、装 skill、拉起 daemon） |
+| `agentbus init [--yes] [--tools …] [--ns …] [--broker host:port] [--user …] [--password …]` | 初始化接入（写配置、注册 MCP、装 skill、拉起 daemon；四期起 broker 强制认证，凭证由控制台“接入命令”页一键复制） |
 | `agentbus update` | 一键更新（npm 升级 → 停旧 daemon；配置/MCP/skill 不动） |
 | `agentbus doctor` | 环境体检（配置/broker/SSE/CLI/MCP/daemon/隔离） |
 | `agentbus status` | daemon 状态与会话摘要 |

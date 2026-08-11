@@ -72,6 +72,14 @@ describe("buildInitConfig 默认值生成", () => {
     expect(() => buildInitConfig({ tools: [] }, root)).toThrow(/工具/);
     expect(() => buildInitConfig({ tools: ["qoder"], broker: "nohost" }, root)).toThrow(/broker/);
   });
+
+  it("四期：--user/--password 写入 broker.username/password；不传则无凭证字段", () => {
+    const withCred = buildInitConfig({ tools: ["qoder"], user: "bob", password: "s3cret" }, root);
+    expect(withCred.broker).toMatchObject({ username: "bob", password: "s3cret" });
+    const noCred = buildInitConfig({ tools: ["qoder"] }, root);
+    expect(noCred.broker).not.toHaveProperty("username");
+    expect(noCred.broker).not.toHaveProperty("password");
+  });
 });
 
 describe("runInit --yes 全链路（非交互）", () => {
@@ -146,6 +154,30 @@ describe("runInit --yes 全链路（非交互）", () => {
     const { deps } = await init();
     expect(deps.spawns.length).toBe(1);
     expect(deps.spawns[0].args.join(" ")).toContain("daemon start");
+  });
+
+  it("四期：--user/--password 写入 config.json 并保障 .agentbus/ 入 .gitignore（幂等）", async () => {
+    const deps = fakeDeps();
+    const report = await runInit(
+      { yes: true, tools: ["qoder"], scope: "project", user: "bob", password: "s3cret" },
+      { projectRoot: root, homeDir: home, runner: deps.runner, spawnDaemon: deps.spawnDaemon },
+    );
+    expect(report.ok).toBe(true);
+    const cfg = JSON.parse(readFileSync(join(root, ".agentbus", "config.json"), "utf-8"));
+    expect(cfg.broker).toMatchObject({ username: "bob", password: "s3cret" });
+    expect(readFileSync(join(root, ".gitignore"), "utf-8")).toContain(".agentbus/");
+    // 幂等：重跑不重复追加
+    await runInit(
+      { yes: true, tools: ["qoder"], scope: "project", user: "bob", password: "s3cret" },
+      { projectRoot: root, homeDir: home, runner: deps.runner, spawnDaemon: deps.spawnDaemon },
+    );
+    const gi = readFileSync(join(root, ".gitignore"), "utf-8");
+    expect(gi.split(".agentbus/").length - 1).toBe(1);
+  });
+
+  it("四期：不传凭证时不碰 .gitignore", async () => {
+    await init();
+    expect(existsSync(join(root, ".gitignore"))).toBe(false);
   });
 
   it("报告包含各步骤结果且 exitCode 为 0", async () => {
