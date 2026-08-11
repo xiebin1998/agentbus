@@ -76,8 +76,9 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
       .finally(() => setLoading(false));
   }, [open, ns, toast]);
 
-  // 模板中 <密码> 占位符替换为用户重输的密码（密码单向哈希，服务端不可回显）
-  const fullCommand = cmd ? (password ? cmd.template.replace("<密码>", password) : cmd.template) : "";
+  // 模板/一行式命令中 <密码> 占位符替换为用户重输的密码（密码单向哈希，服务端不可回显）
+  const fill = (t: string) => (password ? t.replace("<密码>", password) : t);
+  const fullCommand = cmd ? fill(cmd.template) : "";
 
   async function copy(text: string) {
     try {
@@ -102,6 +103,27 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
             <div>
               <div className="text-xs text-muted-foreground mb-1">命名空间</div>
               <Badge variant="secondary">{cmd.ns}</Badge>
+            </div>
+          </div>
+
+          {/* 重输密码（两种安装方式共用；仅本地拼接，不会上传） */}
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">你的账号密码（用于拼接完整命令，不会上传）</Label>
+            <div className="relative">
+              <Input
+                type={showPw ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="重输密码"
+                className="pr-9"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPw((s) => !s)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
             </div>
           </div>
 
@@ -135,10 +157,10 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
 
             {method === "script" ? (
               <div className="space-y-3">
-                <CmdBlock label="Windows PowerShell" text={cmd.install_ps1} onCopy={copy} />
-                <CmdBlock label="macOS / Linux" text={cmd.install_sh} onCopy={copy} />
+                <CmdBlock label="Windows PowerShell" text={fill(cmd.install_cmd_ps1)} onCopy={copy} />
+                <CmdBlock label="macOS / Linux" text={fill(cmd.install_cmd_sh)} onCopy={copy} />
                 <p className="text-xs text-muted-foreground">
-                  脚本自动完成：Node 环境检查 → 安装 CLI → 交互式初始化（init）→ 体检（doctor）。
+                  全自动无人值守：环境检查 → 安装 CLI → 非交互 init（凭证经环境变量自动透传）→ 体检（doctor）。{cmd.note}
                 </p>
               </div>
             ) : (
@@ -159,26 +181,6 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
             <div className="flex items-center gap-2">
               <Badge className="h-5 w-5 justify-center rounded-full p-0">2</Badge>
               <Label>在你的项目目录执行初始化</Label>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label className="text-xs text-muted-foreground">你的账号密码（用于拼接完整命令，不会上传）</Label>
-              <div className="relative">
-                <Input
-                  type={showPw ? "text" : "password"}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="重输密码"
-                  className="pr-9"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPw((s) => !s)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                >
-                  {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              </div>
             </div>
 
             <div className="space-y-1.5">

@@ -26,10 +26,14 @@ export interface ConnectCommand {
   user: string;
   ns: string;
   template: string;
-  /** 一键安装脚本（Windows PowerShell） */
+  /** 一键安装脚本（Windows PowerShell，无凭证裸下载） */
   install_ps1: string;
-  /** 一键安装脚本（macOS / Linux） */
+  /** 一键安装脚本（macOS / Linux，无凭证裸下载） */
   install_sh: string;
+  /** 一行式完整命令（Windows PowerShell，预置环境变量，密码为 <密码> 占位） */
+  install_cmd_ps1: string;
+  /** 一行式完整命令（macOS / Linux，预置环境变量，密码为 <密码> 占位） */
+  install_cmd_sh: string;
   note: string;
 }
 export interface MetricTotals {

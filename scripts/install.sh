@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # AgentBus 一键安装（macOS / Linux）—— 架构 6.6 / TASK-28
 #
-# 用法（干净机器一条命令接入）：
+# 用法（干净机器一条命令接入；控制台“接入命令”弹窗会生成带凭证的一行式命令）：
 #   curl -fsSL https://<host>/install.sh | bash
 #
-# 可选环境变量：
-#   AGENTBUS_PACKAGE  npm 包来源（默认 @xiebin1998/agentbus@latest；可指本地目录/tarball 供离线安装）
-#   AGENTBUS_BROKER   broker host:port（默认 localhost:18830）
-#   AGENTBUS_NS       命名空间（默认 default）
+# 可选环境变量（均自动透传给 agentbus init，全程无交互）：
+#   AGENTBUS_PACKAGE   npm 包来源（默认 @xiebin1998/agentbus@latest；可指本地目录/tarball 供离线安装）
+#   AGENTBUS_BROKER    broker host:port（默认 localhost:18830）
+#   AGENTBUS_USER      broker 接入用户名（控制台发放，四期强制认证）
+#   AGENTBUS_PASSWORD  broker 接入密码
+#   AGENTBUS_NS        命名空间（默认 default）
 #
 # 内部流程（架构 6.6）：装 agentbus CLI（npm 全局）→ agentbus init --yes（client_id 默认目录名、
 # 自动探测可接入工具）→ agentbus doctor 输出报告。任何一步失败即停并给出提示。
@@ -36,9 +38,11 @@ PKG="${AGENTBUS_PACKAGE:-@xiebin1998/agentbus@latest}"
 echo "[install] npm install -g $PKG"
 npm install -g "$PKG" || fail "npm install -g 失败。请检查网络与 registry（npm config get registry）；离线环境可用 AGENTBUS_PACKAGE 指向本地包路径后重试。"
 
-# 步骤 2：非交互初始化（client_id 默认目录名，自动探测可接入工具）
+# 步骤 2：非交互初始化（client_id 默认目录名，自动探测可接入工具；凭证经环境变量透传）
 INIT_ARGS=(init --yes)
 [ -n "${AGENTBUS_BROKER:-}" ] && INIT_ARGS+=(--broker "$AGENTBUS_BROKER")
+[ -n "${AGENTBUS_USER:-}" ] && INIT_ARGS+=(--user "$AGENTBUS_USER")
+[ -n "${AGENTBUS_PASSWORD:-}" ] && INIT_ARGS+=(--password "$AGENTBUS_PASSWORD")
 [ -n "${AGENTBUS_NS:-}" ] && INIT_ARGS+=(--ns "$AGENTBUS_NS")
 echo "[install] agentbus ${INIT_ARGS[*]}"
 agentbus "${INIT_ARGS[@]}" || fail "agentbus init --yes 失败：常见原因是本机未安装任何 AI CLI（qodercli/kilo/opencode/claude/codex/hermes），请先安装至少一个后重试。"

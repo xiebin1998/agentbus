@@ -31,6 +31,10 @@ services:
     environment:
       - MQTT_BROKER_HOST=mqtt-broker
       - MQTT_BROKER_PORT=1883
+      # 接入命令对外展示的 broker 地址：默认按浏览器访问 host 派生 + 对外端口 18830；
+      # broker 与 hub 分机部署时设 AGENTBUS_PUBLIC_BROKER=<host>:<port> 全量覆盖
+      - AGENTBUS_PUBLIC_BROKER=${AGENTBUS_PUBLIC_BROKER:-}
+      - AGENTBUS_BROKER_PUBLIC_PORT=${AGENTBUS_BROKER_PUBLIC_PORT:-18830}
       # 四期：hub 以 dynsec 管理员身份连 broker（管理通道 + 全量收发）
       - MQTT_USERNAME=${DYNSEC_ADMIN_USER:-admin}
       - MQTT_PASSWORD=${DYNSEC_ADMIN_PASSWORD:?set DYNSEC_ADMIN_PASSWORD in .env}

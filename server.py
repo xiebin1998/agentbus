@@ -74,6 +74,10 @@ MQTT_USE_TLS = os.getenv("MQTT_USE_TLS", "false").lower() == "true"
 MQTT_CA_CERTS = os.getenv("MQTT_CA_CERTS", "")
 MCP_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 MCP_PORT = int(os.getenv("MCP_PORT", "8000"))
+# 对外展示的 broker 地址（默认按浏览器请求 host 派生；broker 与 hub 分机部署时用完整 host:port 覆盖）
+PUBLIC_BROKER = os.getenv("AGENTBUS_PUBLIC_BROKER", "")
+# broker 对外暴露端口（容器内 MQTT_BROKER_PORT 是内网端口；docker-compose 固定映射 18830）
+PUBLIC_BROKER_PORT = os.getenv("AGENTBUS_BROKER_PUBLIC_PORT", "")
 
 # ─── Topic ────────────────────────────────────────────────────────────────────
 TOPIC_MESSAGE = "/agentbus/ai/channel/{client_id}/message"
@@ -1136,21 +1140,49 @@ async def api_member_delete(request: Request):
     return JSONResponse({"ok": True})
 
 
+def _public_base(request: Request) -> tuple[str, str]:
+    """浏览器视角的真实访问地址：代理头（X-Forwarded-*）优先，回退直连 Host
+    ——浏览器能打开控制台，说明该 host 必然可达；返回 (origin 含端口, 纯主机名)"""
+    fwd_host = request.headers.get("x-forwarded-host")
+    if fwd_host:
+        host = fwd_host.split(",")[0].strip()
+        scheme = (request.headers.get("x-forwarded-proto") or "https").split(",")[0].strip()
+    else:
+        host = request.headers.get("host") or request.url.netloc
+        scheme = request.url.scheme
+    return f"{scheme}://{host}", host.split(":")[0]
+
+
 async def api_connect_command(request: Request):
-    """接入命令模板：密码单向哈希不可回显，前端在用户重输密码后拼接完整命令"""
+    """接入命令模板：地址按浏览器请求的真实 host 派生（跨机器可达）；
+    密码单向哈希不可回显，前端在用户重输密码后替换 <密码> 占位符"""
     user = hub_auth.current_user(request)
     ns = (request.query_params.get("ns") or "").strip()
     if not ns or not _ns_visible(user, ns):
         return _json_error("forbidden", 403)
-    broker = f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}"
-    hub_base = f"http://{MQTT_BROKER_HOST}:{MCP_PORT}"
+    origin, host = _public_base(request)
+    # 分机部署环境变量优先；否则 MQTT_BROKER_HOST 已是真实可达地址（如公网 IP）时沿用，
+    # 仅当为容器内/本机占位值（mqtt-broker/localhost）时才按浏览器 host 派生
+    # （容器内 broker 端口是内网端口，对外端口需部署方配置，见 AGENTBUS_PUBLIC_BROKER）
+    if PUBLIC_BROKER:
+        broker = PUBLIC_BROKER
+    elif MQTT_BROKER_HOST.lower() in ("localhost", "127.0.0.1", "mqtt-broker"):
+        broker = f"{host}:{PUBLIC_BROKER_PORT or MQTT_BROKER_PORT}"
+    else:
+        broker = f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}"
+    env_ps1 = (f"$env:AGENTBUS_BROKER='{broker}';$env:AGENTBUS_USER='{user['username']}';"
+               f"$env:AGENTBUS_PASSWORD='<密码>';$env:AGENTBUS_NS='{ns}';")
+    env_sh = (f"AGENTBUS_BROKER='{broker}' AGENTBUS_USER='{user['username']}' "
+              f"AGENTBUS_PASSWORD='<密码>' AGENTBUS_NS='{ns}' ")
     return JSONResponse({
         "broker": broker,
         "user": user["username"],
         "ns": ns,
         "template": f"agentbus init --broker {broker} --user {user['username']} --password <密码> --ns {ns}",
-        "install_ps1": f"iwr {hub_base}/install.ps1 | iex",
-        "install_sh": f"curl -fsSL {hub_base}/install.sh | bash",
+        "install_ps1": f"iwr {origin}/install.ps1 | iex",
+        "install_sh": f"curl -fsSL {origin}/install.sh | bash",
+        "install_cmd_ps1": f"{env_ps1}iwr {origin}/install.ps1 | iex",
+        "install_cmd_sh": f"{env_sh}curl -fsSL {origin}/install.sh | bash",
         "note": "命令含密码，注意 shell 历史",
     })
 

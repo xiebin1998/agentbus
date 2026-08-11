@@ -298,3 +298,75 @@ def test_connect_command_install_urls(client):
     data = client.get("/api/console/connect-command", params={"ns": "pay"}).json()
     assert data["install_ps1"].startswith("iwr ") and data["install_ps1"].endswith("/install.ps1 | iex")
     assert data["install_sh"].startswith("curl -fsSL ") and data["install_sh"].endswith("/install.sh | bash")
+
+
+def _mk_ns(c):
+    c.post("/api/console/namespaces", json={"id": "pay", "name": "支付", "description": "",
+                                            "admin_username": "pay-admin", "admin_password": "pw1"})
+
+
+def test_connect_command_real_host(client, app_ctx):
+    """broker 地址与脚本 URL 按浏览器请求的真实 host 生成（跨机器可达）"""
+    _login(client, "root", "rootpw")
+    _mk_ns(client)
+    data = client.get("/api/console/connect-command", params={"ns": "pay"},
+                      headers={"host": "192.168.1.50:8000"}).json()
+    assert data["broker"] == f"192.168.1.50:{app_ctx.MQTT_BROKER_PORT}"
+    assert "http://192.168.1.50:8000/install.ps1" in data["install_ps1"]
+    assert "http://192.168.1.50:8000/install.sh" in data["install_sh"]
+
+
+def test_connect_command_forwarded_host(client, app_ctx):
+    """反向代理场景：X-Forwarded-Host 优先于直连 host"""
+    _login(client, "root", "rootpw")
+    _mk_ns(client)
+    data = client.get("/api/console/connect-command", params={"ns": "pay"},
+                      headers={"host": "127.0.0.1:8000", "x-forwarded-host": "hub.example.com"}).json()
+    assert data["broker"] == f"hub.example.com:{app_ctx.MQTT_BROKER_PORT}"
+    assert "hub.example.com/install.ps1" in data["install_ps1"]
+
+
+def test_connect_command_public_broker_override(client, app_ctx, monkeypatch):
+    """分机部署：AGENTBUS_PUBLIC_BROKER 环境变量覆盖 broker 地址"""
+    monkeypatch.setattr(app_ctx, "PUBLIC_BROKER", "10.0.0.5:18830")
+    _login(client, "root", "rootpw")
+    _mk_ns(client)
+    data = client.get("/api/console/connect-command", params={"ns": "pay"}).json()
+    assert data["broker"] == "10.0.0.5:18830"
+
+
+def test_connect_command_public_port(client, app_ctx, monkeypatch):
+    """Docker 部署：容器内端口不可对外，按 AGENTBUS_BROKER_PUBLIC_PORT 派生（host 随浏览器）"""
+    monkeypatch.setattr(app_ctx, "PUBLIC_BROKER_PORT", "18830")
+    _login(client, "root", "rootpw")
+    _mk_ns(client)
+    data = client.get("/api/console/connect-command", params={"ns": "pay"},
+                      headers={"host": "192.168.1.50:8000"}).json()
+    assert data["broker"] == "192.168.1.50:18830"
+
+
+def test_connect_command_real_broker_host_kept(client, app_ctx, monkeypatch):
+    """MQTT_BROKER_HOST 已是真实可达地址（如公网 IP）时沿用，不按浏览器 host 派生"""
+    monkeypatch.setattr(app_ctx, "MQTT_BROKER_HOST", "106.14.126.2")
+    monkeypatch.setattr(app_ctx, "MQTT_BROKER_PORT", 1884)
+    _login(client, "root", "rootpw")
+    _mk_ns(client)
+    data = client.get("/api/console/connect-command", params={"ns": "pay"},
+                      headers={"host": "192.168.1.50:8000"}).json()
+    assert data["broker"] == "106.14.126.2:1884"
+    # 脚本下载源仍按浏览器 host（与 broker 是否同机无关，hub 就是浏览器正在访问的服务）
+    assert "http://192.168.1.50:8000/install.ps1" in data["install_ps1"]
+
+
+def test_connect_command_one_line_scripts(client):
+    """一行式脚本命令：预置环境变量（含凭证占位），密码前端替换"""
+    _login(client, "root", "rootpw")
+    _mk_ns(client)
+    data = client.get("/api/console/connect-command", params={"ns": "pay"}).json()
+    ps1, sh = data["install_cmd_ps1"], data["install_cmd_sh"]
+    assert "$env:AGENTBUS_BROKER=" in ps1 and "$env:AGENTBUS_USER=" in ps1
+    assert "$env:AGENTBUS_PASSWORD='<密码>'" in ps1 and "$env:AGENTBUS_NS=" in ps1
+    assert ps1.endswith("| iex")
+    assert sh.startswith("AGENTBUS_BROKER=") and "AGENTBUS_USER=" in sh
+    assert "AGENTBUS_PASSWORD='<密码>'" in sh and "AGENTBUS_NS=" in sh
+    assert sh.endswith("| bash")
