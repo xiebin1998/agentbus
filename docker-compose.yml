@@ -6,6 +6,7 @@ services:
     restart: unless-stopped
     entrypoint: ["/bin/sh", "/mosquitto/bootstrap.sh"]
     environment:
+      - TZ=${TZ:-Asia/Shanghai}   # 中国时区（alpine 镜像无 tzdata 时自动回退 UTC，无害）
       - DYNSEC_ADMIN_USER=${DYNSEC_ADMIN_USER:-admin}
       - DYNSEC_ADMIN_PASSWORD=${DYNSEC_ADMIN_PASSWORD:?set DYNSEC_ADMIN_PASSWORD in .env}
     ports:
@@ -29,6 +30,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - TZ=${TZ:-Asia/Shanghai}   # 中国时区（日志 asctime/本地时间；Dockerfile 已内置 tzdata）
       - MQTT_BROKER_HOST=mqtt-broker
       - MQTT_BROKER_PORT=1883
       # 接入命令对外展示的 broker 地址：默认按浏览器访问 host 派生 + 对外端口 18830；
