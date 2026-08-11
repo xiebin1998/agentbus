@@ -13,11 +13,31 @@ import { Connect } from "@/pages/Connect";
 
 function Shell() {
   const { me, loading } = useAuth();
-  const [tab, setTab] = useState<Tab>("namespaces");
+  const [tab, setTabRaw] = useState<Tab>(() => loadStoredTab(""));
 
-  // 账号切换/登出后重置 tab，避免上一用户的选中项泄漏到新会话
+  // Tab 持久化：按账号分 key，刷新/账号切换后回到用户上次的页面（对齐 NsContext STORAGE_KEY 模式）
+  function loadStoredTab(username: string): Tab {
+    try {
+      const v = localStorage.getItem("agentbus.tab." + username);
+      if (v === "namespaces" || v === "accounts" || v === "metrics" || v === "connect") return v;
+    } catch {
+      /* 隐私模式等场景忽略 */
+    }
+    return "namespaces";
+  }
+
+  function setTab(t: Tab) {
+    setTabRaw(t);
+    try {
+      localStorage.setItem("agentbus.tab." + (me?.username ?? ""), t);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 账号切换/登出后加载该用户的持久 Tab；不可见项由下方 active 收敛逻辑回退
   useEffect(() => {
-    setTab(me ? tabsForRole(me.role)[0] : "namespaces");
+    setTabRaw(loadStoredTab(me?.username ?? ""));
   }, [me?.username]);
 
   if (loading) {
