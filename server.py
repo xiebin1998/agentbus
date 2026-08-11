@@ -237,6 +237,41 @@ def build_metric_summary(snapshot: Dict[str, dict]) -> dict:
     return {"daemon_count": daemon_count, "totals": totals, "total_senders": total_senders}
 
 
+# ─── TASK-31：MCP 工具双门控（已注册 + daemon 指标新鲜，未达标拒绝）─────────
+
+GATE_METRIC_WINDOW_S = 90  # 指标新鲜窗口：daemon 30s 上报周期 + 2 倍容错
+GATE_EXEMPT_TOOLS = ("register_agent", "get_status")  # 注册豁免防死锁；状态豁免供自检引导
+GATE_HINT = "门控前提：本 Agent 已注册且 daemon 在线上报指标，否则调用将被拒绝。"
+
+
+def tool_gate_error(registered: bool, metric_entry: Optional[dict], now: datetime,
+                    window_s: int = GATE_METRIC_WINDOW_S) -> Optional[str]:
+    """纯函数门控判定：通过返回 None；否则返回拒绝原因（含自愈指引）。
+
+    指标身份（ns/cid）与 MCP 会话 key 同源（daemon selfIdentity），
+    条目取自 MetricsStore 快照；last_seen 为 daemon 上报的 ISO 时间戳。
+    """
+    if not registered:
+        return "本 Agent 尚未注册，请先调用 register_agent 完成注册"
+    last_seen = metric_entry.get("last_seen") if isinstance(metric_entry, dict) else None
+    try:
+        ts = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return "该 Agent 的 daemon 未上报过指标（未上线），请确认 agentbus daemon 正在运行"
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    if now - ts > timedelta(seconds=window_s):
+        return "该 Agent 的 daemon 指标已过期（离线或上报中断），请确认 agentbus daemon 正在运行"
+    return None
+
+
+def gate_tool_error(name: str, registered: bool, metric_entry: Optional[dict], now: datetime) -> Optional[str]:
+    """接线层：豁免工具直接放行，其余全部走双门控。"""
+    if name in GATE_EXEMPT_TOOLS:
+        return None
+    return tool_gate_error(registered, metric_entry, now)
+
+
 def can_ack(stored: Optional[dict], caller: str) -> bool:
     """ack 归属校验（架构 11.8 缺陷 4）：仅发送方/接收方可标记已读"""
     if not stored:
@@ -620,7 +655,7 @@ def build_tools() -> List[Tool]:
         ),
         Tool(
             name="update_agent",
-            description="更新本 Agent 在 AgentBus hub 上已注册的能力与元信息。",
+            description="更新本 Agent 在 AgentBus hub 上已注册的能力与元信息。" + GATE_HINT,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -638,7 +673,7 @@ def build_tools() -> List[Tool]:
             description="通过 AgentBus 总线发送消息给指定 Agent。"
                         "仅在用户明确要求跨 Agent 协作、或回复 [AgentBus] 入站消息时使用；"
                         "回复入站消息需携带 reply_to（取信封中的消息 id）。"
-                        "需先调用 register_agent 注册自身。",
+                        "需先调用 register_agent 注册自身。" + GATE_HINT,
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -652,7 +687,7 @@ def build_tools() -> List[Tool]:
         ),
         Tool(
             name="ack_message",
-            description="对消息 ID 回执确认（确认收到入站消息）；仅用于回应 [AgentBus] 入站信封，不发送任何内容。",
+            description="对消息 ID 回执确认（确认收到入站消息）；仅用于回应 [AgentBus] 入站信封，不发送任何内容。" + GATE_HINT,
             inputSchema={
                 "type": "object",
                 "properties": {"id": {"type": "string", "description": "消息 ID"}},
@@ -662,13 +697,13 @@ def build_tools() -> List[Tool]:
         ),
         Tool(
             name="list_agents",
-            description="查询所有在线 Agent 及其能力列表（只读查询，不修改任何状态）。",
+            description="查询所有在线 Agent 及其能力列表（只读查询，不修改任何状态）。" + GATE_HINT,
             inputSchema={"type": "object", "properties": {}},
             annotations=readonly,
         ),
         Tool(
             name="get_agent_info",
-            description="查询指定 Agent 的注册详细信息（只读查询）。",
+            description="查询指定 Agent 的注册详细信息（只读查询）。" + GATE_HINT,
             inputSchema={
                 "type": "object",
                 "properties": {"client_id": {"type": "string"}},
@@ -678,7 +713,7 @@ def build_tools() -> List[Tool]:
         ),
         Tool(
             name="find_agents_by_capability",
-            description="按能力查找声明了该能力的 Agent（只读查询）。",
+            description="按能力查找声明了该能力的 Agent（只读查询）。" + GATE_HINT,
             inputSchema={
                 "type": "object",
                 "properties": {"capability": {"type": "string", "description": "要查找的能力"}},
@@ -722,7 +757,16 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
         return build_tools()
     
     async def handle_tool(name: str, arguments: dict) -> List[TextContent]:
-        
+        # TASK-31 双门控：未注册或未上线（daemon 指标不新鲜）一律拒绝；register/get_status 豁免
+        gate_err = gate_tool_error(
+            name, session.is_registered(),
+            _metrics_store.snapshot().get(session.key),
+            datetime.now(timezone.utc),
+        )
+        if gate_err:
+            logger.info(f"[{key}] 工具 {name} 被门控拒绝: {gate_err}")
+            return [TextContent(type="text", text=json.dumps({"error": gate_err}, ensure_ascii=False, indent=2))]
+
         if name == "register_agent":
             result = session.register(
                 name=arguments["name"],
@@ -820,14 +864,18 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             return [TextContent(type="text", text=json.dumps(found, ensure_ascii=False, indent=2))]
         
         elif name == "get_status":
+            entry = _metrics_store.snapshot().get(session.key)
             return [TextContent(type="text", text=json.dumps({
                 "client_id": client_id,
                 "registered": session.is_registered(),
                 "mqtt_connected": session.connected,
                 "sub_topic": session.sub_topic,
                 "mqtt_broker": f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}",
+                # TASK-31：自检引导——暴露门控状态，agent 可据此定位被拒原因
+                "metric_last_seen": (entry or {}).get("last_seen"),
+                "gate_error": tool_gate_error(session.is_registered(), entry, datetime.now(timezone.utc)),
                 **session.info.to_dict(),
-            }, indent=2))]
+            }, ensure_ascii=False, indent=2))]
         
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
     
@@ -1243,6 +1291,49 @@ async def api_metrics_summary(request: Request):
     return JSONResponse(build_metric_summary(_filtered_snapshot(ns)))
 
 
+# ─── TASK-31：Agent 明细（注册信息 × 在线状态 × daemon 指标 三源合并）───────
+
+def build_agent_detail(ns: str, agent_info: Dict[str, Any], sessions: Dict[str, Any],
+                       metrics: Dict[str, dict]) -> List[dict]:
+    """纯函数三源合并（便于单测）：key 取并集按 ns 前缀过滤，字典序稳定输出。
+
+    - agent_info（_agent_info）→ name/description/capabilities/registered
+    - sessions（_sessions）→ online（SSE 会话存活）
+    - metrics（MetricsStore 快照）→ metrics/last_seen/report_count
+    """
+    prefix = f"{ns}/"
+    keys = sorted({k for k in list(agent_info) + list(sessions) + list(metrics)
+                   if k.startswith(prefix)})
+    out: List[dict] = []
+    for k in keys:
+        info = agent_info.get(k)
+        m = metrics.get(k) or {}
+        out.append({
+            "client_id": k[len(prefix):],
+            "name": info.name if info else None,
+            "description": info.description if info else None,
+            "capabilities": list(info.capabilities) if info else [],
+            "registered": bool(info and info.registered),
+            "online": k in sessions,
+            "last_seen": m.get("last_seen"),
+            "report_count": m.get("report_count", 0),
+            "metrics": m.get("metrics") or {},
+        })
+    return out
+
+
+async def api_console_agents(request: Request):
+    """Agent 明细页：该 ns 下注册/在线/指标三源合并（?ns= 必填，未授权 403）"""
+    user = hub_auth.current_user(request)
+    ns = (request.query_params.get("ns") or "").strip()
+    if not ns:
+        return _json_error("缺少 ns 参数")
+    if not _ns_visible(user, ns):
+        return _json_error("forbidden", 403)
+    return JSONResponse({"agents": build_agent_detail(ns, _agent_info, _sessions,
+                                                      _metrics_store.snapshot())})
+
+
 # TASK-28：一键安装脚本托管（架构 6.6 / PLAN T24：中心节点静态服务，干净机器一条命令接入的下载源）
 INSTALL_SCRIPTS = {
     "/install.ps1": (Path(__file__).resolve().parent / "scripts" / "install.ps1", "text/plain; charset=utf-8"),
@@ -1337,6 +1428,7 @@ app = Starlette(
         Route("/api/console/connect-command", hub_auth.session_guard(api_connect_command), methods=["GET"]),
         Route("/api/console/metrics", hub_auth.session_guard(api_metrics), methods=["GET"]),
         Route("/api/console/metrics/summary", hub_auth.session_guard(api_metrics_summary), methods=["GET"]),
+        Route("/api/console/agents", hub_auth.session_guard(api_console_agents), methods=["GET"]),
         # TASK-28：一键安装脚本（引导资源，鉴权豁免）
         Route("/install.ps1", install_script, methods=["GET"]),
         Route("/install.sh", install_script, methods=["GET"]),

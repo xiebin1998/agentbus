@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Loader2, RefreshCw } from "lucide-react";
+import { Activity, Loader2, RefreshCw, Users } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle,
   Table, TBody, TD, TH, THead, TR,
 } from "@/components/ui";
-import { api, DaemonEntry, MetricSummary, MetricsPayload } from "@/lib/api";
+import { api, AgentEntry, DaemonEntry, MetricSummary, MetricsPayload } from "@/lib/api";
 import { useNs } from "@/context/NsContext";
 import { useToast } from "@/components/Toaster";
 import { formatTime } from "@/lib/utils";
@@ -17,14 +17,18 @@ export function Metrics() {
 
   const [payload, setPayload] = useState<MetricsPayload | null>(null);
   const [summary, setSummary] = useState<MetricSummary | null>(null);
+  const [agents, setAgents] = useState<AgentEntry[] | null>(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     if (!current) return;
     try {
-      const [m, s] = await Promise.all([api.metrics(current), api.metricsSummary(current)]);
+      const [m, s, a] = await Promise.all([
+        api.metrics(current), api.metricsSummary(current), api.agents(current),
+      ]);
       setPayload(m);
       setSummary(s);
+      setAgents(a.agents);
     } catch (e) {
       toast(e instanceof Error ? e.message : "加载失败", false);
     } finally {
@@ -106,6 +110,32 @@ export function Metrics() {
           </CardContent>
         </Card>
       )}
+
+      {current && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Users className="h-4 w-4 text-primary" />Agent 明细
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <THead>
+                <TR>
+                  <TH>Agent ID</TH><TH>名称</TH><TH>能力</TH><TH>注册状态</TH>
+                  <TH>在线状态</TH><TH>最近上报</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {(agents ?? []).length === 0 && (
+                  <TR><TD colSpan={6} className="text-center text-muted-foreground py-6">该命名空间暂无 Agent（注册/在线/上报均无记录）</TD></TR>
+                )}
+                {(agents ?? []).map((a) => <AgentRow key={a.client_id} a={a} />)}
+              </TBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
@@ -136,6 +166,33 @@ function DaemonRow({ id, d }: { id: string; d: DaemonEntry }) {
       <TD>
         {d.last_seen ? (
           <Badge variant="success">{formatTime(d.last_seen)}</Badge>
+        ) : (
+          <span className="text-muted-foreground">-</span>
+        )}
+      </TD>
+    </TR>
+  );
+}
+
+function AgentRow({ a }: { a: AgentEntry }) {
+  return (
+    <TR>
+      <TD className="font-medium">{a.client_id}</TD>
+      <TD>
+        <div>{a.name ?? <span className="text-muted-foreground">-</span>}</div>
+        {a.description && <div className="text-xs text-muted-foreground">{a.description}</div>}
+      </TD>
+      <TD>
+        <div className="flex flex-wrap gap-1">
+          {a.capabilities.length === 0 && <span className="text-muted-foreground">-</span>}
+          {a.capabilities.map((c) => <Badge key={c} variant="secondary">{c}</Badge>)}
+        </div>
+      </TD>
+      <TD>{a.registered ? <Badge variant="success">已注册</Badge> : <Badge variant="secondary">未注册</Badge>}</TD>
+      <TD>{a.online ? <Badge variant="success">在线</Badge> : <Badge variant="secondary">离线</Badge>}</TD>
+      <TD>
+        {a.last_seen ? (
+          <Badge variant="success">{formatTime(a.last_seen)}</Badge>
         ) : (
           <span className="text-muted-foreground">-</span>
         )}

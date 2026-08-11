@@ -61,6 +61,21 @@ export interface MetricsPayload {
   daemons: Record<string, DaemonEntry>;
   overview: { online_agents: string[]; registered_agents: string[]; total_messages: number };
 }
+/** TASK-31：Agent 明细（注册信息 × 在线状态 × daemon 指标 三源合并） */
+export interface AgentEntry {
+  client_id: string;
+  name: string | null;
+  description: string | null;
+  capabilities: string[];
+  registered: boolean;
+  online: boolean;
+  last_seen: string | null;
+  report_count: number;
+  metrics: Partial<MetricTotals> & { senders?: number; uptime_s?: number };
+}
+export interface AgentsPayload {
+  agents: AgentEntry[];
+}
 
 export class ApiError extends Error {
   status: number;
@@ -153,4 +168,5 @@ export const api = {
   metrics: (ns: string) => http<MetricsPayload>(`/api/console/metrics?ns=${encodeURIComponent(ns)}`),
   metricsSummary: (ns: string) =>
     http<MetricSummary>(`/api/console/metrics/summary?ns=${encodeURIComponent(ns)}`),
+  agents: (ns: string) => http<AgentsPayload>(`/api/console/agents?ns=${encodeURIComponent(ns)}`),
 };
