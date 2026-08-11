@@ -213,3 +213,38 @@ describe("TASK-30: 隔离检查（OS 级只读工具链）", () => {
     expect(report.ok).toBe(false);
   });
 });
+
+describe("TASK-32: 身份冲突检查（daemon.log 高频重连指纹）", () => {
+  it("无日志/低频重连 → 检查通过", async () => {
+    const report = await runDoctor(baseDeps());
+    const check = report.checks.find((c) => c.name === "身份冲突");
+    expect(check).toBeDefined();
+    expect(check!.ok).toBe(true);
+  });
+
+  it("日志高频重连（≥6 次 reconnecting）→ 失败并提示 client_id 碰撞修复步骤", async () => {
+    mkdirSync(join(workDir, "logs"), { recursive: true });
+    const lines = Array.from({ length: 8 }, (_, i) =>
+      `2026-08-11T10:00:0${i}.000Z [INFO] MQTT reconnecting`,
+    ).join("\n");
+    writeFileSync(join(workDir, "logs", "daemon.log"), `${lines}\n`, "utf-8");
+    const report = await runDoctor(baseDeps());
+    const check = report.checks.find((c) => c.name === "身份冲突");
+    expect(check!.ok).toBe(false);
+    expect(check!.detail).toMatch(/client_id/);
+    expect(check!.detail).toMatch(/init/);
+    expect(report.ok).toBe(false);
+  });
+
+  it("日志出现 identity_conflict → 直接失败", async () => {
+    mkdirSync(join(workDir, "logs"), { recursive: true });
+    writeFileSync(
+      join(workDir, "logs", "daemon.log"),
+      `2026-08-11T10:00:00.000Z [ERROR] MQTT identity_conflict: 60s 内 3 次非主动断连\n`,
+      "utf-8",
+    );
+    const report = await runDoctor(baseDeps());
+    const check = report.checks.find((c) => c.name === "身份冲突");
+    expect(check!.ok).toBe(false);
+  });
+});

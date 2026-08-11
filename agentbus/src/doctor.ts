@@ -210,5 +210,29 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   }
   checks.push({ name: "daemon", ok: pidAlive, detail: pidDetail });
 
+  // 8. 身份冲突（TASK-32）：daemon.log 断连指纹——高频重连或已判冲突 → 提示 client_id 碰撞修复步骤
+  checks.push(checkIdentityConflict(deps.workDir));
+
   return { ok: checks.every((c) => c.ok), checks };
+}
+
+/** 读 daemon.log 尾部：出现 identity_conflict 或高频重连（≥6 次 reconnecting）即判冲突嫌疑 */
+function checkIdentityConflict(workDir: string): DoctorCheck {
+  const guidance =
+    "疑似 client_id 碰撞互踢：重跑 agentbus init 重新随机 client_id，或用 init --client-id 指定唯一身份";
+  let tail = "";
+  try {
+    const raw = readFileSync(join(workDir, "logs", "daemon.log"), "utf-8");
+    tail = raw.slice(-64 * 1024);
+  } catch {
+    return { name: "身份冲突", ok: true, detail: "无 daemon 日志，无需检查" };
+  }
+  if (tail.includes("identity_conflict")) {
+    return { name: "身份冲突", ok: false, detail: `日志已记录身份冲突。${guidance}` };
+  }
+  const reconnects = (tail.match(/MQTT reconnecting/g) ?? []).length;
+  if (reconnects >= 6) {
+    return { name: "身份冲突", ok: false, detail: `日志高频重连（${reconnects} 次）。${guidance}` };
+  }
+  return { name: "身份冲突", ok: true, detail: "日志无高频重连指纹" };
 }

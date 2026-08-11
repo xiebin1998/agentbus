@@ -18,8 +18,10 @@ export interface ListenerOptions {
   topic: string;
   /** 收到消息（原始 JSON 字符串）；解析与路由在 daemon 侧 */
   onMessage: (payloadJson: string, topic: string) => void;
-  /** 状态回调（日志用） */
-  onStatus?: (status: "connecting" | "connected" | "reconnecting" | "offline" | "error", detail?: string) => void;
+  /** 状态回调（日志用）；identity_conflict = TASK-32 断连指纹（同 clientId 互踢） */
+  onStatus?: (status: "connecting" | "connected" | "reconnecting" | "offline" | "error" | "identity_conflict", detail?: string) => void;
+  /** 重连间隔（默认 2000ms；测试注入短间隔加速指纹观测） */
+  reconnectPeriodMs?: number;
 }
 
 export interface Listener {
@@ -48,10 +50,31 @@ export function buildConnectOptions(broker: BrokerConfig): IClientOptions {
   return opts;
 }
 
+/**
+ * TASK-32：断连指纹判定（纯函数）——窗口内非主动断连次数达阈即判身份冲突。
+ * 典型成因：另一台机器/项目用同一 client_id 接入，broker 同 clientId 互踢。
+ */
+export function disconnectConflict(
+  stamps: number[],
+  now: number,
+  windowMs = 60_000,
+  threshold = 3,
+): boolean {
+  return stamps.filter((t) => now - t <= windowMs).length >= threshold;
+}
+
+/** TASK-32：身份冲突指引文案（修复手段二选一） */
+export const CONFLICT_GUIDANCE =
+  "疑似 client_id 碰撞互踢：重跑 agentbus init 重新随机 client_id，或用 --client-id 指定唯一身份";
+
 export function createListener(opts: ListenerOptions): Listener {
   let client: MqttClient | null = null;
   // 就绪门控：SUBACK 未到前报 connected 会丢早到消息（首连无持久会话可补投）
   let subscribed = false;
+  // TASK-32：断连指纹状态（主动 stop 不计；冲突判定只发一次）
+  let stopping = false;
+  let conflicted = false;
+  const disconnectStamps: number[] = [];
 
   const buildUrl = (): string => {
     const proto = opts.broker.tls ? "mqtts" : "mqtt";
@@ -65,7 +88,7 @@ export function createListener(opts: ListenerOptions): Listener {
         client = mqtt.connect(buildUrl(), {
           ...buildConnectOptions(opts.broker),
           clientId: opts.clientId,
-          reconnectPeriod: 2000,
+          reconnectPeriod: opts.reconnectPeriodMs ?? 2000,
           connectTimeout: 10_000,
         });
 
@@ -88,6 +111,27 @@ export function createListener(opts: ListenerOptions): Listener {
         });
         client.on("reconnect", () => opts.onStatus?.("reconnecting"));
         client.on("offline", () => opts.onStatus?.("offline"));
+        // TASK-32：非主动断连指纹；达阈即停重连并报 identity_conflict（daemon 收到后退出码 2）
+        client.on("close", () => {
+          if (stopping || conflicted) return;
+          const now = Date.now();
+          disconnectStamps.push(now);
+          while (disconnectStamps.length > 0 && now - disconnectStamps[0] > 60_000) {
+            disconnectStamps.shift();
+          }
+          if (disconnectConflict(disconnectStamps, now)) {
+            conflicted = true;
+            // mqtt.js 重连调度时读取该值：置 0 即永久停止重连
+            client!.options.reconnectPeriod = 0;
+            // mqtt.js 内部 close 处理器先于我们调度了 setInterval 重连：当场清掉，否则还有一次在途重连
+            const raw = client as unknown as { reconnectTimer?: ReturnType<typeof setInterval> };
+            if (raw.reconnectTimer) {
+              clearInterval(raw.reconnectTimer);
+              raw.reconnectTimer = undefined;
+            }
+            opts.onStatus?.("identity_conflict", CONFLICT_GUIDANCE);
+          }
+        });
         client.on("error", (err) => {
           opts.onStatus?.("error", err.message);
           if (firstConnect) {
@@ -104,6 +148,7 @@ export function createListener(opts: ListenerOptions): Listener {
     stop() {
       return new Promise<void>((resolve) => {
         subscribed = false;
+        stopping = true; // 主动停止不计入断连指纹
         if (!client) return resolve();
         client.end(false, () => resolve());
         client = null;

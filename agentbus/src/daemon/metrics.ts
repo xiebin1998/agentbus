@@ -55,12 +55,18 @@ export class MetricsCollector {
   }
 }
 
-/** 上报 payload：type=metric 标识 + from 身份 + metrics 快照（hub 侧按 from 归并） */
-export function buildMetricPayload(identity: string, collector: MetricsCollector, extra: { senders: number }): string {
+/** 上报 payload：type=metric 标识 + from 身份 + metrics 快照（hub 侧按 from 归并）。
+ * TASK-32：附带 tools（config.tools 键列表）供 hub 归并注册工具；不带名称/描述/能力（档案走注册/自述通道）。 */
+export function buildMetricPayload(
+  identity: string,
+  collector: MetricsCollector,
+  extra: { senders: number; tools?: string[] },
+): string {
   return JSON.stringify({
     type: "metric",
     from: identity,
     timestamp: new Date().toISOString(),
     metrics: collector.snapshot(extra),
+    ...(extra.tools ? { tools: extra.tools } : {}),
   });
 }

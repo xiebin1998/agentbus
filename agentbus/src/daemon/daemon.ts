@@ -17,7 +17,7 @@ import { QoderAdapter } from "../adapters/qoder.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { HermesAdapter, type HermesRemoteConfig } from "../adapters/hermes.js";
 import { CodexAdapter } from "../adapters/codex.js";
-import { createListener, type Listener } from "./listener.js";
+import { createListener, type Listener, type ListenerOptions } from "./listener.js";
 import { RotatingLogger } from "./logger.js";
 import { MetricsCollector, buildMetricPayload, metricTopic } from "./metrics.js";
 import { acquirePidLock, releasePidLock } from "./pid.js";
@@ -26,6 +26,7 @@ import { knownSenders, loadRegistry, saveRegistry, touchSession, type RegistryDa
 import { Router, type RouterConfig } from "./router.js";
 import { ServeManager } from "./serve-manager.js";
 import { SessionLock } from "./session-lock.js";
+import { syncAgentsSnapshot } from "./snapshot.js";
 import { buildEnvelope } from "./envelope.js";
 import { resolveTrust } from "./trust.js";
 import { applyReadonly, removeReadonly } from "../isolate.js";
@@ -52,6 +53,10 @@ export interface DaemonOptions {
   inject?: InjectHandler;
   /** 指标上报周期（TASK-19；默认 30s，测试可注入短间隔） */
   metricIntervalMs?: number;
+  /** TASK-32：致命退出钩子（默认 process.exit；测试注入捕获） */
+  onExit?: (code: number) => void;
+  /** TASK-32：listener 工厂钩子（默认真 MQTT；测试注入假实现） */
+  listenerFactory?: (opts: ListenerOptions) => Listener;
 }
 
 export interface DaemonStatus {
@@ -155,13 +160,21 @@ export class Daemon {
 
     // 4. MQTT 层：首次连接失败不致命，mqtt.js 内部持续重连
     const topic = `/agentbus/ai/channel/${cfg.ns}/${cfg.client_id}/message`;
-    this.listener = createListener({
+    const factory = this.opts.listenerFactory ?? createListener;
+    this.listener = factory({
       broker: cfg.broker,
       clientId: `agentbus-${cfg.ns}-${cfg.client_id}`,
       topic,
       onMessage: (payload) => this.handleMessage(payload),
-      onStatus: (status, detail) =>
-        this.logger.info(`MQTT ${status}${detail ? `: ${detail}` : ""}`),
+      onStatus: (status, detail) => {
+        if (status === "identity_conflict") {
+          // TASK-32 断连指纹：同 client_id 互踢，重连只会加剧互伤 → 错误日志 + 退出码 2
+          this.logger.error(`MQTT identity_conflict: ${detail ?? ""}`);
+          (this.opts.onExit ?? ((code) => process.exit(code)))(2);
+          return;
+        }
+        this.logger.info(`MQTT ${status}${detail ? `: ${detail}` : ""}`);
+      },
     });
     void this.listener.start().catch((e: Error) =>
       this.logger.error(`MQTT 首次连接失败，进入重连: ${e.message}`),
@@ -171,7 +184,11 @@ export class Daemon {
     const interval = this.opts.metricIntervalMs ?? 30_000;
     this.started = true;
     this.publishMetric();
-    this.metricTimer = setInterval(() => this.publishMetric(), interval);
+    void this.syncSnapshot();
+    this.metricTimer = setInterval(() => {
+      this.publishMetric();
+      void this.syncSnapshot();
+    }, interval);
 
     this.logger.info(`daemon started: ${this.selfIdentity} 订阅 ${topic}`);
     return { started: true, reason: `daemon 已启动（pid ${process.pid}）` };
@@ -488,10 +505,28 @@ export class Daemon {
     if (!this.started || !this.listener || !this.listener.isConnected()) return;
     const cfg = this.opts.config;
     const senders = this.registry ? Object.keys(this.registry.senders).length : 0;
-    const payload = buildMetricPayload(this.selfIdentity, this.metrics, { senders });
+    // TASK-32：附带 tools（config.tools 键列表）供 hub 归并注册工具
+    const payload = buildMetricPayload(this.selfIdentity, this.metrics, {
+      senders,
+      tools: Object.keys(cfg.tools),
+    });
     void this.listener.publish(metricTopic(cfg.ns, cfg.client_id), payload).catch((e: Error) =>
       this.logger.warn(`指标上报失败: ${e.message}`),
     );
+  }
+
+  /** TASK-32：同伴快照同步（随指标周期）：GET 快照端点 → 原子写 agents.json；失败静默保留旧文件 */
+  private async syncSnapshot(): Promise<void> {
+    if (!this.started) return;
+    const cfg = this.opts.config;
+    if (!cfg.sse_url) return;
+    await syncAgentsSnapshot({
+      workDir: this.opts.workDir,
+      sseUrl: cfg.sse_url,
+      ns: cfg.ns,
+      username: cfg.broker.username,
+      password: cfg.broker.password,
+    });
   }
 
   /** 异步停止：resolve 于 MQTT 关闭完成后（期间仍有 offline 日志），resolve 后 workDir 可安全删除 */
