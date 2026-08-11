@@ -214,6 +214,11 @@ class MetricsStore:
         with self._lock:
             return {k: dict(v) for k, v in self._data.items()}
 
+    def remove(self, identity: str) -> None:
+        """Plan 3 问题 4：清除单条身份指标条目（Agent 明细删除时连带执行）"""
+        with self._lock:
+            self._data.pop(identity, None)
+
 
 # ─── 指标汇总（控制台指标页复用） ─────────────────────────────────────────
 
@@ -589,7 +594,8 @@ class AgentSession:
             "capabilities": capabilities,
         }
     
-    def send_message(self, text: str, to: Union[str, List[str]], msg_type: str = "text") -> dict:
+    def send_message(self, text: str, to: Union[str, List[str]], msg_type: str = "text",
+                     session_id: Optional[str] = None) -> dict:
         """发送消息给目标 Agent（支持多人）"""
         msg_id = f"msg-{uuid.uuid4().hex[:12]}"
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -605,6 +611,9 @@ class AgentSession:
             "type": msg_type,
             "timestamp": timestamp,
         }
+        # Plan 3 问题 2：发送方本地会话 ID（可选），回复时回显，发起方据此注回原会话
+        if isinstance(session_id, str) and session_id.strip():
+            payload["session"] = session_id.strip()
         
         sent_to = split_targets(to)
         pub_topics = build_pub_topics(to, self.ns)
@@ -674,9 +683,14 @@ def build_tools() -> List[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "消息内容"},
+                    "text": {"type": "string", "description": "消息内容（不可为空）"},
                     "to": {"type": ["string", "array"], "description": "目标 Agent 的 client_id"},
                     "type": {"type": "string", "default": "text"},
+                    "session_id": {
+                        "type": "string",
+                        "description": "发送方本地会话 ID（可选）：发起新消息时携带，对方回复将回显此值，"
+                                       "使回复注回本会话而非新建会话（取 [AgentBus] 信封头 session 字段）",
+                    },
                 },
                 "required": ["text", "to"],
             },
@@ -789,7 +803,15 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             text = arguments["text"]
             to = arguments["to"]
             msg_type = arguments.get("type", "text")
-            
+            session_id = arguments.get("session_id")
+
+            # Plan 3 问题 0：空/纯空白正文拒发（此前只校验上限，空串照发导致对端收到空信封）
+            if not isinstance(text, str) or not text.strip():
+                return [TextContent(type="text", text=json.dumps({
+                    "error": "消息正文不能为空，请填写正文后再发送",
+                    "hint": "请把要发送的内容写入 text 参数，而不是写进本地对话回复",
+                }, ensure_ascii=False, indent=2))]
+
             try:
                 check_text_size(text)
                 targets = split_targets(to)
@@ -825,7 +847,8 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
                     "error": "MQTT 连接尚未就绪（收件订阅未完成），请稍后重试",
                 }, ensure_ascii=False, indent=2))]
             
-            result = session.send_message(text, delivered, msg_type)
+            result = session.send_message(text, delivered, msg_type,
+                                          session_id if isinstance(session_id, str) else None)
             if unknown:
                 result["unconfirmed"] = unknown
                 result["note"] = "以下目标未保持 SSE 会话（可能是纯 MQTT 直连），已尽力发布，在线状态未知"
@@ -1431,6 +1454,28 @@ async def api_console_agent_patch(request: Request):
     return JSONResponse({"status": "updated", "client_id": cid})
 
 
+async def api_console_agent_delete(request: Request):
+    """Plan 3 问题 4：删除 Agent 明细档案（DB 档案行 + 内存指标条目 + 注册态一次清净）。
+    session_guard + _can_manage_ns；越权 403；无此行 404。
+    注意：该身份若仍在线（daemon 在跑），下次指标上报会自动重建占位行——
+    清理测试数据的正确姿势是先停对应 daemon 再删除。"""
+    user = hub_auth.current_user(request)
+    ns = (request.query_params.get("ns") or "").strip()
+    cid = request.path_params.get("cid", "").strip()
+    if not ns or not cid:
+        return _json_error("缺少 ns/client_id")
+    if not _can_manage_ns(user, ns):
+        return _json_error("forbidden", 403)
+    if DB_CONN is None or hub_store.get_agent(DB_CONN, ns, cid) is None:
+        return _json_error("未找到该 Agent 档案", 404)
+    hub_store.delete_agent(DB_CONN, ns, cid)
+    key = session_key(cid, ns)
+    _metrics_store.remove(key)
+    _agent_info.pop(key, None)
+    logger.info(f"[agent-profile] console deleted {ns}/{cid} by {user['username']}")
+    return JSONResponse({"status": "deleted", "client_id": cid})
+
+
 # ─── TASK-32：Agent 档案注册（init HTTP 上报，Basic auth=broker 凭证） ─────────
 
 AGENT_NAME_MAX = 50  # name 上限（应用层校验）
@@ -1615,6 +1660,7 @@ app = Starlette(
         Route("/api/console/metrics/summary", hub_auth.session_guard(api_metrics_summary), methods=["GET"]),
         Route("/api/console/agents", hub_auth.session_guard(api_console_agents), methods=["GET"]),
         Route("/api/console/agents/{cid}", hub_auth.session_guard(api_console_agent_patch), methods=["PATCH"]),
+        Route("/api/console/agents/{cid}", hub_auth.session_guard(api_console_agent_delete), methods=["DELETE"]),
         # TASK-32：Agent 档案注册（Basic auth=broker 凭证；不走 session 鉴权）
         Route("/api/agent/register", api_agent_register, methods=["POST"]),
         Route("/api/agent/snapshot", api_agent_snapshot, methods=["GET"]),

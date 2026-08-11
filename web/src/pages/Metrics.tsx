@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Loader2, Pencil, RefreshCw, Users } from "lucide-react";
+import { Activity, Loader2, Pencil, RefreshCw, Trash2, Users } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle,
+  ConfirmDialog,
   Input, Label, Modal,
   Table, TBody, TD, TH, THead, TR,
 } from "@/components/ui";
@@ -23,6 +24,8 @@ export function Metrics() {
   const [agents, setAgents] = useState<AgentEntry[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [editTarget, setEditTarget] = useState<AgentEntry | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<AgentEntry | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async () => {
     if (!current) return;
@@ -92,6 +95,34 @@ export function Metrics() {
         <Card>
           <CardHeader>
             <CardTitle className="text-sm flex items-center gap-2">
+              <Users className="h-4 w-4 text-primary" />Agent 明细
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <THead>
+                <TR>
+                  <TH>Agent ID</TH><TH>名称</TH><TH>账号昵称</TH><TH>能力</TH><TH>注册工具</TH>
+                  <TH>状态</TH><TH>最近上报</TH><TH className="w-32">操作</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {(agents ?? []).length === 0 && (
+                  <TR><TD colSpan={8} className="text-center text-muted-foreground py-6">该命名空间暂无 Agent（注册/在线/上报均无记录）</TD></TR>
+                )}
+                {(agents ?? []).map((a) => (
+                  <AgentRow key={a.client_id} a={a} onEdit={() => setEditTarget(a)} onDelete={() => setDeleteTarget(a)} />
+                ))}
+              </TBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
+      {current && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm flex items-center gap-2">
               <Activity className="h-4 w-4 text-primary" />Daemon 明细
             </CardTitle>
           </CardHeader>
@@ -115,32 +146,6 @@ export function Metrics() {
         </Card>
       )}
 
-      {current && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm flex items-center gap-2">
-              <Users className="h-4 w-4 text-primary" />Agent 明细
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <THead>
-                <TR>
-                  <TH>Agent ID</TH><TH>名称</TH><TH>账号昵称</TH><TH>能力</TH><TH>注册工具</TH>
-                  <TH>状态</TH><TH>最近上报</TH><TH className="w-16">操作</TH>
-                </TR>
-              </THead>
-              <TBody>
-                {(agents ?? []).length === 0 && (
-                  <TR><TD colSpan={8} className="text-center text-muted-foreground py-6">该命名空间暂无 Agent（注册/在线/上报均无记录）</TD></TR>
-                )}
-                {(agents ?? []).map((a) => <AgentRow key={a.client_id} a={a} onEdit={() => setEditTarget(a)} />)}
-              </TBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
-
       {/* 编辑 Agent 档案弹窗（保存后重拉列表） */}
       <EditAgentModal
         ns={current ?? ""}
@@ -150,6 +155,35 @@ export function Metrics() {
           setEditTarget(null);
           await load();
         }}
+      />
+
+      {/* Plan 3 问题 4：删除 Agent 档案（连带清 Daemon 指标条目） */}
+      <ConfirmDialog
+        open={!!deleteTarget}
+        title={<>删除 Agent 档案：<Badge variant="secondary">{deleteTarget?.client_id}</Badge></>}
+        description={
+          <div className="space-y-1.5">
+            <p>将删除该 Agent 的档案，并连带清除其指标上报数据。</p>
+            <p className="text-xs">若该身份仍在线（对应 daemon 还在运行），下次上报会自动重建占位行——建议先停掉对应 daemon 再删除。</p>
+          </div>
+        }
+        confirmText="删除"
+        busy={deleting}
+        onClose={() => { if (!deleting) setDeleteTarget(null); }}
+        onConfirm={() => void (async () => {
+          if (!deleteTarget || !current) return;
+          setDeleting(true);
+          try {
+            await api.deleteAgent(current, deleteTarget.client_id);
+            toast(`Agent ${deleteTarget.client_id} 档案已删除`);
+            setDeleteTarget(null);
+            await load();
+          } catch (e) {
+            toast(e instanceof Error ? e.message : "删除失败", false);
+          } finally {
+            setDeleting(false);
+          }
+        })()}
       />
     </div>
   );
@@ -197,7 +231,7 @@ function DaemonRow({ id, d }: { id: string; d: DaemonEntry }) {
   );
 }
 
-function AgentRow({ a, onEdit }: { a: AgentEntry; onEdit: () => void }) {
+function AgentRow({ a, onEdit, onDelete }: { a: AgentEntry; onEdit: () => void; onDelete: () => void }) {
   return (
     <TR>
       <TD className="font-medium">{a.client_id}</TD>
@@ -235,9 +269,15 @@ function AgentRow({ a, onEdit }: { a: AgentEntry; onEdit: () => void }) {
         )}
       </TD>
       <TD>
-        <Button variant="ghost" size="sm" onClick={onEdit} title={`编辑 ${a.client_id} 档案`}>
-          <Pencil className="h-3.5 w-3.5" />编辑
-        </Button>
+        <div className="flex items-center gap-0.5">
+          <Button variant="ghost" size="sm" onClick={onEdit} title={`编辑 ${a.client_id} 档案`}>
+            <Pencil className="h-3.5 w-3.5" />编辑
+          </Button>
+          <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={onDelete}
+            title={`删除 ${a.client_id} 档案（连带清除指标数据）`}>
+            <Trash2 className="h-3.5 w-3.5" />删除
+          </Button>
+        </div>
       </TD>
     </TR>
   );

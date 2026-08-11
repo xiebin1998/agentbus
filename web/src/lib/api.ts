@@ -189,4 +189,10 @@ export const api = {
         body: JSON.stringify(patch),
       },
     ),
+  /** Plan 3 问题 4：删除 Agent 档案（DB 行 + 内存指标/注册态连带清除） */
+  deleteAgent: (ns: string, cid: string) =>
+    http<{ status: string; client_id: string }>(
+      `/api/console/agents/${encodeURIComponent(cid)}?ns=${encodeURIComponent(ns)}`,
+      { method: "DELETE" },
+    ),
 };

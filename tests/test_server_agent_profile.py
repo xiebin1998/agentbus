@@ -296,6 +296,40 @@ def test_send_message_multi_target_partial_offline_rejects_all(mcp_env):
     assert mcp_env == []
 
 
+# ─── Plan 3 问题 0：空正文拒发 ────────────────────────────────────────────────
+
+
+def test_send_message_rejects_empty_text(mcp_env):
+    """空/纯空白正文整体拒发，不投 broker，错误文案指引补正文"""
+    import server
+    now = datetime.now(timezone.utc)
+    server._metrics_store.update("pay/bob", {"injected_ok": 1}, now.isoformat())
+    for empty in ("", "   ", "\n\t"):
+        out = _tool(mcp_env, "send_message", {"text": empty, "to": "bob"})
+        assert "error" in out, f"空正文 {empty!r} 应被拒发"
+        assert "正文" in out["error"]
+    assert mcp_env == []  # 未投 broker
+
+
+def test_send_message_passes_session_id_into_payload(mcp_env, monkeypatch):
+    """可选 session_id 透传进总线 payload（会话级路由依据；缺省不带）"""
+    import server
+    now = datetime.now(timezone.utc)
+    server._metrics_store.update("pay/bob", {"injected_ok": 1}, now.isoformat())
+    captured = []
+    monkeypatch.setattr(server, "_shared_client",
+                        SimpleNamespace(publish=lambda topic, payload, qos=0:
+                                        captured.append(payload) or SimpleNamespace(rc=0)))
+    out = _tool(mcp_env, "send_message",
+                {"text": "hi", "to": "bob", "session_id": "ses_origin"})
+    assert out["status"] == "sent"
+    assert json.loads(captured[0])["session"] == "ses_origin"
+
+    out2 = _tool(mcp_env, "send_message", {"text": "hi", "to": "bob"})
+    assert out2["status"] == "sent"
+    assert "session" not in json.loads(captured[1])
+
+
 def test_send_message_all_online_delivers_with_unconfirmed(mcp_env):
     """全在线才投递；目标无 SSE 会话仍尽力发布（unconfirmed 兼容语义保留）"""
     import server
@@ -569,6 +603,43 @@ def test_patch_agent_unknown_404(console_env):
     _mk_ns(console_env)
     assert console_env.patch("/api/console/agents/ghost?ns=iot",
                              json={"name": "x"}).status_code == 404
+
+
+# ─── Plan 3 问题 4：Agent 明细删除（连带清指标/注册态） ─────────────
+
+
+def test_delete_agent_requires_login(console_env):
+    assert console_env.delete("/api/console/agents/ag-1?ns=iot").status_code == 401
+
+
+def test_delete_agent_forbidden_for_plain_member(console_env):
+    console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
+    _mk_ns(console_env)
+    console_env.post("/api/console/accounts", json={"username": "bob", "password": "pw2"})
+    console_env.post("/api/auth/logout")
+    console_env.post("/api/auth/login", json={"username": "bob", "password": "pw2"})
+    assert console_env.delete("/api/console/agents/ag-1?ns=iot").status_code == 403
+
+
+def test_delete_agent_success_clears_db_metrics_and_info(console_env):
+    """删除档案行 + 内存指标条目 + 注册态，一次清净（测试数据移除能力）"""
+    import server
+    from hub import store
+    console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
+    _mk_ns(console_env)
+    store.upsert_agent(server.DB_CONN, "iot", "ag-1", name="测试残留", owner="root")
+    server._metrics_store.update("iot/ag-1", {"injected_ok": 1},
+                                 datetime.now(timezone.utc).isoformat())
+    r = console_env.delete("/api/console/agents/ag-1?ns=iot")
+    assert r.status_code == 200, r.text
+    assert store.get_agent(server.DB_CONN, "iot", "ag-1") is None
+    assert "iot/ag-1" not in server._metrics_store.snapshot()
+
+
+def test_delete_agent_unknown_404(console_env):
+    console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
+    _mk_ns(console_env)
+    assert console_env.delete("/api/console/agents/ghost?ns=iot").status_code == 404
 
 
 # ─── TASK-32 Task 5：明细 API 补 DB 字段 + hub 重启恢复 ─────────────────
