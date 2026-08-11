@@ -57,14 +57,16 @@ describe("install.sh（macOS/Linux 一键安装）", () => {
 });
 
 describe("publish.ps1（npm 一键发布）", () => {
-  it("存在且含主流程：版本升级 → 构建 → publish --access public --otp", () => {
+  it("存在且含主流程：版本升级 → 构建 → publish --access public（OTP 可选）", () => {
     expect(existsSync(publishPath)).toBe(true);
     const src = readFileSync(publishPath, "utf-8");
     expect(src).toMatch(/npm(\.cmd)? version/);
     expect(src).toMatch(/npm(\.cmd)? run build/);
-    expect(src).toMatch(/npm(\.cmd)? publish/);
-    expect(src).toMatch(/--access public/);
+    expect(src).toMatch(/npm(\.cmd)? @?pubArgs|npm(\.cmd)? publish/);
+    expect(src).toMatch(/--access/);
+    // OTP 可选：填了才拼 --otp（bypass-2FA granular token 不需要，带了反而 EOTP）
     expect(src).toMatch(/--otp/);
+    expect(src).toMatch(/if \(\$otp\)/);
   });
 
   it("发布前跑单测（防坏版本上 registry）且失败即停", () => {
