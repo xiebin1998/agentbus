@@ -7,8 +7,10 @@
 #   pwsh scripts/publish.ps1 -SkipVersion    # 版本号不动（发布失败后重试时用）
 #   pwsh scripts/publish.ps1 -SkipTests      # 跳过单测（不建议）
 #
-# 流程：前置检查 → 单测 → 升版本(git commit+tag) → 构建 → 交互读 OTP → 发布 → 验证传播
-# OTP 支持两种：authenticator 的 6 位动态码（注意时钟同步）或 64 位恢复码（一次性，不受时钟影响）
+# 流程：前置检查 → 单测 → 升版本(git commit+tag) → 构建 → 交互读 OTP（可空）→ 发布 → 验证传播
+# OTP 可选：
+#   - 若 .npmrc 用 bypass-2FA granular token → 直接回车留空，不带 --otp（带了反而 EOTP）
+#   - 若为普通会话登录（npm login）→ 输 authenticator 6 位动态码（注意时钟同步）或 64 位恢复码
 # ============================================================
 [CmdletBinding()]
 param(
@@ -57,20 +59,22 @@ Write-Host "[3/6] 构建（tsc → dist/）..." -ForegroundColor Cyan
 & npm.cmd run build
 if ($LASTEXITCODE -ne 0) { throw "构建失败" }
 
-# ── 4) 读 OTP（动态码或恢复码）─────────────────────────────
-Write-Host "[4/6] 请输入发布验证码：" -ForegroundColor Cyan
-Write-Host "      - authenticator 6 位动态码：等码刚跳到新值时再输入"
-Write-Host "      - 或 64 位恢复码（一次性，不受时钟偏差影响）"
+# ── 4) 读 OTP（可空）──────────────────────────────────────
+Write-Host "[4/6] 请输入发布验证码（可留空）：" -ForegroundColor Cyan
+Write-Host "      - 用 bypass-2FA granular token：直接回车，无需验证码"
+Write-Host "      - 普通会话登录：输 authenticator 6 位动态码（刚跳到新值时输）或 64 位恢复码"
 $otp = (Read-Host "验证码").Trim()
-if ($otp -notmatch '^\d{6}$' -and $otp -notmatch '^[0-9a-f]{64}$') {
-    throw "验证码格式不对：应为 6 位数字或 64 位十六进制恢复码"
+if ($otp -and $otp -notmatch '^\d{6}$' -and $otp -notmatch '^[0-9a-f]{64}$') {
+    throw "验证码格式不对：应为 6 位数字或 64 位十六进制恢复码；或留空走 bypass token"
 }
 
 # ── 5) 发布 ──────────────────────────────────────────────
 Write-Host "[5/6] 发布 $pkgName@$ver ..." -ForegroundColor Cyan
-& npm.cmd publish --access public --otp $otp
+$pubArgs = @("publish", "--access", "public")
+if ($otp) { $pubArgs += @("--otp", $otp) }   # 留空则不带 --otp（bypass-2FA token 不需要，带了反而 EOTP）
+& npm.cmd @pubArgs
 if ($LASTEXITCODE -ne 0) {
-    throw "发布失败。若为 EOTP（验证码过期）：重新生成动态码后执行 pwsh scripts/publish.ps1 -SkipVersion"
+    throw "发布失败。若为 EOTP：你用的是 bypass token 就别填验证码（直接回车留空）；若是会话登录则等动态码刚刷新再输。重试：pwsh scripts/publish.ps1 -SkipVersion"
 }
 
 # ── 6) 验证注册表传播（新包/新版本可能有几分钟延迟）────────
