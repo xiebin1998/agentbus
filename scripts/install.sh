@@ -11,6 +11,9 @@
 #   AGENTBUS_PASSWORD  broker 接入密码
 #   AGENTBUS_NS        命名空间（默认 default）
 #
+# 隔离性保证：一行式命令的环境变量前缀仅作用于管道内的 bash 子进程，不污染当前 shell 会话，
+# 不影响同机其他项目（项目接入信息只读各自 .agentbus/config.json，与环境变量无关）。
+#
 # 内部流程（架构 6.6）：装 agentbus CLI（npm 全局）→ agentbus init --yes（client_id 默认目录名、
 # 自动探测可接入工具）→ agentbus doctor 输出报告。任何一步失败即停并给出提示。
 
