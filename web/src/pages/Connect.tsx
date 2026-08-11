@@ -60,12 +60,15 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
   const [method, setMethod] = useState<InstallMethod>("script");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
+  /** 已选接入工具（空 = init --yes 自动探测全部已装 AI CLI） */
+  const [tools, setTools] = useState<string[]>([]);
 
   useEffect(() => {
     if (!open || !ns) return;
     setPassword("");
     setShowPw(false);
     setMethod("script");
+    setTools([]);
     setLoading(true);
     api.connectCommand(ns)
       .then(setCmd)
@@ -75,6 +78,26 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
       })
       .finally(() => setLoading(false));
   }, [open, ns, toast]);
+
+  // 勾选/取消工具 → 按新清单重拉命令（服务端白名单校验后拼入一行式命令）
+  useEffect(() => {
+    if (!open || !ns || tools.length === 0) return;
+    api.connectCommand(ns, tools)
+      .then(setCmd)
+      .catch((e) => toast(e instanceof Error ? e.message : "加载失败", false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tools]);
+
+  const toggleTool = (t: string) => {
+    const next = tools.includes(t) ? tools.filter((x) => x !== t) : [...tools, t];
+    setTools(next);
+    if (next.length === 0) {
+      // 全部取消 → 回到自动探测形态，重拉不带 tools 的命令（非空时由上方 effect 重拉）
+      api.connectCommand(ns)
+        .then(setCmd)
+        .catch((e) => toast(e instanceof Error ? e.message : "加载失败", false));
+    }
+  };
 
   // 模板/一行式命令中 <密码> 占位符替换为用户重输的密码（密码单向哈希，服务端不可回显）
   const fill = (t: string) => (password ? t.replace("<密码>", password) : t);
@@ -103,6 +126,32 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
             <div>
               <div className="text-xs text-muted-foreground mb-1">命名空间</div>
               <Badge variant="secondary">{cmd.ns}</Badge>
+            </div>
+          </div>
+
+          {/* 接入工具选择：不勾 = 自动探测全部已装 AI CLI（推荐）；勾选 = 仅接入所选 */}
+          <div className="space-y-1.5">
+            <Label className="text-xs text-muted-foreground">接入工具（不选则自动探测已装的 AI CLI）</Label>
+            <div className="flex flex-wrap gap-2">
+              {cmd.tools_options.map((t) => {
+                const on = tools.includes(t);
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => toggleTool(t)}
+                    className={cn(
+                      "rounded-md border px-2.5 py-1 text-xs font-mono transition-colors",
+                      on
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                    )}
+                  >
+                    {t}
+                  </button>
+                );
+              })}
             </div>
           </div>
 

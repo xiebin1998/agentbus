@@ -25,6 +25,10 @@ export interface ConnectCommand {
   broker: string;
   user: string;
   ns: string;
+  /** 已选接入工具（空 = 客户端自动探测全部已装 AI CLI） */
+  tools: string[];
+  /** 可选工具清单（服务端白名单，渲染选择控件用） */
+  tools_options: string[];
   template: string;
   /** 一键安装脚本（Windows PowerShell，无凭证裸下载） */
   install_ps1: string;
@@ -141,8 +145,10 @@ export const api = {
   setPassword: (username: string, password: string) =>
     http<{ ok: boolean }>(`/api/console/accounts/${encodeURIComponent(username)}/password`, json({ password })),
 
-  connectCommand: (ns: string) =>
-    http<ConnectCommand>(`/api/console/connect-command?ns=${encodeURIComponent(ns)}`),
+  connectCommand: (ns: string, tools?: string[]) => {
+    const t = tools && tools.length > 0 ? `&tools=${encodeURIComponent(tools.join(","))}` : "";
+    return http<ConnectCommand>(`/api/console/connect-command?ns=${encodeURIComponent(ns)}${t}`);
+  },
 
   metrics: (ns: string) => http<MetricsPayload>(`/api/console/metrics?ns=${encodeURIComponent(ns)}`),
   metricsSummary: (ns: string) =>

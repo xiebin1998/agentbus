@@ -10,8 +10,9 @@
 #   AGENTBUS_USER      broker 接入用户名（控制台发放，四期强制认证）
 #   AGENTBUS_PASSWORD  broker 接入密码
 #   AGENTBUS_NS        命名空间（默认 default）
+#   AGENTBUS_TOOLS     要接入的工具（逗号分隔，如 qoder,claude）；不设则自动探测全部已装 AI CLI
 #
-# 隔离性保证：BROKER/USER/PASSWORD/NS 仅在本脚本执行期间生效，退出时 finally 自动清理，
+# 隔离性保证：BROKER/USER/PASSWORD/NS/TOOLS 仅在本脚本执行期间生效，退出时 finally 自动清理，
 # 不残留到终端会话，不影响同机其他项目（项目接入信息只读各自 .agentbus/config.json，与环境变量无关）。
 # AGENTBUS_PACKAGE 不在此列（可能是用户预置的镜像源，予以保留）。
 #
@@ -59,12 +60,16 @@ try {
         Fail "npm install -g 失败。请检查网络与 registry（npm config get registry）；离线环境可用 AGENTBUS_PACKAGE 指向本地包路径后重试。"
     }
 
-    # 步骤 2：非交互初始化（client_id 默认目录名，自动探测可接入工具；凭证经环境变量透传）
+    # 步骤 2：非交互初始化（client_id 默认目录名；工具默认自动探测，AGENTBUS_TOOLS 指定则按清单接入；凭证经环境变量透传）
     $initArgs = @("init", "--yes")
     if ($env:AGENTBUS_BROKER) { $initArgs += @("--broker", $env:AGENTBUS_BROKER) }
     if ($env:AGENTBUS_USER) { $initArgs += @("--user", $env:AGENTBUS_USER) }
     if ($env:AGENTBUS_PASSWORD) { $initArgs += @("--password", $env:AGENTBUS_PASSWORD) }
     if ($env:AGENTBUS_NS) { $initArgs += @("--ns", $env:AGENTBUS_NS) }
+    # --tools 是变长参数（commander <tools...>），放最后；逗号分隔展开
+    if ($env:AGENTBUS_TOOLS) {
+        $initArgs += @("--tools") + (($env:AGENTBUS_TOOLS -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    }
     Write-Host "[install] agentbus $($initArgs -join ' ')"
     & agentbus @initArgs
     if ($LASTEXITCODE -ne 0) {
@@ -89,7 +94,7 @@ try {
     }
     # 清理一行式命令注入的凭证/broker/命名空间（含 AGENTBUS_INSTALL 自身）：不残留终端会话
     # （也避免明文密码留在 Env:），不影响其他项目——项目接入信息只读各自 .agentbus/config.json
-    foreach ($k in @("AGENTBUS_BROKER", "AGENTBUS_USER", "AGENTBUS_PASSWORD", "AGENTBUS_NS", "AGENTBUS_INSTALL")) {
+    foreach ($k in @("AGENTBUS_BROKER", "AGENTBUS_USER", "AGENTBUS_PASSWORD", "AGENTBUS_NS", "AGENTBUS_TOOLS", "AGENTBUS_INSTALL")) {
         if (Test-Path "env:$k") { Remove-Item "env:$k" }
     }
 }

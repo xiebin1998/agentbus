@@ -10,6 +10,7 @@
 #   AGENTBUS_USER      broker 接入用户名（控制台发放，四期强制认证）
 #   AGENTBUS_PASSWORD  broker 接入密码
 #   AGENTBUS_NS        命名空间（默认 default）
+#   AGENTBUS_TOOLS     要接入的工具（逗号分隔，如 qoder,claude）；不设则自动探测全部已装 AI CLI
 #
 # 隔离性保证：一行式命令的环境变量前缀仅作用于管道内的 bash 子进程，不污染当前 shell 会话，
 # 不影响同机其他项目（项目接入信息只读各自 .agentbus/config.json，与环境变量无关）。
@@ -41,12 +42,21 @@ PKG="${AGENTBUS_PACKAGE:-@xiebin1998/agentbus@latest}"
 echo "[install] npm install -g $PKG"
 npm install -g "$PKG" || fail "npm install -g 失败。请检查网络与 registry（npm config get registry）；离线环境可用 AGENTBUS_PACKAGE 指向本地包路径后重试。"
 
-# 步骤 2：非交互初始化（client_id 默认目录名，自动探测可接入工具；凭证经环境变量透传）
+# 步骤 2：非交互初始化（client_id 默认目录名；工具默认自动探测，AGENTBUS_TOOLS 指定则按清单接入；凭证经环境变量透传）
 INIT_ARGS=(init --yes)
 [ -n "${AGENTBUS_BROKER:-}" ] && INIT_ARGS+=(--broker "$AGENTBUS_BROKER")
 [ -n "${AGENTBUS_USER:-}" ] && INIT_ARGS+=(--user "$AGENTBUS_USER")
 [ -n "${AGENTBUS_PASSWORD:-}" ] && INIT_ARGS+=(--password "$AGENTBUS_PASSWORD")
 [ -n "${AGENTBUS_NS:-}" ] && INIT_ARGS+=(--ns "$AGENTBUS_NS")
+# --tools 是变长参数（commander <tools...>），放最后；逗号分隔展开
+if [ -n "${AGENTBUS_TOOLS:-}" ]; then
+  INIT_ARGS+=(--tools)
+  IFS=',' read -ra _TOOLS <<< "$AGENTBUS_TOOLS"
+  for _t in "${_TOOLS[@]}"; do
+    _t="${_t//[[:space:]]/}"
+    [ -n "$_t" ] && INIT_ARGS+=("$_t")
+  done
+fi
 echo "[install] agentbus ${INIT_ARGS[*]}"
 agentbus "${INIT_ARGS[@]}" || fail "agentbus init --yes 失败：常见原因是本机未安装任何 AI CLI（qodercli/kilo/opencode/claude/codex/hermes），请先安装至少一个后重试。"
 

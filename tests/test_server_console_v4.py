@@ -360,7 +360,7 @@ def test_connect_command_real_broker_host_kept(client, app_ctx, monkeypatch):
 
 
 def test_connect_command_one_line_scripts(client):
-    """一行式脚本命令：预置环境变量（含凭证占位），密码前端替换"""
+    """一行式脚本命令：预置环境变量（含凭证占位），密码前端替换；未选工具时不带 AGENTBUS_TOOLS（自动探测）"""
     _login(client, "root", "rootpw")
     _mk_ns(client)
     data = client.get("/api/console/connect-command", params={"ns": "pay"}).json()
@@ -371,3 +371,23 @@ def test_connect_command_one_line_scripts(client):
     assert sh.startswith("AGENTBUS_BROKER=") and "AGENTBUS_USER=" in sh
     assert "AGENTBUS_PASSWORD='<密码>'" in sh and "AGENTBUS_NS=" in sh
     assert sh.endswith("| bash")
+    # 未选工具 → 不注入 AGENTBUS_TOOLS，init --yes 自动探测已装 CLI
+    assert "AGENTBUS_TOOLS" not in ps1 and "AGENTBUS_TOOLS" not in sh and "--tools" not in data["template"]
+
+
+def test_connect_command_tools_param(client):
+    """tools 参数：透传进模板与一行式命令（AGENTBUS_TOOLS 逗号分隔），非法工具名 400"""
+    _login(client, "root", "rootpw")
+    _mk_ns(client)
+    data = client.get("/api/console/connect-command", params={"ns": "pay", "tools": "qoder,claude"}).json()
+    assert "--tools qoder claude" in data["template"]
+    assert "AGENTBUS_TOOLS='qoder,claude'" in data["install_cmd_ps1"].replace("$env:", "")
+    assert "AGENTBUS_TOOLS='qoder,claude'" in data["install_cmd_sh"]
+    # 可选清单随响应下发（前端渲染选择控件用）
+    assert data["tools_options"] == ["qoder", "kilo", "opencode", "claude", "codex", "hermes"]
+    assert data["tools"] == ["qoder", "claude"]
+    # 未知工具名直接 400（防注入，不信任前端）
+    assert client.get("/api/console/connect-command",
+                      params={"ns": "pay", "tools": "qoder;rm"}).status_code == 400
+    assert client.get("/api/console/connect-command",
+                      params={"ns": "pay", "tools": "unknown-tool"}).status_code == 400

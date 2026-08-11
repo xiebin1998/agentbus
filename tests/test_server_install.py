@@ -25,6 +25,12 @@ def test_install_scripts_served(client):
     assert "init --yes" in r2.text and "doctor" in r2.text
 
 
+def test_install_scripts_tools_passthrough(client):
+    """AGENTBUS_TOOLS 透传：指定工具时展开为 init --tools <...>；不设则自动探测（脚本内均有声明）"""
+    assert "AGENTBUS_TOOLS" in client.get("/install.ps1").text
+    assert "AGENTBUS_TOOLS" in client.get("/install.sh").text
+
+
 def test_install_scripts_content_matches_files(client):
     """路由直出 scripts/ 下真实文件内容（防漂移）；
     ps1 额外前置 UTF-8 BOM（PS 5.1 无 BOM 按 ANSI 解码，中文乱码）"""

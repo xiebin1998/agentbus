@@ -69,3 +69,7 @@ ARCHITECTURE.md
 PLAN.md
 TASKS.md
 .superpowers/
+
+# 临时产物
+tsconfig.tsbuildinfo
+.tmp-commit-msg.txt

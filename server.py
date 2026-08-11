@@ -1155,11 +1155,18 @@ def _public_base(request: Request) -> tuple[str, str]:
 
 async def api_connect_command(request: Request):
     """接入命令模板：地址按浏览器请求的真实 host 派生（跨机器可达）；
-    密码单向哈希不可回显，前端在用户重输密码后替换 <密码> 占位符"""
+    密码单向哈希不可回显，前端在用户重输密码后替换 <密码> 占位符；
+    tools 可选（逗号分隔）：白名单校验防注入，未选时 init --yes 自动探测已装 CLI"""
     user = hub_auth.current_user(request)
     ns = (request.query_params.get("ns") or "").strip()
     if not ns or not _ns_visible(user, ns):
         return _json_error("forbidden", 403)
+    # 可选清单与客户端 TOOL_BINARIES 对齐（agentbus/src/detect.ts）
+    tools_options = ["qoder", "kilo", "opencode", "claude", "codex", "hermes"]
+    tools_raw = (request.query_params.get("tools") or "").strip()
+    tools = [t.strip() for t in tools_raw.split(",") if t.strip()] if tools_raw else []
+    if any(t not in tools_options for t in tools):
+        return _json_error(f"tools 只允许 {','.join(tools_options)}", 400)
     origin, host = _public_base(request)
     # 分机部署环境变量优先；否则 MQTT_BROKER_HOST 已是真实可达地址（如公网 IP）时沿用，
     # 仅当为容器内/本机占位值（mqtt-broker/localhost）时才按浏览器 host 派生
@@ -1178,11 +1185,19 @@ async def api_connect_command(request: Request):
                f"$env:AGENTBUS_PASSWORD='<密码>';$env:AGENTBUS_NS='{ns}';")
     env_sh = (f"AGENTBUS_BROKER='{broker}' AGENTBUS_USER='{user['username']}' "
               f"AGENTBUS_PASSWORD='<密码>' AGENTBUS_NS='{ns}' ")
+    # 选了工具才注入 AGENTBUS_TOOLS（逗号分隔，脚本内展开为 init --tools）；不选则自动探测
+    if tools:
+        joined = ",".join(tools)
+        env_ps1 += f"$env:AGENTBUS_TOOLS='{joined}';"
+        env_sh += f"AGENTBUS_TOOLS='{joined}' "
+    tools_flag = f" --tools {' '.join(tools)}" if tools else ""
     return JSONResponse({
         "broker": broker,
         "user": user["username"],
         "ns": ns,
-        "template": f"agentbus init --broker {broker} --user {user['username']} --password <密码> --ns {ns}",
+        "tools": tools,
+        "tools_options": tools_options,
+        "template": f"agentbus init --broker {broker} --user {user['username']} --password <密码> --ns {ns}{tools_flag}",
         "install_ps1": f"$env:AGENTBUS_INSTALL=\"$env:TEMP\\agentbus-install.ps1\";{ps_exec}",
         "install_sh": f"curl -fsSL {origin}/install.sh | bash",
         "install_cmd_ps1": f"{env_ps1}{ps_exec}",
