@@ -46,6 +46,7 @@ from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent, ToolAnnotations
 from starlette.applications import Starlette
 from starlette.routing import Route, Mount
+from starlette.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from pathlib import Path
@@ -1125,6 +1126,10 @@ async def install_script(request: Request):
     return Response(path.read_text(encoding="utf-8"), media_type=media)
 
 
+# 四期：Web 控制台构建产物目录（存在时才挂载 /console）
+CONSOLE_DIST = Path(__file__).resolve().parent / "web" / "dist"
+
+
 async def sse_endpoint(request: Request):
     client_id = request.query_params.get("client_id") or request.headers.get("x-client-id", "")
     ns = normalize_ns(request.query_params.get("ns"))
@@ -1196,7 +1201,13 @@ app = Starlette(
         # TASK-28：一键安装脚本（引导资源，鉴权豁免）
         Route("/install.ps1", install_script, methods=["GET"]),
         Route("/install.sh", install_script, methods=["GET"]),
-    ],
+    ]
+    + (
+        # 四期：Web 控制台静态托管（web/dist 构建产物，html=True 提供 SPA 入口）
+        [Mount("/console", app=StaticFiles(directory=str(CONSOLE_DIST), html=True))]
+        if CONSOLE_DIST.exists()
+        else []
+    ),
     lifespan=hub_lifespan,
 )
 

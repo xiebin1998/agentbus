@@ -1,4 +1,14 @@
-# MCP MQTT Bridge Server
+# MCP MQTT Bridge Server（多阶段：node 构建 Web 控制台 → python 运行时托管）
+
+# ── 阶段 1：Web 控制台构建（React + Vite） ──
+FROM node:22-alpine AS web-builder
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ .
+RUN npm run build
+
+# ── 阶段 2：Python 运行时 ──
 FROM python:3.11-slim
 
 # 设置工作目录
@@ -19,11 +29,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 复制代码（hub/ 为四期账号体系包；web/ 控制台页与 scripts/ 安装脚本为运行时托管静态资源）
+# 复制代码（hub/ 为四期账号体系包；scripts/ 安装脚本为运行时托管静态资源）
 COPY server.py .
 COPY hub/ hub/
-COPY web/ web/
 COPY scripts/ scripts/
+# Web 控制台构建产物（server.py 挂载 /console 静态托管）
+COPY --from=web-builder /web/dist web/dist
 
 # 暴露端口
 EXPOSE 8000

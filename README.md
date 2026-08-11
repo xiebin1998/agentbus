@@ -80,21 +80,21 @@ curl http://localhost:8000/health   # 健康检查 + 在线 Agent 列表
 
 ### 4. 日常运维
 
-```powershell
-# 新建团队：控制台 API 或直接脚本（一团队一 broker 账号 team-<名> + topic ACL，SIGHUP 热加载，幂等）
-Invoke-RestMethod http://localhost:8000/api/console/teams -Method POST -Body '{"name":"iot"}' -Headers @{Authorization="Bearer <MCP_API_TOKEN>"}
-pwsh scripts/sync-broker-acl.ps1    # 从 hub 拉团队清单 → 建账号 → 渲染 ACL → 热加载
-```
+四期后命名空间与账号全部经控制台 UI（或 `/api/console/*` API）管理，broker 侧 dynsec 组/角色/ACL 由 hub 自动编排：
 
-脚本会打印每个团队的 broker 凭证——**分发给该团队的客户端**（见客户端章节）。
+- **建命名空间**：控制台 → 命名空间 → 创建（同时创建 ns 管理员账号与 broker 组/角色）
+- **建账号 / 入组**：控制台 → 账号 → 创建；命名空间页管理成员（多对多绑定）
+- **接入凭证**：控制台 → 接入命令 → 选 ns → 重输密码 → 一键复制 `agentbus init ...`
 
 ### 5. Web 控制台
 
-浏览器打开 `http://<host>:8000/console`（设置了 `MCP_API_TOKEN` 时需带 token）：
+浏览器打开 `http://<host>:8000/console/`，账号 + 密码登录（session cookie，超管由 `.env` 的 `AGENTBUS_ADMIN_USER/PASSWORD` 引导）：
 
-- **命名空间**：清单查看、声明创建、身份三态检索
-- **权限**：编辑各身份的 inbound_mode / allowed_senders / trust_map，保存即下发到对应 daemon
-- **指标**：各 daemon 注入成功/去重/丢弃计数、发件人数，5s 自动刷新
+- **命名空间**：清单、创建（含 ns 管理员）、删除、成员管理
+- **账号**：清单、ns 过滤、创建、删除、改密
+- **指标**：按 ns 查看 daemon 注入成功/失败/去重/丢弃/积压计数与明细表，5s 自动刷新
+- **接入命令**：按 ns 生成 `agentbus init` 模板，重输密码后拼接完整命令一键复制
+- **主题**：顶栏支持明/暗模式与蓝/紫强调色双切换（localStorage 持久化）
 
 ### 服务端配置参考（`.env` 全集）
 
@@ -108,7 +108,7 @@ pwsh scripts/sync-broker-acl.ps1    # 从 hub 拉团队清单 → 建账号 → 
 | `MQTT_CA_CERTS` | 空 | 自签 CA 路径（TLS + 自签证书时必填） |
 | `MCP_HOST` | `0.0.0.0` | hub 监听地址 |
 | `MCP_PORT` | `8000` | hub 监听端口 |
-| `MCP_API_TOKEN` | 空 | SSE/控制台/API 鉴权 token；**非空启用**，空=全开放（仅调试用） |
+| `MCP_API_TOKEN` | 空 | MCP/SSE 通道鉴权 token；**非空启用**，空=全开放（仅调试用；控制台走账号会话登录） |
 
 ---
 

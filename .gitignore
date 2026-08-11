@@ -12,6 +12,8 @@ eggs/
 .eggs/
 lib/
 lib64/
+# 四期：Web 控制台源码目录不受上面 lib/ 规则影响
+!web/src/lib/
 parts/
 sdist/
 var/
