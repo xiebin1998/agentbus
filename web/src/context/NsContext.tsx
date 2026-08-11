@@ -22,6 +22,8 @@ export function NsProvider({ children }: { children: ReactNode }) {
   const { me } = useAuth();
   const isSuper = me?.role === "super_admin";
   const [options, setOptions] = useState<Namespace[]>([]);
+  // ns 列表是否已加载完成：加载完成前不做选中项失效回退，避免把持久化值误清
+  const [loaded, setLoaded] = useState(false);
   const [current, setCurrentRaw] = useState(() => {
     try {
       return localStorage.getItem(STORAGE_KEY) ?? "";
@@ -33,12 +35,15 @@ export function NsProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     if (!me) {
       setOptions([]);
+      setLoaded(false);
       return;
     }
     try {
       setOptions(await api.listNamespaces());
     } catch {
       setOptions([]);
+    } finally {
+      setLoaded(true);
     }
   }, [me]);
 
@@ -57,7 +62,7 @@ export function NsProvider({ children }: { children: ReactNode }) {
 
   // 选中项失效（账号切换 / ns 被删 / 登出）时回退：优先保留 localStorage 值，否则取首个
   useEffect(() => {
-    if (!me) return;
+    if (!me || !loaded) return;
     const ids = options.map((o) => o.id);
     if (current === "" && isSuper) return; // 超管"全部"合法
     if (!ids.includes(current)) {
@@ -69,7 +74,7 @@ export function NsProvider({ children }: { children: ReactNode }) {
         /* ignore */
       }
     }
-  }, [me, options, current, isSuper]);
+  }, [me, loaded, options, current, isSuper]);
 
   return (
     <Ctx.Provider value={{ current, setCurrent, options, isSuper: !!isSuper, refresh }}>

@@ -40,8 +40,6 @@ export function Layout({
   const { dark, accent, toggleDark, toggleAccent } = useTheme();
 
   const visibleTabs = TABS.filter((t) => tabsForRole(me?.role).includes(t.id));
-  const currentLabel =
-    current === "" ? "全部命名空间" : options.find((n) => n.id === current)?.name || current || "选择命名空间";
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -52,17 +50,15 @@ export function Layout({
             AgentBus 控制台
           </div>
 
-          {/* 全局命名空间切换：pill 胶囊样式，与 logo 以分隔线视觉分离 */}
+          {/* 全局命名空间切换：pill 胶囊样式（原生 select 本体，图标叠层不拦截点击），与 logo 以分隔线视觉分离 */}
           <div className="h-5 border-l pl-4">
-            <label className="group flex h-8 cursor-pointer items-center gap-2 rounded-full bg-secondary px-3 text-sm transition-colors hover:bg-accent hover:text-accent-foreground">
-              <Layers className="h-3.5 w-3.5 shrink-0 text-primary" />
-              <span className="max-w-40 truncate font-medium">{currentLabel}</span>
-              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-focus-within:rotate-180" />
+            <div className="relative">
+              <Layers className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-primary" />
               <select
                 value={current}
                 onChange={(e) => setCurrent(e.target.value)}
-                className="absolute h-0 w-0 opacity-0"
                 aria-label="切换命名空间"
+                className="h-8 max-w-56 cursor-pointer appearance-none rounded-full bg-secondary pl-9 pr-8 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 {isSuper && <option value="">全部命名空间</option>}
                 {options.map((n) => (
@@ -71,7 +67,8 @@ export function Layout({
                   </option>
                 ))}
               </select>
-            </label>
+              <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            </div>
           </div>
 
           <nav className="ml-2 flex gap-1">
