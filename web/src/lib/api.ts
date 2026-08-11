@@ -72,6 +72,16 @@ export interface AgentEntry {
   last_seen: string | null;
   report_count: number;
   metrics: Partial<MetricTotals> & { senders?: number; uptime_s?: number };
+  /** TASK-32：注册工具（config.tools 键列表） */
+  tools: string[];
+  /** TASK-32：注册时间（ISO；未注册为 null） */
+  registered_at: string | null;
+  /** TASK-32：档案归属账号（可能为空串） */
+  owner: string;
+  /** TASK-32：归属账号昵称（后端附带，可能为空串） */
+  owner_display_name: string;
+  /** TASK-32：占位行（注册上报前仅有身份，名称待完善） */
+  placeholder: boolean;
 }
 export interface AgentsPayload {
   agents: AgentEntry[];
@@ -169,4 +179,14 @@ export const api = {
   metricsSummary: (ns: string) =>
     http<MetricSummary>(`/api/console/metrics/summary?ns=${encodeURIComponent(ns)}`),
   agents: (ns: string) => http<AgentsPayload>(`/api/console/agents?ns=${encodeURIComponent(ns)}`),
+  /** TASK-32：编辑 Agent 档案（name/description/capabilities 直写 DB） */
+  updateAgent: (ns: string, cid: string, patch: { name?: string; description?: string; capabilities?: string[] }) =>
+    http<{ status: string; client_id: string }>(
+      `/api/console/agents/${encodeURIComponent(cid)}?ns=${encodeURIComponent(ns)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      },
+    ),
 };
