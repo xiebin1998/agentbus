@@ -597,6 +597,24 @@ def test_console_agents_detail_includes_db_fields(console_env):
     assert ph["placeholder"] is True
 
 
+def test_console_agents_online_by_metric_window(console_env):
+    """TASK-32：控制台明细 online 随指标 90s 窗口（daemon 无 SSE 会话也须在线）"""
+    import server
+    console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
+    _mk_ns(console_env)
+    server._metrics_store.update("iot/ag-d", {"injected_ok": 1},
+                                 datetime.now(timezone.utc).isoformat())
+    r = console_env.get("/api/console/agents?ns=iot")
+    by_cid = {a["client_id"]: a for a in r.json()["agents"]}
+    assert by_cid["ag-d"]["online"] is True
+    # 窗口外（无新鲜指标且无会话）→ 离线
+    server._metrics_store.update("iot/ag-stale", {"injected_ok": 1},
+                                 "2020-01-01T00:00:00+00:00")
+    r = console_env.get("/api/console/agents?ns=iot")
+    by_cid = {a["client_id"]: a for a in r.json()["agents"]}
+    assert by_cid["ag-stale"]["online"] is False
+
+
 def test_build_agent_detail_db_rows_join_union():
     """纯函数：DB 行并入 key 并集（仅有档案无指标/会话的也要可见）"""
     import server

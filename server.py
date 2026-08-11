@@ -1328,7 +1328,8 @@ async def api_metrics_summary(request: Request):
 # ─── TASK-31：Agent 明细（注册信息 × 在线状态 × daemon 指标 三源合并）───────
 
 def build_agent_detail(ns: str, agent_info: Dict[str, Any], sessions: Dict[str, Any],
-                       metrics: Dict[str, dict], db_agents: Optional[Dict[str, dict]] = None) -> List[dict]:
+                       metrics: Dict[str, dict], db_agents: Optional[Dict[str, dict]] = None,
+                       now: Optional[datetime] = None) -> List[dict]:
     """纯函数多源合并（便于单测）：key 取并集按 ns 前缀过滤，字典序稳定输出。
 
     - agent_info（_agent_info）→ name/description/capabilities/registered
@@ -1336,12 +1337,15 @@ def build_agent_detail(ns: str, agent_info: Dict[str, Any], sessions: Dict[str, 
     - metrics（MetricsStore 快照）→ metrics/last_seen/report_count
     - db_agents（TASK-32，按 client_id 索引的 agents 表行）→ 档案真源：
       tools/registered_at/owner/placeholder，并进 key 并集（仅有档案的也可见）
+    - online（TASK-32 修正）：SSE 会话存活 或 指标 last_seen 在 90s 窗口内
+      （daemon 纯 MQTT 上报无会话，也须在明细显示在线）
     """
     db_agents = db_agents or {}
     prefix = f"{ns}/"
     keys = sorted({k for k in list(agent_info) + list(sessions) + list(metrics)
                    if k.startswith(prefix)}
                   | {f"{prefix}{cid}" for cid in db_agents})
+    now = now or datetime.now(timezone.utc)
     out: List[dict] = []
     for k in keys:
         info = agent_info.get(k)
@@ -1354,7 +1358,7 @@ def build_agent_detail(ns: str, agent_info: Dict[str, Any], sessions: Dict[str, 
             "capabilities": (list(row["capabilities"]) if row
                              else (list(info.capabilities) if info else [])),
             "registered": bool(row) or bool(info and info.registered),
-            "online": k in sessions,
+            "online": k in sessions or k not in _offline_targets([k], metrics, now),
             "last_seen": m.get("last_seen"),
             "report_count": m.get("report_count", 0),
             "metrics": m.get("metrics") or {},
