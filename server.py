@@ -1009,6 +1009,17 @@ async def api_accounts_list(request: Request):
     return JSONResponse([{"username": n, "role": hub_store.get_user(DB_CONN, n)["role"]} for n in names])
 
 
+async def api_accounts_search(request: Request):
+    """账号检索（成员添加用）：任意已登录用户可用，仅返回 username/role，上限 10 条"""
+    hub_auth.current_user(request)
+    q = (request.query_params.get("q") or "").strip()
+    if not q:
+        return _json_error("缺少 q 参数")
+    ql = q.lower()
+    hits = [n for n in hub_store.list_users(DB_CONN) if ql in n.lower()][:10]
+    return JSONResponse([{"username": n, "role": hub_store.get_user(DB_CONN, n)["role"]} for n in hits])
+
+
 async def api_account_create(request: Request):
     user = hub_auth.current_user(request)
     try:
@@ -1063,6 +1074,8 @@ async def api_member_put(request: Request):
     ns, username = request.path_params["ns"], request.path_params["username"]
     if not _can_manage_ns(user, ns):
         return _json_error("forbidden", 403)
+    if hub_store.get_user(DB_CONN, username) is None:
+        return _json_error("账号不存在", 404)
     try:
         hub_accounts.bind(DB_CONN, DYNSEC_CLIENT, ns, username)
     except hub_dynsec.DynsecError as e:
@@ -1213,6 +1226,7 @@ app = Starlette(
         Route("/api/console/namespaces/{ns}/members/{username}", hub_auth.session_guard(api_member_put), methods=["PUT"]),
         Route("/api/console/namespaces/{ns}/members/{username}", hub_auth.session_guard(api_member_delete), methods=["DELETE"]),
         Route("/api/console/accounts", hub_auth.session_guard(api_accounts_list), methods=["GET"]),
+        Route("/api/console/accounts/search", hub_auth.session_guard(api_accounts_search), methods=["GET"]),
         Route("/api/console/accounts", hub_auth.session_guard(api_account_create), methods=["POST"]),
         Route("/api/console/accounts/{username}", hub_auth.session_guard(api_account_delete), methods=["DELETE"]),
         Route("/api/console/accounts/{username}/password", hub_auth.session_guard(api_account_password), methods=["POST"]),

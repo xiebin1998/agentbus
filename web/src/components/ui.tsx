@@ -169,7 +169,7 @@ export function Modal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className={cn("w-full max-w-md rounded-lg border bg-card text-card-foreground shadow-lg", className)}>
+      <div className={cn("modal-in w-full max-w-md rounded-lg border bg-card text-card-foreground shadow-lg", className)}>
         <div className="flex items-center justify-between border-b px-5 py-3">
           <h3 className="font-semibold leading-none tracking-tight">{title}</h3>
           <button

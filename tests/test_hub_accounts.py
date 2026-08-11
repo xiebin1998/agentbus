@@ -79,6 +79,37 @@ def test_ns_id_validation(db):
         accounts.create_namespace_with_admin(db, d, "pay space", "x", "", "a1", "pw")
 
 
+def test_ns_id_allows_upper_digit_dash_underscore(db):
+    """放宽后：英文大小写/数字开头，含 - 与 _ 合法；横杠/下划线开头仍非法"""
+    d = FakeDynsec()
+    accounts.create_namespace_with_admin(db, d, "Pay-2_x", "混合", "", "adm1", "pw")
+    assert store.get_namespace(db, "Pay-2_x") is not None
+    accounts.create_namespace_with_admin(db, d, "9iot", "数字开头", "", "adm2", "pw")
+    assert store.get_namespace(db, "9iot") is not None
+    for bad in ("-abc", "_abc", "pay/x", "a" * 33):
+        with pytest.raises(ValueError):
+            accounts.create_namespace_with_admin(db, d, bad, "x", "", "adm3", "pw")
+
+
+def test_bind_super_admin_skips_dynsec(db):
+    """超管无 broker client：bind/unbind 跳过 dynsec 组操作，不触发 Client not found"""
+    store.create_user(db, "root", auth.hash_password("pw"), "super_admin")
+    store.create_namespace(db, "pay", "支付", "")
+
+    class NoClientDynsec:
+        def add_group_client(self, *a):
+            raise dynsec.DynsecError("Client not found")
+
+        def remove_group_client(self, *a):
+            raise dynsec.DynsecError("Client not found")
+
+    d = NoClientDynsec()
+    accounts.bind(db, d, "pay", "root")
+    assert "root" in store.list_members(db, "pay")
+    accounts.unbind(db, d, "pay", "root")
+    assert "root" not in store.list_members(db, "pay")
+
+
 def test_reset_password_super_admin_skips_dynsec(db):
     """超管是纯控制台身份（bootstrap 只写 SQLite）：改密不同步 dynsec，broker 报 Client not found 不影响"""
     store.create_user(db, "root", auth.hash_password("old"), "super_admin")

@@ -115,6 +115,24 @@ def test_connect_command(client):
     assert "password" not in data  # 服务端不回显真实密码（单向哈希）
 
 
+def test_accounts_search_and_member_put_404(client):
+    """成员添加用检索：匹配/大小写不敏感/空参 400/未登录 401；绑定不存在账号 404"""
+    _login(client, "root", "rootpw")
+    client.post("/api/console/namespaces", json={"id": "pay", "name": "支付", "description": "",
+                                                 "admin_username": "pay-admin", "admin_password": "pw1"})
+    client.post("/api/console/accounts", json={"username": "bob", "password": "pw2"})
+    r = client.get("/api/console/accounts/search", params={"q": "bo"})
+    assert r.status_code == 200 and [a["username"] for a in r.json()] == ["bob"]
+    assert [a["username"] for a in client.get("/api/console/accounts/search", params={"q": "BOB"}).json()] == ["bob"]
+    assert client.get("/api/console/accounts/search", params={"q": "zz"}).json() == []
+    assert client.get("/api/console/accounts/search").status_code == 400
+    # 绑定不存在账号 → 404（不再依赖 FK 报错）
+    assert client.put("/api/console/namespaces/pay/members/ghost").status_code == 404
+    # 未登录 401
+    client.post("/api/auth/logout")
+    assert client.get("/api/console/accounts/search", params={"q": "bo"}).status_code == 401
+
+
 def test_super_admin_password_change_without_dynsec_client(app_ctx, client):
     """复现修复：超管在 broker 无 client（set_client_password 报 Client not found），改密仍应成功"""
     from hub import dynsec as hub_dynsec

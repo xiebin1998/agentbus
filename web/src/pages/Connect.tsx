@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
-import { Copy, TerminalSquare, Loader2, Eye, EyeOff, Sparkles } from "lucide-react";
+import { Copy, TerminalSquare, Loader2, Eye, EyeOff, Sparkles, Download } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle, Input, Label, Modal,
 } from "@/components/ui";
 import { api, ConnectCommand } from "@/lib/api";
 import { useNs } from "@/context/NsContext";
 import { useToast } from "@/components/Toaster";
+
+/** CLI 全局安装命令（与 README 一致） */
+const INSTALL_CMD = "npm i -g @xiebin1998/agentbus";
 
 export function Connect() {
   const { current, options } = useNs();
@@ -87,7 +90,7 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
       ) : !cmd ? (
         <p className="text-sm text-muted-foreground py-4 text-center">无法获取接入命令</p>
       ) : (
-        <div className="space-y-4">
+        <div className="space-y-5">
           <div className="grid gap-3 sm:grid-cols-3">
             <Info label="Broker 地址" value={cmd.broker} />
             <Info label="接入用户" value={cmd.user} />
@@ -97,37 +100,57 @@ function ConnectCommandModal({ ns, open, onClose }: { ns: string; open: boolean;
             </div>
           </div>
 
+          {/* 第 1 步：安装 CLI */}
           <div className="space-y-1.5">
-            <Label>你的账号密码（用于拼接完整命令，不会上传）</Label>
-            <div className="relative">
-              <Input
-                type={showPw ? "text" : "password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="重输密码"
-                className="pr-9"
-              />
-              <button
-                type="button"
-                onClick={() => setShowPw((s) => !s)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              >
-                {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between">
-              <Label>初始化命令</Label>
-              <Button variant="outline" size="sm" onClick={() => void copy(fullCommand)}>
-                <Copy className="h-3.5 w-3.5" />一键复制
+            <div className="flex items-center gap-2">
+              <Badge className="h-5 w-5 justify-center rounded-full p-0">1</Badge>
+              <Label className="flex items-center gap-1.5"><Download className="h-3.5 w-3.5" />安装 AgentBus CLI（全局一次）</Label>
+              <Button variant="ghost" size="sm" className="ml-auto h-7 px-2 text-xs" onClick={() => void copy(INSTALL_CMD)}>
+                <Copy className="h-3.5 w-3.5" />复制
               </Button>
             </div>
-            <pre className="overflow-auto rounded-md border bg-muted/50 p-4 text-sm font-mono whitespace-pre-wrap break-all">
-              {fullCommand}
-            </pre>
-            <p className="text-xs text-muted-foreground">{cmd.note}</p>
+            <pre className="overflow-auto rounded-md border bg-muted/50 p-3 text-sm font-mono">{INSTALL_CMD}</pre>
+          </div>
+
+          {/* 第 2 步：项目目录初始化 */}
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Badge className="h-5 w-5 justify-center rounded-full p-0">2</Badge>
+              <Label>在你的项目目录执行初始化</Label>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs text-muted-foreground">你的账号密码（用于拼接完整命令，不会上传）</Label>
+              <div className="relative">
+                <Input
+                  type={showPw ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="重输密码"
+                  className="pr-9"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw((s) => !s)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                >
+                  {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-muted-foreground">初始化命令</Label>
+                <Button variant="outline" size="sm" onClick={() => void copy(fullCommand)}>
+                  <Copy className="h-3.5 w-3.5" />一键复制
+                </Button>
+              </div>
+              <pre className="overflow-auto rounded-md border bg-muted/50 p-4 text-sm font-mono whitespace-pre-wrap break-all">
+                {fullCommand}
+              </pre>
+              <p className="text-xs text-muted-foreground">{cmd.note}</p>
+            </div>
           </div>
 
           <div className="flex justify-end">

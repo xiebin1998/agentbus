@@ -3,12 +3,12 @@ import re
 
 from hub import auth, dynsec, store
 
-NS_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+NS_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 
 
 def _check_ns_id(ns_id: str) -> None:
     if not NS_ID_RE.match(ns_id or ""):
-        raise ValueError(f"非法 ns 编号（小写字母开头，仅小写字母/数字/-/_）: {ns_id!r}")
+        raise ValueError(f"非法 ns 编号（英文/数字开头，仅英文/数字/-/_，不含 /）: {ns_id!r}")
 
 
 def create_namespace_with_admin(db, dynsec, ns_id, name, description,
@@ -44,18 +44,23 @@ def create_account(db, dynsec, username, password, role="user") -> None:
         raise
 
 
-def bind(db, dynsec, ns_id, username) -> None:
+def bind(db, dynsec_client, ns_id, username) -> None:
     store.bind_member(db, ns_id, username)
+    # 超管是纯控制台身份（broker 无 client），不参与总线通信，跳过 dynsec 组绑定
+    if store.get_user(db, username)["role"] == "super_admin":
+        return
     try:
-        dynsec.add_group_client(ns_id, username)
+        dynsec_client.add_group_client(ns_id, username)
     except Exception:
         store.unbind_member(db, ns_id, username)
         raise
 
 
-def unbind(db, dynsec, ns_id, username) -> None:
+def unbind(db, dynsec_client, ns_id, username) -> None:
     store.unbind_member(db, ns_id, username)
-    dynsec.remove_group_client(ns_id, username)  # 不回滚：SQLite 已删，dynsec 残留无害
+    if store.get_user(db, username) and store.get_user(db, username)["role"] == "super_admin":
+        return  # 超管无 broker 身份，无需移除组关系
+    dynsec_client.remove_group_client(ns_id, username)  # 不回滚：SQLite 已删，dynsec 残留无害
 
 
 def reset_password(db, dynsec_client, username, new_password) -> None:

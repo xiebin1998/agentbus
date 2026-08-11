@@ -112,6 +112,8 @@ export const api = {
 
   listAccounts: (ns?: string) =>
     http<Account[]>(`/api/console/accounts${ns ? `?ns=${encodeURIComponent(ns)}` : ""}`),
+  searchAccounts: (q: string) =>
+    http<Account[]>(`/api/console/accounts/search?q=${encodeURIComponent(q)}`),
   createAccount: (b: { username: string; password: string; ns?: string }) =>
     http<{ ok: boolean }>("/api/console/accounts", json(b)),
   deleteAccount: (username: string) =>

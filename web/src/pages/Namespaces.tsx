@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Plus, Pencil, Trash2, Users, Loader2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Plus, Pencil, Trash2, Users, Loader2, Search } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle, ConfirmDialog, Input, Label, Modal,
   Table, TBody, TD, TH, THead, TR,
@@ -142,7 +142,7 @@ export function Namespaces() {
       <ConfirmDialog
         open={!!deleteTarget}
         title="删除命名空间"
-        description={<>确认删除命名空间 <b>{deleteTarget}</b>？将同时移除其 broker 组与角色，成员绑定一并清除。</>}
+        description={<>确认删除命名空间 <b>{deleteTarget}</b>？将同时移除其 broker 组与角色，成员绑定一并清除（成员账号本身不删除）。</>}
         confirmText="删除"
         busy={deleteBusy}
         onConfirm={() => void remove()}
@@ -186,8 +186,9 @@ function CreateNsModal({ open, onClose, onCreated }: {
   return (
     <Modal open={open} title="创建命名空间" onClose={onClose} className="max-w-lg">
       <div className="grid gap-3 md:grid-cols-2">
-        <div className="space-y-1.5"><Label>NS ID（英文，不含 /，创建后不可改）</Label>
-          <Input value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value })} placeholder="pay" /></div>
+        <div className="space-y-1.5"><Label>NS ID（创建后不可改）</Label>
+          <Input value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value })} placeholder="pay" />
+          <p className="text-xs text-muted-foreground">英文/数字开头，可含英文、数字、横杠（-）、下划线（_），不含 /</p></div>
         <div className="space-y-1.5"><Label>显示名称</Label>
           <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="支付" /></div>
         <div className="space-y-1.5 md:col-span-2"><Label>描述（可选）</Label>
@@ -265,12 +266,15 @@ function EditNsModal({ target, onClose, onSaved }: {
   );
 }
 
-/* ── 成员管理 ── */
+/* ── 成员管理（输入检索账号 → 卡片展示 → 点 "+" 添加）── */
 function MembersModal({ target, onClose }: { target: Namespace | null; onClose: () => void }) {
   const { toast } = useToast();
   const [members, setMembers] = useState<Account[]>([]);
-  const [newMember, setNewMember] = useState("");
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Account[]>([]);
+  const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const loadMembers = useCallback(async (ns: string) => {
     try {
@@ -282,20 +286,46 @@ function MembersModal({ target, onClose }: { target: Namespace | null; onClose: 
 
   useEffect(() => {
     if (target) {
-      setNewMember("");
+      setQuery("");
+      setResults([]);
       void loadMembers(target.id);
     } else {
       setMembers([]);
     }
   }, [target, loadMembers]);
 
-  async function addMember() {
-    if (!target || !newMember.trim()) return;
+  // 输入防抖 300ms 检索账号（已存在成员不展示）
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const q = query.trim();
+    if (!q) {
+      setResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    debounceRef.current = setTimeout(() => {
+      api.searchAccounts(q)
+        .then((hits) => {
+          const joined = new Set(members.map((m) => m.username));
+          setResults(hits.filter((h) => !joined.has(h.username)));
+        })
+        .catch(() => setResults([]))
+        .finally(() => setSearching(false));
+    }, 300);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query, members]);
+
+  async function addMember(username: string) {
+    if (!target) return;
     setBusy(true);
     try {
-      await api.addMember(target.id, newMember.trim());
-      toast(`已将 ${newMember} 加入 ${target.id}`);
-      setNewMember("");
+      await api.addMember(target.id, username);
+      toast(`已将 ${username} 加入 ${target.id}`);
+      setQuery("");
+      setResults([]);
       await loadMembers(target.id);
     } catch (e) {
       toast(e instanceof Error ? e.message : "加入失败", false);
@@ -322,11 +352,42 @@ function MembersModal({ target, onClose }: { target: Namespace | null; onClose: 
       onClose={onClose}
       className="max-w-lg"
     >
-      <div className="flex gap-2">
-        <Input placeholder="账号用户名" value={newMember} onChange={(e) => setNewMember(e.target.value)} />
-        <Button onClick={() => void addMember()} disabled={busy}>
-          {busy && <Loader2 className="h-4 w-4 animate-spin" />}<Plus className="h-4 w-4" />加入
-        </Button>
+      <div className="space-y-1.5">
+        <Label>检索账号</Label>
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="输入用户名检索，确认后点 + 添加"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="pl-8"
+          />
+        </div>
+        {query.trim() && (
+          <div className="mt-2 space-y-1.5">
+            {searching ? (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+                <Loader2 className="h-4 w-4 animate-spin" />检索中…
+              </div>
+            ) : results.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-2">未找到可添加的账号（不存在或已是成员）</p>
+            ) : (
+              results.map((a) => (
+                <div key={a.username} className="flex items-center justify-between rounded-md border bg-background/50 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{a.username}</span>
+                    <Badge variant={a.role === "super_admin" ? "default" : a.role === "ns_admin" ? "success" : "secondary"}>
+                      {a.role}
+                    </Badge>
+                  </div>
+                  <Button variant="outline" size="icon" className="h-7 w-7" onClick={() => void addMember(a.username)} disabled={busy} title={`将 ${a.username} 加入`}>
+                    {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+                  </Button>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </div>
       <div className="mt-4">
         <Table>
