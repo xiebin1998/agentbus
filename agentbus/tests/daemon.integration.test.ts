@@ -383,7 +383,8 @@ describe("TASK-29：重连自愈（broker 抖动后自动恢复，PLAN T25）", 
     while (records.length === 0) {
       publishToDaemon({ id: "msg-recon-1", from: "default/be-svc", to: "fe-test", text: "重连后第一条" });
       // 每 300ms 重投一轮，收到即提前退出；总时长受 reconDeadline 约束
-      await waitFor(() => records.length > 0 || Date.now() > reconDeadline, 300);
+      // （固定 300ms sleep 而非 waitFor(deadline 条件)，避免与 deadline 竞态误报超时）
+      await new Promise((r) => setTimeout(r, 300));
       if (records.length === 0 && Date.now() > reconDeadline) {
         throw new Error("waitFor 超时：重连后消息未注入");
       }
