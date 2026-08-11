@@ -18,9 +18,8 @@ Topic:
     /agentbus/ai/channel/{client_id}/message
 
 MCP 工具：
-├── register_agent(name, description, capabilities)  注册 Agent
-├── update_agent(capabilities)                        更新能力
-├── send_message(text, to, type)                      发送消息
+├── update_agent(name?, description?, capabilities)     自述档案（直写 hub DB）
+├── send_message(text, to, type)                        发送消息（仅向在线目标）
 ├── get_agent_info(client_id)                         查询 Agent 信息
 ├── find_agents_by_capability(capability)             按能力查找
 ├── list_agents()                                     列出所有 Agent
@@ -238,39 +237,27 @@ def build_metric_summary(snapshot: Dict[str, dict]) -> dict:
     return {"daemon_count": daemon_count, "totals": totals, "total_senders": total_senders}
 
 
-# ─── TASK-31：MCP 工具双门控（已注册 + daemon 指标新鲜，未达标拒绝）─────────
-
-GATE_METRIC_WINDOW_S = 90  # 指标新鲜窗口：daemon 30s 上报周期 + 2 倍容错
-GATE_EXEMPT_TOOLS = ("register_agent", "get_status")  # 注册豁免防死锁；状态豁免供自检引导
-GATE_HINT = "门控前提：本 Agent 已注册且 daemon 在线上报指标，否则调用将被拒绝。"
+# ─── TASK-32：投递前在线检查（纯函数，窗口与 daemon 30s 上报周期匹配） ─────
 
 
-def tool_gate_error(registered: bool, metric_entry: Optional[dict], now: datetime,
-                    window_s: int = GATE_METRIC_WINDOW_S) -> Optional[str]:
-    """纯函数门控判定：通过返回 None；否则返回拒绝原因（含自愈指引）。
-
-    指标身份（ns/cid）与 MCP 会话 key 同源（daemon selfIdentity），
-    条目取自 MetricsStore 快照；last_seen 为 daemon 上报的 ISO 时间戳。
-    """
-    if not registered:
-        return "本 Agent 尚未注册，请先调用 register_agent 完成注册"
-    last_seen = metric_entry.get("last_seen") if isinstance(metric_entry, dict) else None
-    try:
-        ts = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return "该 Agent 的 daemon 未上报过指标（未上线），请确认 agentbus daemon 正在运行"
-    if ts.tzinfo is None:
-        ts = ts.replace(tzinfo=timezone.utc)
-    if now - ts > timedelta(seconds=window_s):
-        return "该 Agent 的 daemon 指标已过期（离线或上报中断），请确认 agentbus daemon 正在运行"
-    return None
-
-
-def gate_tool_error(name: str, registered: bool, metric_entry: Optional[dict], now: datetime) -> Optional[str]:
-    """接线层：豁免工具直接放行，其余全部走双门控。"""
-    if name in GATE_EXEMPT_TOOLS:
-        return None
-    return tool_gate_error(registered, metric_entry, now)
+def _offline_targets(targets: List[str], snapshot: Dict[str, dict], now: datetime,
+                     window_s: int = 90) -> List[str]:
+    """目标在线判定：metric 条目 last_seen 在窗口内才算在线；无条目/时间戳非法/过期
+    均视为离线。返回离线目标列表（保序）；空目标 → 空列表。"""
+    offline = []
+    for t in targets:
+        entry = snapshot.get(t)
+        last_seen = entry.get("last_seen") if isinstance(entry, dict) else None
+        try:
+            ts = datetime.fromisoformat(str(last_seen).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            offline.append(t)
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if now - ts > timedelta(seconds=window_s):
+            offline.append(t)
+    return offline
 
 
 def can_ack(stored: Optional[dict], caller: str) -> bool:
@@ -657,27 +644,8 @@ def build_tools() -> List[Tool]:
     readonly = ToolAnnotations(readOnlyHint=True)
     return [
         Tool(
-            name="register_agent",
-            description="向 AgentBus hub 注册本 Agent 的信息（名称/描述/能力）。"
-                        "必须先注册才能发送消息与被其他 Agent 按能力发现；仅写注册信息，不发送消息。",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Agent 名称"},
-                    "description": {"type": "string", "description": "Agent 描述"},
-                    "capabilities": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Agent 能力列表",
-                    },
-                    "metadata": {"type": "object", "description": "额外元信息"},
-                },
-                "required": ["name", "description", "capabilities"],
-            },
-        ),
-        Tool(
             name="update_agent",
-            description="更新本 Agent 在 AgentBus hub 上已注册的能力与元信息。" + GATE_HINT,
+            description="更新本 Agent 在 AgentBus hub 上的档案（名称/描述/能力/元信息，自述用途）。",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -692,10 +660,9 @@ def build_tools() -> List[Tool]:
         ),
         Tool(
             name="send_message",
-            description="通过 AgentBus 总线发送消息给指定 Agent。"
+            description="通过 AgentBus 总线发送消息给指定 Agent（仅向在线 Agent 投递，目标离线时整体拒发）。"
                         "仅在用户明确要求跨 Agent 协作、或回复 [AgentBus] 入站消息时使用；"
-                        "回复入站消息需携带 reply_to（取信封中的消息 id）。"
-                        "需先调用 register_agent 注册自身。" + GATE_HINT,
+                        "回复入站消息需携带 reply_to（取信封中的消息 id）。",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -709,7 +676,7 @@ def build_tools() -> List[Tool]:
         ),
         Tool(
             name="ack_message",
-            description="对消息 ID 回执确认（确认收到入站消息）；仅用于回应 [AgentBus] 入站信封，不发送任何内容。" + GATE_HINT,
+            description="对消息 ID 回执确认（确认收到入站消息）；仅用于回应 [AgentBus] 入站信封，不发送任何内容。",
             inputSchema={
                 "type": "object",
                 "properties": {"id": {"type": "string", "description": "消息 ID"}},
@@ -719,13 +686,13 @@ def build_tools() -> List[Tool]:
         ),
         Tool(
             name="list_agents",
-            description="查询所有在线 Agent 及其能力列表（只读查询，不修改任何状态）。" + GATE_HINT,
+            description="查询所有在线 Agent 及其能力列表（只读查询，不修改任何状态）。",
             inputSchema={"type": "object", "properties": {}},
             annotations=readonly,
         ),
         Tool(
             name="get_agent_info",
-            description="查询指定 Agent 的注册详细信息（只读查询）。" + GATE_HINT,
+            description="查询指定 Agent 的注册详细信息（只读查询）。",
             inputSchema={
                 "type": "object",
                 "properties": {"client_id": {"type": "string"}},
@@ -735,7 +702,7 @@ def build_tools() -> List[Tool]:
         ),
         Tool(
             name="find_agents_by_capability",
-            description="按能力查找声明了该能力的 Agent（只读查询）。" + GATE_HINT,
+            description="按能力查找声明了该能力的 Agent（只读查询）。",
             inputSchema={
                 "type": "object",
                 "properties": {"capability": {"type": "string", "description": "要查找的能力"}},
@@ -745,7 +712,7 @@ def build_tools() -> List[Tool]:
         ),
         Tool(
             name="get_status",
-            description="查询本 Agent 当前总线状态（注册/连接信息，只读查询）。",
+            description="查询本 Agent 当前总线状态（档案/连接信息，只读查询）。",
             inputSchema={"type": "object", "properties": {}},
             annotations=readonly,
         ),
@@ -779,28 +746,8 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
         return build_tools()
     
     async def handle_tool(name: str, arguments: dict) -> List[TextContent]:
-        # TASK-31 双门控：未注册或未上线（daemon 指标不新鲜）一律拒绝；register/get_status 豁免
-        gate_err = gate_tool_error(
-            name, session.is_registered(),
-            _metrics_store.snapshot().get(session.key),
-            datetime.now(timezone.utc),
-        )
-        if gate_err:
-            logger.info(f"[{key}] 工具 {name} 被门控拒绝: {gate_err}")
-            return [TextContent(type="text", text=json.dumps({"error": gate_err}, ensure_ascii=False, indent=2))]
-
-        if name == "register_agent":
-            result = session.register(
-                name=arguments["name"],
-                description=arguments["description"],
-                capabilities=arguments["capabilities"],
-                metadata=arguments.get("metadata"),
-            )
-            return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
-        
-        elif name == "update_agent":
-            if not session.is_registered():
-                return [TextContent(type="text", text=json.dumps({"error": "请先调用 register_agent 注册"}, indent=2))]
+        # TASK-32：去门控（TASK-31 双门控已删除）——档案由 hub 中心化，工具全放行
+        if name == "update_agent":
             session.info.update(
                 capabilities=arguments.get("capabilities"),
                 metadata=arguments.get("metadata"),
@@ -808,12 +755,6 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             return [TextContent(type="text", text=json.dumps({"status": "updated", "client_id": client_id}, indent=2))]
         
         elif name == "send_message":
-            if not session.is_registered():
-                return [TextContent(type="text", text=json.dumps({
-                    "error": "请先调用 register_agent 注册自己的信息",
-                    "hint": "register_agent(name, description, capabilities)",
-                }, ensure_ascii=False, indent=2))]
-            
             text = arguments["text"]
             to = arguments["to"]
             msg_type = arguments.get("type", "text")
@@ -824,11 +765,26 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             except ValueError as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))]
             
-            # 目标键解析（无前缀继承发件人 ns）；不在会话表 ≠ 离线，未知目标尽力发布（架构 5.5）
+            # 目标键解析（无前缀继承发件人 ns）；投递前统一查指标库在线态（TASK-32）
             target_keys = []
             for t in targets:
                 t_ns, cid, _tool = resolve_target(t)
                 target_keys.append(session_key(cid, t_ns if t_ns is not None else session.ns))
+
+            snapshot = _metrics_store.snapshot()
+            offline = _offline_targets(target_keys, snapshot, datetime.now(timezone.utc))
+            if offline:
+                err = {
+                    "error": "目标离线，已拒发（仅向在线 Agent 投递）",
+                    "offline_targets": offline,
+                    "hint": "可稍后重试或先确认对方 daemon 在运行",
+                }
+                no_profile = [k for k in offline if k not in snapshot]
+                if no_profile:
+                    err["no_profile_hint"] = ("未找到档案，等待 daemon 上线自动建占位或运行 agentbus init："
+                                              + ", ".join(no_profile))
+                return [TextContent(type="text", text=json.dumps(err, ensure_ascii=False, indent=2))]
+
             delivered, unknown = plan_send_targets(target_keys, set(_sessions.keys()))
             
             # 就绪门控（TASK-13 冒烟缺陷）：等自身收件 topic 订阅完成再发，防早到回复丢失
@@ -893,9 +849,7 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
                 "mqtt_connected": session.connected,
                 "sub_topic": session.sub_topic,
                 "mqtt_broker": f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}",
-                # TASK-31：自检引导——暴露门控状态，agent 可据此定位被拒原因
                 "metric_last_seen": (entry or {}).get("last_seen"),
-                "gate_error": tool_gate_error(session.is_registered(), entry, datetime.now(timezone.utc)),
                 **session.info.to_dict(),
             }, ensure_ascii=False, indent=2))]
         
@@ -1457,8 +1411,7 @@ async def sse_endpoint(request: Request):
         if key in _sessions:
             _sessions[key].close()  # close 内部已从路由表移除
         _servers.pop(key, None)
-        # 断线清理（11.8 缺陷 2）：会话消失后同步移除元信息，防止 _agent_info 泄漏
-        _agent_info.pop(key, None)
+        # TASK-32：档案 hub 中心化（SQLite agents 表），断连不再清 _agent_info/注册态
         logger.info(f"[{key}] SSE disconnected")
     
     # SSE 流已在 connect_sse 内发送完毕，返回空响应避免 starlette 报 TypeError

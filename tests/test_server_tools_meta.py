@@ -25,7 +25,7 @@ class TestReadOnlyHint:
 
     def test_写状态类工具不声明只读(self):
         tools = _by_name(build_tools())
-        for name in ["register_agent", "update_agent"]:
+        for name in ["update_agent"]:
             t = tools[name]
             assert t.annotations is None or not t.annotations.readOnlyHint
 
@@ -54,5 +54,5 @@ class TestDescriptions:
 
     def test_工具集完整性(self):
         names = set(_by_name(build_tools()).keys())
-        assert {"register_agent", "update_agent", "send_message", "ack_message",
+        assert {"update_agent", "send_message", "ack_message",
                 "list_agents", "get_agent_info"} <= names

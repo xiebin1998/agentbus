@@ -1,85 +1,79 @@
 """
-TASK-31: MCP 工具双门控 —— 已注册 + daemon 指标新鲜（未达标拒绝，带自愈指引）
-
-- tool_gate_error 纯函数：未注册/无指标/指标过期 → 拒绝文案；新鲜 → None 放行
-- gate_tool_error：入口接线层（豁免 register_agent/get_status，其余走双门控）
-- build_tools 描述声明门控前提（LLM 可见，利于自愈）
-- /api/console/agents：注册信息 × 在线状态 × daemon 指标 三源合并（TASK-31 问题2）
+TASK-32: 去门控回归 —— 无门控全放行；register_agent 工具已删除（调用返回未知工具）；
+保留 TASK-31 三源合并（注册信息 × 在线状态 × daemon 指标）。
 """
-from datetime import datetime, timedelta, timezone
+import asyncio
 
 import pytest
 
 import server
 
 
-def _fresh_entry(now: datetime) -> dict:
-    return {"last_seen": now.isoformat(), "report_count": 3, "metrics": {"injected_ok": 1}}
+class TestGateRemoved:
+    def test_门控符号已删除(self):
+        for attr in ("tool_gate_error", "gate_tool_error",
+                     "GATE_METRIC_WINDOW_S", "GATE_EXEMPT_TOOLS", "GATE_HINT"):
+            assert not hasattr(server, attr), f"{attr} 应已删除"
 
+    def test_register_agent_已移出工具清单(self):
+        names = {t.name for t in server.build_tools()}
+        assert "register_agent" not in names
+        assert {"update_agent", "send_message", "ack_message", "list_agents",
+                "get_agent_info", "find_agents_by_capability", "get_status"} <= names
 
-def _gate(name: str, registered: bool, entry, now: datetime):
-    return server.gate_tool_error(name, registered, entry, now)
+    def test_工具描述不再声明门控前提(self):
+        for t in server.build_tools():
+            assert "门控" not in t.description, f"{t.name} 描述残留门控文案"
 
-
-class TestToolGateError:
-    def test_未注册拒绝且指引_register_agent(self):
-        now = datetime.now(timezone.utc)
-        err = server.tool_gate_error(False, _fresh_entry(now), now)
-        assert err is not None and "register_agent" in err
-
-    def test_已注册但无指标条目拒绝且提及_daemon(self):
-        now = datetime.now(timezone.utc)
-        err = server.tool_gate_error(True, None, now)
-        assert err is not None and "daemon" in err
-
-    def test_指标过期拒绝(self):
-        now = datetime.now(timezone.utc)
-        stale = {"last_seen": (now - timedelta(seconds=120)).isoformat()}
-        err = server.tool_gate_error(True, stale, now)
-        assert err is not None and "daemon" in err
-
-    def test_窗口内新鲜指标放行(self):
-        now = datetime.now(timezone.utc)
-        assert server.tool_gate_error(True, _fresh_entry(now), now) is None
-        # 边界：60s 前的上报仍在 90s 窗口内
-        ok = {"last_seen": (now - timedelta(seconds=60)).isoformat()}
-        assert server.tool_gate_error(True, ok, now) is None
-
-    def test_非法时间戳按未上报处理(self):
-        now = datetime.now(timezone.utc)
-        assert server.tool_gate_error(True, {"last_seen": "not-a-ts"}, now) is not None
-        assert server.tool_gate_error(True, {}, now) is not None
-
-    def test_兼容_Z后缀时间戳(self):
-        now = datetime.now(timezone.utc)
-        entry = {"last_seen": now.isoformat().replace("+00:00", "Z")}
-        assert server.tool_gate_error(True, entry, now) is None
-
-
-class TestGateToolError:
-    def test_豁免工具不受门控(self):
-        now = datetime.now(timezone.utc)
-        assert _gate("register_agent", False, None, now) is None
-        assert _gate("get_status", False, None, now) is None
-
-    def test_业务工具未注册拒绝(self):
-        now = datetime.now(timezone.utc)
-        for name in ["send_message", "update_agent", "ack_message",
-                     "list_agents", "get_agent_info", "find_agents_by_capability"]:
-            assert _gate(name, False, _fresh_entry(now), now) is not None
-
-    def test_业务工具注册且指标新鲜放行(self):
-        now = datetime.now(timezone.utc)
-        assert _gate("send_message", True, _fresh_entry(now), now) is None
-
-
-class TestToolDescriptionsMentionGate:
-    def test_受门控工具描述声明前提(self):
+    def test_send_message_描述声明仅向在线投递(self):
         tools = {t.name: t for t in server.build_tools()}
-        for name in ["send_message", "update_agent", "ack_message",
-                     "list_agents", "get_agent_info", "find_agents_by_capability"]:
-            assert "门控" in tools[name].description or "拒绝" in tools[name].description, \
-                f"{name} 描述应声明门控前提"
+        assert "在线" in tools["send_message"].description
+
+
+async def _call_tool(name, arguments, client_id="gate-t", ns="iot"):
+    """在运行中的事件循环内建 MCP server 并直达 call_tool handler（预置假 mcp_session）"""
+    from mcp import types
+    srv = server.create_mcp_server(client_id, ns)
+    server._sessions[session_key_for(client_id, ns)].mcp_session = object()
+    handler = srv.request_handlers[types.CallToolRequest]
+    req = types.CallToolRequest(method="tools/call",
+                                params=types.CallToolRequestParams(name=name, arguments=arguments))
+    result = await handler(req)
+    return result.root.content[0].text
+
+
+def session_key_for(client_id, ns):
+    return f"{ns}/{client_id}" if ns else client_id
+
+
+class TestNoGateDispatch:
+    @pytest.fixture(autouse=True)
+    def isolate(self):
+        saved = (dict(server._sessions), dict(server._agent_info))
+        server._sessions.clear()
+        server._agent_info.clear()
+        yield
+        server._sessions.clear(); server._sessions.update(saved[0])
+        server._agent_info.clear(); server._agent_info.update(saved[1])
+
+    def test_register_agent_调用返回未知工具(self):
+        text = asyncio.run(_call_tool("register_agent",
+                                      {"name": "x", "description": "y", "capabilities": []}))
+        assert "Unknown tool" in text
+
+    def test_未注册未上线不再拦截只读工具(self):
+        """无门控：list_agents/get_status 不经注册、不经指标直接放行"""
+        import json
+
+        async def run():
+            listing = json.loads(await _call_tool("list_agents", {}))
+            status = json.loads(await _call_tool("get_status", {}))
+            return listing, status
+
+        listing, status = asyncio.run(run())
+        assert isinstance(listing, list)
+        # to_dict 展开覆盖 client_id 为完整身份（既有行为）
+        assert status["client_id"] == "iot/gate-t"
 
 
 class TestBuildAgentDetail:
@@ -126,7 +120,10 @@ class TestConsoleAgentsApi:
         monkeypatch.setattr(server, "_sessions", {})
         monkeypatch.setattr(server, "_metrics_store", server.MetricsStore())
         from starlette.testclient import TestClient
-        return TestClient(server.app)
+        yield TestClient(server.app)
+        if server.DB_CONN is not None:
+            server.DB_CONN.close()
+            server.DB_CONN = None
 
     def test_未登录_401(self, env):
         assert env.get("/api/console/agents?ns=iot").status_code == 401
