@@ -707,7 +707,9 @@ class AgentSession:
         }
     
     def send_message(self, text: str, to: Union[str, List[str]], msg_type: str = "text",
-                     session_id: Optional[str] = None) -> dict:
+                     session_id: Optional[str] = None,
+                     expect_reply: bool = False,
+                     reply_to: Optional[str] = None) -> dict:
         """发送消息给目标 Agent（支持多人）"""
         msg_id = f"msg-{uuid.uuid4().hex[:12]}"
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -726,6 +728,11 @@ class AgentSession:
         # Plan 3 问题 2：发送方本地会话 ID（可选），回复时回显，发起方据此注回原会话
         if isinstance(session_id, str) and session_id.strip():
             payload["session"] = session_id.strip()
+        # 阻塞等待模式：告知接收方需要回复
+        if expect_reply:
+            payload["expect_reply"] = True
+        if isinstance(reply_to, str) and reply_to.strip():
+            payload["reply_to"] = reply_to.strip()
         
         sent_to = split_targets(to)
         pub_topics = build_pub_topics(to, self.ns)
@@ -751,6 +758,61 @@ class AgentSession:
         # TASK-24：会话下线从路由表移除；共享连接由 lifespan 统一停止
         _sessions.pop(self.key, None)
         logger.info(f"[{self.client_id}] Session closed")
+
+
+# ─── 阻塞等待回复 ───────────────────────────────────────────────────────────
+
+async def send_message_with_wait(
+    session: AgentSession,
+    text: str,
+    to: List[str],
+    msg_id: str,
+    timeout: float = 300.0,
+    session_id: Optional[str] = None,
+    reply_to: Optional[str] = None,
+) -> dict:
+    """发送消息并阻塞等待回复
+    
+    Args:
+        session: 发送方会话
+        text: 消息正文
+        to: 目标列表
+        msg_id: 消息 ID
+        timeout: 等待超时（秒），0 表示无限
+        session_id: 会话 ID
+        reply_to: 回复的原消息 ID
+        
+    Returns:
+        {"status": "replied", "reply": ...} 或 {"status": "timeout", ...}
+    """
+    # 注册等待
+    pending = PendingReply()
+    _pending_replies[msg_id] = pending
+    
+    try:
+        # 发送消息（携带 expect_reply=true）
+        session.send_message(text, to, "text", session_id, expect_reply=True, reply_to=reply_to)
+        
+        # 无限等待或超时等待
+        if timeout <= 0:
+            await pending.event.wait()
+        else:
+            await asyncio.wait_for(pending.event.wait(), timeout=timeout)
+        
+        if pending.error:
+            return {"status": "error", "error": pending.error, "msg_id": msg_id}
+        
+        return {
+            "status": "replied",
+            "msg_id": msg_id,
+            "reply": pending.reply,
+        }
+    except asyncio.TimeoutError:
+        return {"status": "timeout", "msg_id": msg_id, "hint": f"等待 {timeout}s 超时"}
+    except Exception as e:
+        return {"status": "error", "error": str(e), "msg_id": msg_id}
+    finally:
+        _pending_replies.pop(msg_id, None)
 
 
 # ─── MCP 工具清单（架构 5.6-C：描述写使用边界 + readOnlyHint）──────────────────
@@ -790,6 +852,7 @@ def build_tools() -> List[Tool]:
         Tool(
             name="send_message",
             description="通过 AgentBus 总线发送消息给指定 Agent（仅向在线 Agent 投递，目标离线时整体拒发）。"
+                        "wait_reply=True 时会阻塞等待回复（默认超时 300 秒）。"
                         "仅在用户明确要求跨 Agent 协作、或回复 [AgentBus] 入站消息时使用；"
                         "回复入站消息需携带 reply_to（取信封中的消息 id）。",
             inputSchema={
@@ -798,10 +861,12 @@ def build_tools() -> List[Tool]:
                     "text": {"type": "string", "description": "消息内容（不可为空）"},
                     "to": {"type": ["string", "array"], "description": "目标 Agent 的 client_id"},
                     "type": {"type": "string", "default": "text"},
+                    "wait_reply": {"type": "boolean", "default": False, "description": "是否阻塞等待回复"},
+                    "timeout": {"type": "number", "default": 300, "description": "等待超时（秒），0=无限等待"},
+                    "reply_to": {"type": "string", "description": "回复的原消息 ID（从信封头 id 字段获取）"},
                     "session_id": {
                         "type": "string",
-                        "description": "发送方本地会话 ID（可选）：发起新消息时携带，对方回复将回显此值，"
-                                       "使回复注回本会话而非新建会话（取 [AgentBus] 信封头 session 字段）",
+                        "description": "发送方本地会话 ID（可选，阻塞模式下无需传递）",
                     },
                 },
                 "required": ["text", "to"],
@@ -905,6 +970,9 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             text = arguments["text"]
             to = arguments["to"]
             msg_type = arguments.get("type", "text")
+            wait_reply = arguments.get("wait_reply", False)
+            timeout = arguments.get("timeout", 300)
+            reply_to = arguments.get("reply_to")
             session_id = arguments.get("session_id")
 
             # Plan 3 问题 0：空/纯空白正文拒发（此前只校验上限，空串照发导致对端收到空信封）
@@ -950,8 +1018,21 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
                     "error": "MQTT 连接尚未就绪（收件订阅未完成），请稍后重试",
                 }, ensure_ascii=False, indent=2))]
             
+            # 阻塞等待回复模式
+            if wait_reply:
+                msg_id = f"msg-{uuid.uuid4().hex[:12]}"
+                result = await send_message_with_wait(
+                    session, text, delivered, msg_id,
+                    timeout=float(timeout),
+                    session_id=session_id if isinstance(session_id, str) else None,
+                    reply_to=reply_to,
+                )
+                return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+            
+            # 异步发送模式（原有逻辑）
             result = session.send_message(text, delivered, msg_type,
-                                          session_id if isinstance(session_id, str) else None)
+                                          session_id if isinstance(session_id, str) else None,
+                                          expect_reply=False, reply_to=reply_to)
             if unknown:
                 result["unconfirmed"] = unknown
                 result["note"] = "以下目标未保持 SSE 会话（可能是纯 MQTT 直连），已尽力发布，在线状态未知"
