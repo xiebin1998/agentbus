@@ -80,7 +80,7 @@ describe("client_id 默认随机 / 存量保留", () => {
       client_id: "legacy-id", ns: "pay",
       broker: { host: "localhost", port: 18830 }, sse_url: "http://localhost:8000/sse",
       default_tool: "qoder", allowed_senders: [], tools: { qoder: {} },
-      ack: true, inbound_mode: "readonly",
+      ack: true, inbound_mode: "readonly", // 旧版配置残留字段：验证静默兼容（validateConfig 忽略）
     }), "utf-8");
     const { deps } = fakeDeps();
     const report = await runInit({ yes: true, tools: ["qoder"] }, deps);
@@ -95,7 +95,7 @@ describe("client_id 默认随机 / 存量保留", () => {
       client_id: "legacy-id", ns: "pay",
       broker: { host: "localhost", port: 18830 }, sse_url: "http://x:8000/sse",
       default_tool: "qoder", allowed_senders: [], tools: { qoder: {} },
-      ack: true, inbound_mode: "readonly",
+      ack: true, inbound_mode: "readonly", // 旧版配置残留字段：验证静默兼容（validateConfig 忽略）
     }), "utf-8");
     const { deps } = fakeDeps();
     await runInit({ yes: true, tools: ["qoder"], clientId: "my-id" }, deps);
@@ -112,7 +112,7 @@ describe("--from 克隆源配置", () => {
       broker: { host: "10.0.0.9", port: 1883, username: "bob", password: "pw2" },
       sse_url: "http://10.0.0.9:8000/sse?client_id=src-id&ns=team-a",
       default_tool: "kilo", allowed_senders: [], tools: { kilo: {}, qoder: {} },
-      ack: true, inbound_mode: "readonly", ...extra,
+      ack: true, inbound_mode: "readonly", ...extra, // inbound_mode 为旧版残留字段：验证克隆静默兼容
     }), "utf-8");
     return src;
   }

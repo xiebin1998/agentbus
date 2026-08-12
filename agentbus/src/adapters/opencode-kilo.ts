@@ -4,7 +4,7 @@
  * 实测 kilo 7.4.17（2026-08-09）：
  * - `run` 子命令 + 位置参数消息；`--title` 会话命名；`-s/--session` 续接
  * - `--format json` 输出 NDJSON 事件流 → 取末条文本事件（架构 4.6 表）
- * - `--auto` 全自动批准（full 档）；无只读权限档 → readonly 仅信封约束（4.7 回退）
+ * - `--auto` 全自动批准（本工具无只读权限档 → 入站只读靠信封约束 + 隔离层兜底，4.7）
  * - 新会话 id 不由 daemon 预生成，从事件流 session 事件中提取
  *
  * TASK-27 进阶通道（架构 5.4）实测 opencode（2026-08-10）：
@@ -41,24 +41,19 @@ export class OpenCodeKiloAdapter {
     this.timeoutMs = cfg.timeoutMs ?? 600_000;
   }
 
-  /** 建会话参数（full 档）；会话名 = 来源 client_id（架构 4.3） */
+  /** 建会话参数；会话名 = 来源 client_id（架构 4.3） */
   createSessionArgs(message: string, sessionName: string): string[] {
-    return this.fullArgs(message, sessionName);
+    return this.turnArgs(message, sessionName);
   }
 
-  /** 续接参数（full 档） */
+  /** 续接参数 */
   injectArgs(message: string, sessionId: string): string[] {
     return this.baseArgs(message, ["-s", sessionId]);
   }
 
-  /** full 信任级别：--auto 全自动批准 */
-  fullArgs(message: string, sessionName: string): string[] {
+  /** 回合参数：--auto 全自动批准（无只读权限档 → 靠信封约束 + 隔离层兜底，架构 4.7） */
+  turnArgs(message: string, sessionName: string): string[] {
     return this.baseArgs(message, ["--title", sessionName, "--auto"]);
-  }
-
-  /** readonly 信任级别：无权限档可加，仅信封约束（架构 4.7 三层防线回退） */
-  readonlyArgs(message: string, sessionName: string): string[] {
-    return this.baseArgs(message, ["--title", sessionName]);
   }
 
   /** 是否支持 serve 模式（TASK-27 实测：opencode 有 serve 子命令，kilo 无） */
@@ -71,7 +66,7 @@ export class OpenCodeKiloAdapter {
     return ["serve", "--port", String(port), "--hostname", hostname];
   }
 
-  /** attach 建会话参数（full 档）：连已就绪 serve，免冷启动 */
+  /** attach 建会话参数：连已就绪 serve，免冷启动 */
   attachCreateSessionArgs(serverUrl: string, message: string, sessionName: string): string[] {
     return this.attachBaseArgs(serverUrl, message, ["--title", sessionName, "--auto"]);
   }

@@ -59,10 +59,9 @@ describe.each([{ binary: "kilo" }, { binary: "opencode" }])(
         expect(args).toContain("--format");
       });
 
-      it("fullArgs 追加 --auto；readonlyArgs 不加权限参数（仅信封约束）", () => {
+      it("turnArgs 恒带 --auto（固定形态；无只读权限档，靠信封 + 隔离层约束）", () => {
         const adapter = makeAdapter();
-        expect(adapter.fullArgs("m", "be-svc")).toContain("--auto");
-        expect(adapter.readonlyArgs("m", "be-svc")).not.toContain("--auto");
+        expect(adapter.turnArgs("m", "be-svc")).toContain("--auto");
       });
 
       it("spawn cmd 使用配置的二进制名", async () => {

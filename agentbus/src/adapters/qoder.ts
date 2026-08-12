@@ -64,7 +64,7 @@ export class QoderAdapter {
     return this.runTurn(this.readonlyArgs(text, sessionId), sessionId);
   }
 
-  /** 续接注入（与建会话同命令形态；恒只读档） */
+  /** 续接注入（与 injectWith 同实现的对称 API；恒只读档） */
   async inject(text: string, sessionId: string): Promise<AdapterTurn> {
     return this.runTurn(this.readonlyArgs(text, sessionId), sessionId);
   }
