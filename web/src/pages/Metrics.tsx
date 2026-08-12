@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Pencil, RefreshCw, Trash2, Users } from "lucide-react";
+import { Activity, Loader2, Pencil, RefreshCw, Trash2, Users } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle,
   ConfirmDialog,
   Input, Label, Modal,
   Table, TBody, TD, TH, THead, TR,
 } from "@/components/ui";
-import { api, AgentEntry, MetricsPayload } from "@/lib/api";
+import { api, AgentEntry, MetricsPayload, DaemonEntry } from "@/lib/api";
 import { useNs } from "@/context/NsContext";
 import { useToast } from "@/components/Toaster";
+import { formatTime } from "@/lib/utils";
 
 const REFRESH_MS = 5000;
 /** 名称上限（与后端 AGENT_NAME_MAX 对齐） */
@@ -48,6 +49,12 @@ export function Metrics() {
     return () => clearInterval(timer);
   }, [current, load]);
 
+  // 过滤出在线的 Daemon（离线的不显示）
+  const onlineDaemons = Object.entries(payload?.daemons ?? {}).filter(([key]) => {
+    // 从 presence 判断是否在线
+    return payload?.overview.online_agents.includes(key);
+  });
+
   return (
     <div className="space-y-6">
       <Card>
@@ -78,6 +85,33 @@ export function Metrics() {
           )}
         </CardContent>
       </Card>
+
+      {current && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Activity className="h-4 w-4 text-primary" />Daemon 明细
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <THead>
+                <TR>
+                  <TH>Daemon ID</TH><TH>Agent ID</TH><TH>状态</TH><TH>最近上报</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {onlineDaemons.length === 0 && (
+                  <TR><TD colSpan={4} className="text-center text-muted-foreground py-6">该命名空间暂无在线 Daemon</TD></TR>
+                )}
+                {onlineDaemons.map(([id, d]) => (
+                  <DaemonRow key={id} id={id} d={d} />
+                ))}
+              </TBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
 
       {current && (
         <Card>
@@ -151,6 +185,32 @@ function StatCard({ label, value }: { label: string; value: number }) {
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
     </div>
+  );
+}
+
+/** daemon key 形如 ns/cid → cid */
+function agentIdFromDaemonKey(key: string): string {
+  const slash = key.indexOf("/");
+  const cid = slash >= 0 ? key.slice(slash + 1).trim() : "";
+  return cid || "-";
+}
+
+function DaemonRow({ id, d }: { id: string; d: DaemonEntry }) {
+  return (
+    <TR>
+      <TD className="font-medium">{id}</TD>
+      <TD className="text-muted-foreground">{agentIdFromDaemonKey(id)}</TD>
+      <TD>
+        <Badge variant="success">在线</Badge>
+      </TD>
+      <TD>
+        {d.last_seen ? (
+          <Badge variant="success">{formatTime(d.last_seen)}</Badge>
+        ) : (
+          <span className="text-muted-foreground">-</span>
+        )}
+      </TD>
+    </TR>
   );
 }
 

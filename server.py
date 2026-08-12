@@ -503,7 +503,8 @@ def start_shared_client() -> None:
             return
         if msg.topic.startswith(TOPIC_STATUS_PREFIX):
             _handle_presence_message(msg)
-            returnkey = route_message_key(msg.topic)
+            return
+        key = route_message_key(msg.topic)
         if key is None:
             return
         session = _sessions.get(key)
