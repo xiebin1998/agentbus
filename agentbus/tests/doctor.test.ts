@@ -245,4 +245,31 @@ describe("TASK-32: 身份冲突检查（daemon.log 高频重连指纹）", () =>
     const check = report.checks.find((c) => c.name === "身份冲突");
     expect(check!.ok).toBe(false);
   });
+
+  it("历史残留 identity_conflict（其后有新的 daemon started）→ 不误报", async () => {
+    mkdirSync(join(workDir, "logs"), { recursive: true });
+    writeFileSync(
+      join(workDir, "logs", "daemon.log"),
+      "2026-08-11T05:31:00.000Z [ERROR] MQTT identity_conflict: 旧生命周期残留\n" +
+        "2026-08-12T06:10:00.000Z [INFO] daemon started: iot/ag-1 订阅 /agentbus/ai/channel/iot/#\n" +
+        "2026-08-12T06:10:01.000Z [INFO] MQTT connected\n",
+      "utf-8",
+    );
+    const report = await runDoctor(baseDeps());
+    const check = report.checks.find((c) => c.name === "身份冲突");
+    expect(check!.ok).toBe(true);
+  });
+
+  it("本次生命周期（最后 daemon started 之后）出现 identity_conflict → 仍失败", async () => {
+    mkdirSync(join(workDir, "logs"), { recursive: true });
+    writeFileSync(
+      join(workDir, "logs", "daemon.log"),
+      "2026-08-12T06:10:00.000Z [INFO] daemon started: iot/ag-1 订阅 x\n" +
+        "2026-08-12T06:12:00.000Z [ERROR] MQTT identity_conflict: 60s 内 3 次非主动断连\n",
+      "utf-8",
+    );
+    const report = await runDoctor(baseDeps());
+    const check = report.checks.find((c) => c.name === "身份冲突");
+    expect(check!.ok).toBe(false);
+  });
 });

@@ -216,7 +216,10 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   return { ok: checks.every((c) => c.ok), checks };
 }
 
-/** 读 daemon.log 尾部：出现 identity_conflict 或高频重连（≥6 次 reconnecting）即判冲突嫌疑 */
+/** 读 daemon.log 尾部：只扫本次生命周期（最后一次 "daemon started" 之后），
+ * 出现 identity_conflict 或高频重连（≥6 次 reconnecting）即判冲突嫌疑；
+ * 无启动标记（日志被截断/新文件）则回退全尾扫描，保守不放松。
+ * 0.2.10 修复：历史残留指纹不再误报（daemon.log 跨重启追加）。 */
 function checkIdentityConflict(workDir: string): DoctorCheck {
   const guidance =
     "疑似 client_id 碰撞互踢：重跑 agentbus init 重新随机 client_id，或用 init --client-id 指定唯一身份";
@@ -227,10 +230,12 @@ function checkIdentityConflict(workDir: string): DoctorCheck {
   } catch {
     return { name: "身份冲突", ok: true, detail: "无 daemon 日志，无需检查" };
   }
-  if (tail.includes("identity_conflict")) {
+  const startIdx = tail.lastIndexOf("daemon started");
+  const scope = startIdx >= 0 ? tail.slice(startIdx) : tail;
+  if (scope.includes("identity_conflict")) {
     return { name: "身份冲突", ok: false, detail: `日志已记录身份冲突。${guidance}` };
   }
-  const reconnects = (tail.match(/MQTT reconnecting/g) ?? []).length;
+  const reconnects = (scope.match(/MQTT reconnecting/g) ?? []).length;
   if (reconnects >= 6) {
     return { name: "身份冲突", ok: false, detail: `日志高频重连（${reconnects} 次）。${guidance}` };
   }
