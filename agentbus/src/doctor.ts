@@ -181,7 +181,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
             ok: r.exitCode === 0,
             detail:
               r.exitCode === 0
-                ? "已启用，工具链可用（readonly 回合物理禁写）"
+                ? "已启用，工具链可用（入站回合物理禁写）"
                 : `${probe.bin} 不可用：${r.stderr.trim().slice(0, 80) || "exit " + r.exitCode}`,
           });
         } catch {
@@ -189,7 +189,7 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         }
       }
     } else {
-      checks.push({ name: "隔离", ok: true, detail: "未启用（可选：config 设 isolation: true 启用 readonly 回合 OS 层物理禁写）" });
+      checks.push({ name: "隔离", ok: true, detail: "未启用（可选：config 设 isolation: true 启用入站回合 OS 层物理禁写）" });
     }
   }
 

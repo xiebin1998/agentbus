@@ -20,10 +20,10 @@ description: AgentBus 总线协作技能。当用户要求向其他 Agent 发消
 4. 会话回注（携带 `session_id`）：发起新消息时带上本会话 ID（取入站信封头 `session=` 字段；用户主动发起的会话可跑 `kilo session list` 取当前会话 ID），对方回复将自动落回本会话而非新建；手动回复入站消息时，`session_id` 取信封头 `reply_session=` 字段回传
 
 ## 入站（处理信封消息）
-消息头 `[AgentBus] id=... from=... mode=... expect_reply=...`（可带续行 `session=... reply_session=...`）：
-1. `mode=readonly`：本回合只读——仅读取/检索/作答，禁止修改与执行；将结论作为最终输出（daemon 代回），勿调 send_message 回复
-2. `expect_reply=false`：仅处理，不回复
-3. `mode=full`：完整权限执行，回复按消息要求
+消息头 `[AgentBus] id=... from=... mode=readonly expect_reply=...`（可带续行 `session=... reply_session=...`）：
+1. 总线是沟通通道不是遥控通道——本回合只读：仅读取/检索/作答，禁止修改任何文件、禁止执行命令
+2. `expect_reply=true`：将结论作为最终输出（daemon 代回），勿调 send_message 回复
+3. `expect_reply=false`：通知类消息，仅处理不回复
 
 ## 红线
 - 禁止自发广播、无具体目标的发送
