@@ -4,12 +4,13 @@
  * TASK-12：init/doctor/status 落地；TASK-14：uninstall 落地；daemon → TASK-06
  */
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkbox, input, select } from "@inquirer/prompts";
 import { Command } from "commander";
 import { ConfigError, loadConfig } from "./config.js";
+import { restartDaemonBackground, startDaemonBackground, type BackgroundDeps } from "./daemon/background.js";
 import { runAutostartInstall, runAutostartStatus, runAutostartUninstall } from "./autostart.js";
 import { Daemon } from "./daemon/daemon.js";
 import { isProcessAlive } from "./daemon/pid.js";
@@ -45,6 +46,30 @@ function loadOrExit(configOpt?: string) {
     }
     process.exit(1);
   }
+}
+
+/** 后台启动真实依赖：pid 文件读取 / 进程探测 / detached spawn / SIGTERM kill / 真睡 */
+function realBackgroundDeps(workDir: string): BackgroundDeps {
+  const pidFile = join(workDir, "daemon.pid");
+  return {
+    pidOf: () => {
+      try {
+        const pid = Number.parseInt(readFileSync(pidFile, "utf-8").trim(), 10);
+        return Number.isInteger(pid) && pid > 0 ? pid : null;
+      } catch {
+        return null;
+      }
+    },
+    isAlive: isProcessAlive,
+    spawn: (cmd, args, opts) => {
+      spawn(cmd, args, { ...opts, windowsHide: true }).unref();
+    },
+    kill: (pid) => {
+      try { process.kill(pid, "SIGTERM"); } catch { /* 已死 */ }
+    },
+    // 同步睡：CLI 同步流程内轮询 pid，Atomics.wait 不占事件循环回调
+    sleepMs: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+  };
 }
 
 /** 交互问答器（架构 6.2 交互控件：checkbox/select/input） */
@@ -213,25 +238,43 @@ export function buildProgram(): Command {
   const daemon = program.command("daemon").description("daemon 生命周期管理");
   daemon
     .command("start")
-    .description("启动 AgentBus Daemon（前台运行，Ctrl+C 退出）")
+    .description("启动 AgentBus Daemon（默认后台运行；--foreground 前台调试，Ctrl+C 退出）")
     .option("-c, --config <path>", "config.json 路径（默认 .agentbus/config.json）")
-    .action((opts: { config?: string }) => {
+    .option("-f, --foreground", "前台运行（Ctrl+C 退出，调试用）")
+    .action((opts: { config?: string; foreground?: boolean }) => {
       const { config, workDir } = loadOrExit(opts.config);
       if (!existsSync(workDir)) mkdirSync(workDir, { recursive: true });
-      const d = new Daemon({ config, workDir });
-      const result = d.start();
-      if (!result.started) {
-        console.error(result.reason);
+      if (opts.foreground) {
+        const d = new Daemon({ config, workDir });
+        const result = d.start();
+        if (!result.started) {
+          console.error(result.reason);
+          process.exit(1);
+        }
+        console.log(result.reason);
+        console.log(`订阅 /agentbus/ai/channel/${config.ns}/${config.client_id}/message（Ctrl+C 退出）`);
+        const shutdown = () => {
+          // stop 异步：等 MQTT 关闭完成再退，避免关闭日志丢失
+          void d.stop().finally(() => process.exit(0));
+        };
+        process.on("SIGINT", shutdown);
+        process.on("SIGTERM", shutdown);
+        return;
+      }
+      // 默认后台：detached 拉起前台子进程，父进程打印结果即退
+      const r = startDaemonBackground(
+        { nodePath: process.execPath, binPath: process.argv[1], configPath: join(workDir, "config.json") },
+        realBackgroundDeps(workDir),
+      );
+      if (r.started) {
+        console.log(`daemon 已在后台启动（pid ${r.pid}），日志：${join(workDir, "logs", "daemon.log")}`);
+        console.log("停止：agentbus daemon stop；重启：agentbus daemon restart");
+      } else if (r.alreadyRunning) {
+        console.log(`daemon 已在运行（pid ${r.alreadyRunning}），无需重复启动`);
+      } else {
+        console.error(r.reason);
         process.exit(1);
       }
-      console.log(result.reason);
-      console.log(`订阅 /agentbus/ai/channel/${config.ns}/${config.client_id}/message（Ctrl+C 退出）`);
-      const shutdown = () => {
-        // stop 异步：等 MQTT 关闭完成再退，避免关闭日志丢失
-        void d.stop().finally(() => process.exit(0));
-      };
-      process.on("SIGINT", shutdown);
-      process.on("SIGTERM", shutdown);
     });
   daemon
     .command("stop")
@@ -268,6 +311,25 @@ export function buildProgram(): Command {
         } catch {
           /* config 不可读时跳过回收，不影响 stop 本身 */
         }
+      }
+    });
+  daemon
+    .command("restart")
+    .description("重启 daemon（停旧进程 + 后台拉起）")
+    .option("-c, --config <path>", "config.json 路径（默认 .agentbus/config.json）")
+    .action((opts: { config?: string }) => {
+      const { workDir } = loadOrExit(opts.config);
+      const r = restartDaemonBackground(
+        { nodePath: process.execPath, binPath: process.argv[1], configPath: join(workDir, "config.json") },
+        realBackgroundDeps(workDir),
+      );
+      if (r.started) {
+        console.log(`daemon 已重启（pid ${r.pid}），日志：${join(workDir, "logs", "daemon.log")}`);
+      } else if (r.alreadyRunning) {
+        console.log(r.reason);
+      } else {
+        console.error(r.reason);
+        process.exit(1);
       }
     });
   daemon
