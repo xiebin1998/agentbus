@@ -26,8 +26,6 @@ const daemon = new Daemon({
     allowed_senders: [],
     hop_limit: 3,
     rate_limit: 100,
-    inbound_mode: "readonly",
-    trust_map: {},
     tools: { kilo: {} },
     ack: true,
   },

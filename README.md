@@ -203,11 +203,9 @@ agentbus doctor        # 更新后体检确认
 | `sse_url` | hub SSE 地址（doctor 检查项） |
 | `default_tool` | 入站默认承接工具 |
 | `allowed_senders` | 白名单（空=全放行） |
-| `inbound_mode` | 入站默认权限：`readonly`（注入只读禁令）/ `full` |
-| `trust_map` | 按发件人提权/降权：`{ "ci-bot": "full" }` |
 | `tools.<名>` | 各工具适配器参数（binary/workspace/remote…） |
 | `ack` | 是否回 ack 回执 |
-| `isolation` | OS 级只读隔离开关（可选，默认关；开启后 readonly 回合在 OS 层物理禁写，`agentbus doctor` 检查工具链） |
+| `isolation` | OS 级只读隔离开关（可选，默认关；开启后入站回合在 OS 层物理禁写，`agentbus doctor` 检查工具链） |
 
 ---
 
@@ -244,7 +242,6 @@ agentbus doctor        # 更新后体检确认
 | `register_agent` | `name`, `description`, `capabilities`, `metadata?` | 注册 Agent（必须先调用） |
 | `update_agent` | `capabilities?`, `metadata?` | 更新能力信息 |
 | `send_message` | `text`, `to`, `type?` | 发送消息（需先注册） |
-| `ack_message` | `id` | 确认收到消息 |
 | `list_agents` | - | 列出所有 Agent 及能力 |
 | `get_agent_info` | `client_id` | 查询 Agent 详细信息 |
 | `find_agents_by_capability` | `capability` | 按能力查找 Agent |

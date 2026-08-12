@@ -65,7 +65,7 @@ async def main() -> int:
                 }
                 readonly_ok = all(
                     ann.get(n) is True
-                    for n in ["list_agents", "get_agent_info", "send_message", "ack_message"]
+                    for n in ["list_agents", "get_agent_info", "send_message"]
                 )
                 print(f"[2] list_tools 注解: {json.dumps(ann, ensure_ascii=False)}")
                 if not readonly_ok:
