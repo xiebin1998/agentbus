@@ -90,33 +90,6 @@ export function Metrics() {
         <Card>
           <CardHeader>
             <CardTitle className="text-sm flex items-center gap-2">
-              <Activity className="h-4 w-4 text-primary" />Daemon 明细
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <THead>
-                <TR>
-                  <TH>Daemon ID</TH><TH>Agent ID</TH><TH>状态</TH><TH>最近上报</TH>
-                </TR>
-              </THead>
-              <TBody>
-                {onlineDaemons.length === 0 && (
-                  <TR><TD colSpan={4} className="text-center text-muted-foreground py-6">该命名空间暂无在线 Daemon</TD></TR>
-                )}
-                {onlineDaemons.map(([id, d]) => (
-                  <DaemonRow key={id} id={id} d={d} />
-                ))}
-              </TBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
-
-      {current && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm flex items-center gap-2">
               <Users className="h-4 w-4 text-primary" />Agent 明细
             </CardTitle>
           </CardHeader>
@@ -134,6 +107,33 @@ export function Metrics() {
                 )}
                 {(agents ?? []).map((a) => (
                   <AgentRow key={a.client_id} a={a} onEdit={() => setEditTarget(a)} onDelete={() => setDeleteTarget(a)} />
+                ))}
+              </TBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
+      {current && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Activity className="h-4 w-4 text-primary" />Daemon 明细
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <THead>
+                <TR>
+                  <TH>Daemon ID</TH><TH>Agent ID</TH><TH>状态</TH><TH>最近上报</TH>
+                </TR>
+              </THead>
+              <TBody>
+                {onlineDaemons.length === 0 && (
+                  <TR><TD colSpan={4} className="text-center text-muted-foreground py-6">该命名空间暂无在线 Daemon</TD></TR>
+                )}
+                {onlineDaemons.map(([id, d]) => (
+                  <DaemonRow key={id} id={id} d={d} />
                 ))}
               </TBody>
             </Table>

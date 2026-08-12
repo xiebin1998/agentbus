@@ -143,13 +143,19 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   const lines: string[] = [];
   const { projectRoot, homeDir } = deps;
 
-  // TASK-32：存量 config 保留原 client_id（幂等重跑不撞名）
+  // TASK-32：存量 config 保留原 client_id / agent_name / agent_description（幂等重跑不撞名、--skip-agent 时保留档案）
   const existingConfigPath = join(projectRoot, ".agentbus", "config.json");
   let existingClientId = "";
+  let existingAgentName = "";
+  let existingAgentDescription = "";
   if (existsSync(existingConfigPath)) {
     try {
-      const prev = JSON.parse(readFileSync(existingConfigPath, "utf-8")) as { client_id?: unknown };
+      const prev = JSON.parse(readFileSync(existingConfigPath, "utf-8")) as {
+        client_id?: unknown; agent_name?: unknown; agent_description?: unknown;
+      };
       if (typeof prev.client_id === "string" && prev.client_id.trim()) existingClientId = prev.client_id.trim();
+      if (typeof prev.agent_name === "string" && prev.agent_name.trim()) existingAgentName = prev.agent_name.trim();
+      if (typeof prev.agent_description === "string" && prev.agent_description.trim()) existingAgentDescription = prev.agent_description.trim();
     } catch {
       /* 存量不可解析则按新建处理 */
     }
@@ -184,6 +190,8 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   let answers: Required<Pick<InitCliOptions, "tools" | "scope" | "ns" | "broker" | "sseUrl">> & { clientId: string };
   let agentName: string;
   let agentDescription: string;
+  // 自动检测：已有 Agent 信息则跳过，没有才创建
+  const hasExistingAgent = !!existingAgentName;
   const defaultClientId = eff.clientId?.trim() || existingClientId || randomClientId();
   if (eff.yes) {
     // TASK-28 一键安装契约：--yes 未指定工具时自动探测全部已知 CLI，取已安装集
@@ -206,9 +214,15 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
       broker: eff.broker ?? "localhost:18830",
       sseUrl: eff.sseUrl ?? "",
     };
-    // TASK-32：--yes 名称兜底目录名；--agent-name/--agent-description 覆盖
-    agentName = (eff.agentName ?? "").trim() || basename(projectRoot);
-    agentDescription = (eff.agentDescription ?? "").trim();
+    // 已有 Agent 信息则保留，否则用默认值
+    if (hasExistingAgent) {
+      agentName = existingAgentName;
+      agentDescription = existingAgentDescription;
+      lines.push(`✓ 保留已有 Agent 档案 "${existingAgentName}"`);
+    } else {
+      agentName = (eff.agentName ?? "").trim() || basename(projectRoot);
+      agentDescription = (eff.agentDescription ?? "").trim();
+    }
   } else {
     const prompter = deps.prompter;
     if (!prompter) {
@@ -222,13 +236,20 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
       broker: String(await prompter("broker", eff.broker ?? "localhost:18830")),
       sseUrl: String(await prompter("sseUrl", eff.sseUrl ?? "")),
     };
-    // TASK-32：名称必答（默认建议目录名，空值重问）；描述可选（回车跳过）
-    agentName = "";
-    while (!agentName.trim()) {
-      agentName = String(await prompter("agentName", eff.agentName?.trim() || basename(projectRoot)));
+    // 已有 Agent 信息则跳过问答，否则走正常流程
+    if (hasExistingAgent) {
+      agentName = existingAgentName;
+      agentDescription = existingAgentDescription;
+      lines.push(`✓ 保留已有 Agent 档案 "${existingAgentName}"`);
+    } else {
+      // TASK-32：名称必答（默认建议目录名，空值重问）；描述可选（回车跳过）
+      agentName = "";
+      while (!agentName.trim()) {
+        agentName = String(await prompter("agentName", eff.agentName?.trim() || basename(projectRoot)));
+      }
+      agentName = agentName.trim();
+      agentDescription = String(await prompter("agentDescription", eff.agentDescription ?? "")).trim();
     }
-    agentName = agentName.trim();
-    agentDescription = String(await prompter("agentDescription", eff.agentDescription ?? "")).trim();
   }
 
   let raw: RawInitConfig;
@@ -249,12 +270,17 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
     return { ok: false, lines };
   }
 
-  // 步骤 3：写配置与契约
+  // 步骤 3：写配置与契约（含 agent_name / agent_description 持久化，下次 init 自动跳过）
   const agentbusDir = join(projectRoot, ".agentbus");
   mkdirSync(join(agentbusDir, "logs"), { recursive: true });
   mkdirSync(join(agentbusDir, "inbox"), { recursive: true });
   const configPath = join(agentbusDir, "config.json");
-  writeFileSync(configPath, `${JSON.stringify(raw, null, 2)}\n`, "utf-8");
+  const configWithAgent = {
+    ...raw,
+    ...(agentName ? { agent_name: agentName } : {}),
+    ...(agentDescription ? { agent_description: agentDescription } : {}),
+  };
+  writeFileSync(configPath, `${JSON.stringify(configWithAgent, null, 2)}\n`, "utf-8");
   lines.push(`✓ 已写入 .agentbus/config.json（身份 ${raw.ns}/${raw.client_id}）`);
 
   // TASK-32：托管条目无条件入 .gitignore（凭证 + daemon 同伴快照 agents.json，幂等）
@@ -322,8 +348,12 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   spawnDaemon(process.execPath, [binPath, "daemon", "start", "-c", configPath]);
   lines.push(`✓ 守护进程已拉起（日志: .agentbus/logs/daemon.log）`);
 
-  // TASK-32：注册上报（hub 由 sse_url 派生去路径；Basic=broker 凭证；失败不阻断）
-  await reportRegistration(raw, agentName, agentDescription, deps.fetcher, lines);
+  // TASK-32：注册上报（已有 Agent 信息时跳过；hub 由 sse_url 派生去路径；Basic=broker 凭证；失败不阻断）
+  if (hasExistingAgent) {
+    lines.push("✓ 已有 Agent 档案，跳过注册上报");
+  } else {
+    await reportRegistration(raw, agentName, agentDescription, deps.fetcher, lines);
+  }
 
   lines.push(`完成！本项目已以身份 "${raw.ns}/${raw.client_id}" 接入 MQTT 总线。`);
   return { ok: true, lines };
