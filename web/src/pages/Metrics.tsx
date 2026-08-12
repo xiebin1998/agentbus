@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { Activity, Loader2, Pencil, RefreshCw, Trash2, Users } from "lucide-react";
+import { Loader2, Pencil, RefreshCw, Trash2, Users } from "lucide-react";
 import {
   Badge, Button, Card, CardContent, CardHeader, CardTitle,
   ConfirmDialog,
   Input, Label, Modal,
   Table, TBody, TD, TH, THead, TR,
 } from "@/components/ui";
-import { api, AgentEntry, DaemonEntry, MetricSummary, MetricsPayload } from "@/lib/api";
+import { api, AgentEntry, MetricsPayload } from "@/lib/api";
 import { useNs } from "@/context/NsContext";
 import { useToast } from "@/components/Toaster";
-import { formatTime } from "@/lib/utils";
 
 const REFRESH_MS = 5000;
 /** 名称上限（与后端 AGENT_NAME_MAX 对齐） */
@@ -20,7 +19,6 @@ export function Metrics() {
   const { toast } = useToast();
 
   const [payload, setPayload] = useState<MetricsPayload | null>(null);
-  const [summary, setSummary] = useState<MetricSummary | null>(null);
   const [agents, setAgents] = useState<AgentEntry[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [editTarget, setEditTarget] = useState<AgentEntry | null>(null);
@@ -30,11 +28,10 @@ export function Metrics() {
   const load = useCallback(async () => {
     if (!current) return;
     try {
-      const [m, s, a] = await Promise.all([
-        api.metrics(current), api.metricsSummary(current), api.agents(current),
+      const [m, a] = await Promise.all([
+        api.metrics(current), api.agents(current),
       ]);
       setPayload(m);
-      setSummary(s);
       setAgents(a.agents);
     } catch (e) {
       toast(e instanceof Error ? e.message : "加载失败", false);
@@ -50,9 +47,6 @@ export function Metrics() {
     const timer = setInterval(() => void load(), REFRESH_MS);
     return () => clearInterval(timer);
   }, [current, load]);
-
-  const daemonRows = Object.entries(payload?.daemons ?? {});
-  const totals = summary?.totals;
 
   return (
     <div className="space-y-6">
@@ -78,12 +72,6 @@ export function Metrics() {
             <div className="flex items-center gap-2 text-muted-foreground py-6"><Loader2 className="h-4 w-4 animate-spin" />加载中…</div>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <StatCard label="注入成功" value={totals?.injected_ok ?? 0} />
-              <StatCard label="注入失败" value={totals?.injected_fail ?? 0} tone="danger" />
-              <StatCard label="去重 / 丢弃" value={`${totals?.deduped ?? 0} / ${totals?.dropped ?? 0}`} />
-              <StatCard label="队列积压" value={totals?.queued ?? 0} />
-              <StatCard label="Daemon 数" value={summary?.daemon_count ?? 0} />
-              <StatCard label="发送方数" value={summary?.total_senders ?? 0} />
               <StatCard label="在线 Agent" value={payload?.overview.online_agents.length ?? 0} />
               <StatCard label="已注册 Agent" value={payload?.overview.registered_agents.length ?? 0} />
             </div>
@@ -102,13 +90,13 @@ export function Metrics() {
             <Table>
               <THead>
                 <TR>
-                  <TH>Agent ID</TH><TH>名称</TH><TH>账号昵称</TH><TH>能力</TH><TH>注册工具</TH>
-                  <TH>状态</TH><TH>最近上报</TH><TH className="w-32">操作</TH>
+                  <TH>Agent ID</TH><TH>名称</TH><TH>能力</TH>
+                  <TH>状态</TH><TH>操作</TH>
                 </TR>
               </THead>
               <TBody>
                 {(agents ?? []).length === 0 && (
-                  <TR><TD colSpan={8} className="text-center text-muted-foreground py-6">该命名空间暂无 Agent（注册/在线/上报均无记录）</TD></TR>
+                  <TR><TD colSpan={5} className="text-center text-muted-foreground py-6">该命名空间暂无 Agent</TD></TR>
                 )}
                 {(agents ?? []).map((a) => (
                   <AgentRow key={a.client_id} a={a} onEdit={() => setEditTarget(a)} onDelete={() => setDeleteTarget(a)} />
@@ -119,34 +107,7 @@ export function Metrics() {
         </Card>
       )}
 
-      {current && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-sm flex items-center gap-2">
-              <Activity className="h-4 w-4 text-primary" />Daemon 明细
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <THead>
-                <TR>
-                  <TH>Daemon ID</TH><TH>Agent ID</TH><TH className="text-right">注入成功</TH><TH className="text-right">注入失败</TH>
-                  <TH className="text-right">丢弃</TH><TH className="text-right">去重</TH><TH className="text-right">积压</TH>
-                  <TH className="text-right">发送方</TH><TH className="text-right">上报次数</TH><TH>最近上报</TH>
-                </TR>
-              </THead>
-              <TBody>
-                {daemonRows.length === 0 && (
-                  <TR><TD colSpan={10} className="text-center text-muted-foreground py-6">该命名空间暂无 daemon 上报</TD></TR>
-                )}
-                {daemonRows.map(([id, d]) => <DaemonRow key={id} id={id} d={d} />)}
-              </TBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* 编辑 Agent 档案弹窗（保存后重拉列表） */}
+      {/* 编辑 Agent 档案弹窗 */}
       <EditAgentModal
         ns={current ?? ""}
         target={editTarget}
@@ -157,16 +118,11 @@ export function Metrics() {
         }}
       />
 
-      {/* Plan 3 问题 4：删除 Agent 档案（连带清 Daemon 指标条目） */}
+      {/* 删除 Agent 档案 */}
       <ConfirmDialog
         open={!!deleteTarget}
-        title={<>删除 Agent 档案：<Badge variant="secondary">{deleteTarget?.client_id}</Badge></>}
-        description={
-          <div className="space-y-1.5">
-            <p>将删除该 Agent 的档案，并连带清除其指标上报数据。</p>
-            <p className="text-xs">若该身份仍在线（对应 daemon 还在运行），下次上报会自动重建占位行——建议先停掉对应 daemon 再删除。</p>
-          </div>
-        }
+        title={<>删除 Agent：<Badge variant="secondary">{deleteTarget?.client_id}</Badge></>}
+        description={<p>将删除该 Agent 的档案。若该身份仍在线，下次上报会自动重建。</p>}
         confirmText="删除"
         busy={deleting}
         onClose={() => { if (!deleting) setDeleteTarget(null); }}
@@ -175,7 +131,7 @@ export function Metrics() {
           setDeleting(true);
           try {
             await api.deleteAgent(current, deleteTarget.client_id);
-            toast(`Agent ${deleteTarget.client_id} 档案已删除`);
+            toast(`Agent ${deleteTarget.client_id} 已删除`);
             setDeleteTarget(null);
             await load();
           } catch (e) {
@@ -189,45 +145,12 @@ export function Metrics() {
   );
 }
 
-function StatCard({ label, value, tone }: { label: string; value: number | string; tone?: "danger" }) {
+function StatCard({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-lg border bg-card p-4">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`mt-1 text-2xl font-semibold tabular-nums ${tone === "danger" && value !== 0 ? "text-destructive" : ""}`}>
-        {value}
-      </div>
+      <div className="mt-1 text-2xl font-semibold tabular-nums">{value}</div>
     </div>
-  );
-}
-
-/** daemon key 形如 ns/cid → cid；无法解析（无斜杠/空段）显 "-" */
-function agentIdFromDaemonKey(key: string): string {
-  const slash = key.indexOf("/");
-  const cid = slash >= 0 ? key.slice(slash + 1).trim() : "";
-  return cid || "-";
-}
-
-function DaemonRow({ id, d }: { id: string; d: DaemonEntry }) {
-  const m = d.metrics ?? {};
-  return (
-    <TR>
-      <TD className="font-medium">{id}</TD>
-      <TD className="text-muted-foreground">{agentIdFromDaemonKey(id)}</TD>
-      <TD className="text-right tabular-nums">{m.injected_ok ?? 0}</TD>
-      <TD className="text-right tabular-nums">{m.injected_fail ?? 0}</TD>
-      <TD className="text-right tabular-nums">{m.dropped ?? 0}</TD>
-      <TD className="text-right tabular-nums">{m.deduped ?? 0}</TD>
-      <TD className="text-right tabular-nums">{m.queued ?? 0}</TD>
-      <TD className="text-right tabular-nums">{m.senders ?? 0}</TD>
-      <TD className="text-right tabular-nums">{d.report_count ?? 0}</TD>
-      <TD>
-        {d.last_seen ? (
-          <Badge variant="success">{formatTime(d.last_seen)}</Badge>
-        ) : (
-          <span className="text-muted-foreground">-</span>
-        )}
-      </TD>
-    </TR>
   );
 }
 
@@ -238,7 +161,6 @@ function AgentRow({ a, onEdit, onDelete }: { a: AgentEntry; onEdit: () => void; 
       <TD>
         <div className="flex items-center gap-1.5">
           <span>{a.name ?? <span className="text-muted-foreground">-</span>}</span>
-          {/* 占位行标记：文字 + 颜色双通道（color-not-only） */}
           {a.placeholder && <Badge variant="outline">待完善</Badge>}
         </div>
         {a.description && (
@@ -247,7 +169,6 @@ function AgentRow({ a, onEdit, onDelete }: { a: AgentEntry; onEdit: () => void; 
           </div>
         )}
       </TD>
-      <TD>{a.owner_display_name || <span className="text-muted-foreground">-</span>}</TD>
       <TD>
         <div className="flex flex-wrap gap-1">
           {a.capabilities.length === 0 && <span className="text-muted-foreground">-</span>}
@@ -255,33 +176,19 @@ function AgentRow({ a, onEdit, onDelete }: { a: AgentEntry; onEdit: () => void; 
         </div>
       </TD>
       <TD>
-        <div className="flex flex-wrap gap-1">
-          {a.tools.length === 0 && <span className="text-muted-foreground">-</span>}
-          {a.tools.map((t) => <Badge key={t} variant="outline">{t}</Badge>)}
-        </div>
-      </TD>
-      <TD>
         <div className="flex items-center gap-1.5">
           {a.online
-            ? <Badge variant="success" title="daemon 在线：presence 状态 + 60s 心跳窗口，消息可投递">在线</Badge>
-            : <Badge variant="secondary" title="daemon 离线：消息发送将被拒发">离线</Badge>}
-          {a.sse_connected && <Badge variant="outline" title="MCP SSE 会话存活（可调用工具）">SSE</Badge>}
+            ? <Badge variant="success">在线</Badge>
+            : <Badge variant="secondary">离线</Badge>}
+          {a.sse_connected && <Badge variant="outline">SSE</Badge>}
         </div>
-      </TD>
-      <TD>
-        {a.last_seen ? (
-          <Badge variant="success">{formatTime(a.last_seen)}</Badge>
-        ) : (
-          <span className="text-muted-foreground">-</span>
-        )}
       </TD>
       <TD>
         <div className="flex items-center gap-0.5">
-          <Button variant="ghost" size="sm" onClick={onEdit} title={`编辑 ${a.client_id} 档案`}>
+          <Button variant="ghost" size="sm" onClick={onEdit}>
             <Pencil className="h-3.5 w-3.5" />编辑
           </Button>
-          <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={onDelete}
-            title={`删除 ${a.client_id} 档案（连带清除指标数据）`}>
+          <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={onDelete}>
             <Trash2 className="h-3.5 w-3.5" />删除
           </Button>
         </div>
@@ -290,7 +197,7 @@ function AgentRow({ a, onEdit, onDelete }: { a: AgentEntry; onEdit: () => void; 
   );
 }
 
-/* ── 编辑 Agent 档案（名称 50 字实时计数 / 描述 / 能力逗号分隔；错误置字段下方）── */
+/* 编辑 Agent 档案 */
 function EditAgentModal({ ns, target, onClose, onSaved }: {
   ns: string;
   target: AgentEntry | null;
@@ -333,7 +240,7 @@ function EditAgentModal({ ns, target, onClose, onSaved }: {
   }
 
   return (
-    <Modal open={!!target} title={<>编辑 Agent 档案：<Badge variant="secondary">{target?.client_id}</Badge></>} onClose={onClose}>
+    <Modal open={!!target} title={<>编辑 Agent：<Badge variant="secondary">{target?.client_id}</Badge></>} onClose={onClose}>
       <div className="space-y-3">
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
@@ -349,7 +256,7 @@ function EditAgentModal({ ns, target, onClose, onSaved }: {
             placeholder="如：支付助手"
             aria-invalid={overLimit}
           />
-          {overLimit && <p className="text-xs text-destructive">名称须 ≤ {NAME_MAX} 字符（当前 {nameTrimmed.length}）</p>}
+          {overLimit && <p className="text-xs text-destructive">名称须 ≤ {NAME_MAX} 字符</p>}
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="agent-desc">描述</Label>
@@ -358,7 +265,7 @@ function EditAgentModal({ ns, target, onClose, onSaved }: {
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             rows={3}
-            placeholder="一句话说明这个 Agent 做什么（可空）"
+            placeholder="一句话说明这个 Agent 做什么"
             className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           />
         </div>
@@ -370,7 +277,6 @@ function EditAgentModal({ ns, target, onClose, onSaved }: {
             onChange={(e) => setCaps(e.target.value)}
             placeholder="如：代码评审, 接口联调"
           />
-          <p className="text-xs text-muted-foreground">支持中英文逗号；空项自动忽略</p>
         </div>
       </div>
       <div className="mt-5 flex justify-end gap-2">

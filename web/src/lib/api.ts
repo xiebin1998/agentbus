@@ -178,8 +178,6 @@ export const api = {
   },
 
   metrics: (ns: string) => http<MetricsPayload>(`/api/console/metrics?ns=${encodeURIComponent(ns)}`),
-  metricsSummary: (ns: string) =>
-    http<MetricSummary>(`/api/console/metrics/summary?ns=${encodeURIComponent(ns)}`),
   agents: (ns: string) => http<AgentsPayload>(`/api/console/agents?ns=${encodeURIComponent(ns)}`),
   /** TASK-32：编辑 Agent 档案（name/description/capabilities 直写 DB） */
   updateAgent: (ns: string, cid: string, patch: { name?: string; description?: string; capabilities?: string[] }) =>
