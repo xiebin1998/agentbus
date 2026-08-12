@@ -27,6 +27,11 @@ export function metricTopic(ns: string, clientId: string): string {
   return `/agentbus/ai/metric/${ns}/${clientId}`;
 }
 
+/** 在线态 topic（与 metric 平行命名）：LWT 遗嘱与 online/offline retained 状态通道 */
+export function presenceTopic(ns: string, clientId: string): string {
+  return `/agentbus/ai/status/${ns}/${clientId}`;
+}
+
 /** daemon 运行计数器：纯累加，snapshot 时附带即时量（senders/uptime） */
 export class MetricsCollector {
   private counts: Record<MetricEvent, number> = {

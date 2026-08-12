@@ -19,7 +19,7 @@ import { HermesAdapter, type HermesRemoteConfig } from "../adapters/hermes.js";
 import { CodexAdapter } from "../adapters/codex.js";
 import { createListener, type Listener, type ListenerOptions } from "./listener.js";
 import { RotatingLogger } from "./logger.js";
-import { MetricsCollector, buildMetricPayload, metricTopic } from "./metrics.js";
+import { MetricsCollector, buildMetricPayload, metricTopic, presenceTopic } from "./metrics.js";
 import { acquirePidLock, releasePidLock } from "./pid.js";
 import { QueueManager } from "./queue.js";
 import { knownSenders, loadRegistry, saveRegistry, touchSession, type RegistryData } from "./registry.js";
@@ -165,6 +165,7 @@ export class Daemon {
       broker: cfg.broker,
       clientId: `agentbus-${cfg.ns}-${cfg.client_id}`,
       topic,
+      presence: { topic: presenceTopic(cfg.ns, cfg.client_id), identity: this.selfIdentity },
       onMessage: (payload) => this.handleMessage(payload),
       onStatus: (status, detail) => {
         if (status === "identity_conflict") {
