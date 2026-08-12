@@ -20,10 +20,10 @@ function msg(overrides: Record<string, unknown> = {}) {
 }
 
 describe("信封结构", () => {
-  it("首行为机器可识别元数据：[AgentBus] id/from/hop/expect_reply/mode", () => {
+  it("首行为机器可识别元数据：[AgentBus] id/from/hop/expect_reply", () => {
     const env = buildEnvelope(msg());
     expect(env.split("\n")[0]).toBe(
-      "[AgentBus] id=msg-abc from=iot/be-svc hop=1 expect_reply=true mode=readonly",
+      "[AgentBus] id=msg-abc from=iot/be-svc hop=1 expect_reply=true",
     );
   });
 
@@ -37,21 +37,12 @@ describe("信封结构", () => {
   });
 });
 
-describe("恒只读（沟通定位：入站一律只读）", () => {
-  it("含只读禁令行（禁改文件/禁执行命令）且 header 恒 mode=readonly", () => {
-    const env = buildEnvelope(msg());
-    expect(env.split("\n")[0]).toContain("mode=readonly");
-    expect(env).toContain("只读");
-    expect(env).toContain("禁止修改任何文件");
-    expect(env).toContain("禁止执行命令");
-  });
-});
-
 describe("expect_reply 语义", () => {
-  it("expect_reply=true：要求把结论作为最终输出直接给出（daemon 代回）", () => {
+  it("expect_reply=true：指示调用 send_message 回复", () => {
     const env = buildEnvelope(msg());
-    expect(env).toContain("最终输出");
-    expect(env).toContain("无需调用 send_message");
+    expect(env).toContain("调用 send_message 回复");
+    expect(env).toContain("reply_to=msg-abc");
+    expect(env).toContain("to=iot/be-svc");
   });
 
   it("expect_reply=false：告知无需回复，不出现代回指令", () => {

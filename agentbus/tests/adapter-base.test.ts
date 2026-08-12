@@ -185,7 +185,7 @@ describe("runCommand", () => {
     // %1 重定向写文件：规避 cmd echo 的 OEM 码页转码与嵌套引号问题，读回按 UTF-8 断言
     writeFileSync(shim, `@echo off\r\n> "${outfile}" echo %1\r\n`, "utf-8");
     const envelope = [
-      "[AgentBus] id=msg-test from=iot/ag-x hop=0 expect_reply=true mode=readonly",
+      "[AgentBus] id=msg-test from=iot/ag-x hop=0 expect_reply=true",
       "INSTRUCTION-LINE: load skill.",
       "",
       "BODY-MARKER: weekend homework question.",

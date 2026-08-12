@@ -115,12 +115,12 @@ describe("daemon 端到端：路由 + ack + 会话", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("入站注入默认工具，信封携带 [AgentBus] 元数据与 readonly 指令", async () => {
+  it("入站注入默认工具，信封携带 [AgentBus] 元数据与回复指令", async () => {
     publishToDaemon({ id: "msg-e2e-1", from: "default/be-svc", to: "fe-test", text: "你好" });
     await waitFor(() => records.length === 1);
     const env = records[0]!.ctx.envelope;
-    expect(env.split("\n")[0]).toBe("[AgentBus] id=msg-e2e-1 from=default/be-svc hop=0 expect_reply=true mode=readonly");
-    expect(env).toContain("禁止修改任何文件");
+    expect(env.split("\n")[0]).toBe("[AgentBus] id=msg-e2e-1 from=default/be-svc hop=0 expect_reply=true");
+    expect(env).toContain("调用 send_message 回复");
     expect(env.trimEnd().endsWith("你好")).toBe(true);
     expect(records[0]!.ctx.tool).toBe("kilo");
   });

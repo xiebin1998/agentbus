@@ -19,7 +19,7 @@ describe("模板文件存在且 frontmatter 合法", () => {
     expect(existsSync(path)).toBe(true);
     expect(path).toBe(join(PKG_ROOT, "skills", "agentbus", "SKILL.md"));
     const content = readFileSync(path, "utf-8");
-    expect(content).toContain("mode=readonly");
+    expect(content).toContain("expect_reply");
     expect(content).toContain("红线");
     // 自述闭环：查档案 → 补档案 → 目录快照 → 发现同伴
     expect(content).toContain("get_status");

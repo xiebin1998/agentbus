@@ -23,7 +23,7 @@ describe("installSkill", () => {
     const content = readFileSync(skillPath(dir, "qoder"), "utf-8");
     expect(content).toContain("name: agentbus");
     expect(content).toContain("[AgentBus]");
-    expect(content).toContain("mode=readonly");
+    expect(content).toContain("expect_reply");
     expect(content).toContain("红线");
   });
 
