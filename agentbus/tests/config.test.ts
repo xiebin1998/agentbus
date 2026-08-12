@@ -41,10 +41,11 @@ describe("validateConfig 必填与类型", () => {
     expect(r.errors.join()).toContain("default_tool");
   });
 
-  it("inbound_mode 非法值报错", () => {
-    const r = validateConfig({ ...BASE, inbound_mode: "admin" });
-    expect(r.ok).toBe(false);
-    expect(r.errors.join()).toContain("inbound_mode");
+  it("定位收敛：inbound_mode/trust_map 字段已移除（旧配置静默兼容忽略）", () => {
+    const r = validateConfig({ ...BASE, inbound_mode: "full", trust_map: { "x": "full" }, ack: false });
+    expect(r.ok).toBe(true);
+    expect("inbound_mode" in r.config!).toBe(false);
+    expect("trust_map" in r.config!).toBe(false);
   });
 
   it("非对象输入报错而非抛异常", () => {
@@ -54,27 +55,19 @@ describe("validateConfig 必填与类型", () => {
 });
 
 describe("validateConfig 缺省值", () => {
-  it("hop_limit/rate_limit/inbound_mode/ack 有架构默认值", () => {
+  it("hop_limit/rate_limit/ack 有架构默认值", () => {
     const r = validateConfig(BASE);
     expect(r.ok).toBe(true);
     expect(r.config!.hop_limit).toBe(3);
     expect(r.config!.rate_limit).toBe(5);
-    expect(r.config!.inbound_mode).toBe("readonly");
     expect(r.config!.ack).toBe(true);
     expect(r.config!.allowed_senders).toEqual([]);
-    expect(r.config!.trust_map).toEqual({});
   });
 
   it("显式值覆盖默认", () => {
-    const r = validateConfig({ ...BASE, hop_limit: 1, inbound_mode: "full", ack: false });
+    const r = validateConfig({ ...BASE, hop_limit: 1, ack: false });
     expect(r.config!.hop_limit).toBe(1);
-    expect(r.config!.inbound_mode).toBe("full");
     expect(r.config!.ack).toBe(false);
-  });
-
-  it("trust_map 值必须是 readonly/full", () => {
-    const r = validateConfig({ ...BASE, trust_map: { "ci-bot": "superuser" } });
-    expect(r.ok).toBe(false);
   });
 });
 

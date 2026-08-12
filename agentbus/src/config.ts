@@ -24,8 +24,6 @@ export interface BrokerConfig {
   ca?: string;
 }
 
-export type InboundMode = "readonly" | "full";
-
 export interface AgentBusConfig {
   /** 本机总线身份（client_id） */
   client_id: string;
@@ -42,15 +40,11 @@ export interface AgentBusConfig {
   hop_limit: number;
   /** 同一来源 60s 内消息条数上限 */
   rate_limit: number;
-  /** 入站默认信任级别 */
-  inbound_mode: InboundMode;
-  /** 按来源覆盖信任级别 */
-  trust_map: Record<string, InboundMode>;
   /** 本机工具配置（适配器参数） */
   tools: Record<string, Record<string, unknown>>;
   /** 是否回 ack（type=control） */
   ack: boolean;
-  /** TASK-30：OS 级只读隔离（架构 4.7 隔离层）；readonly 回合物理禁写，默认关闭（可选，validate 后恒有值） */
+  /** TASK-30：OS 级只读隔离（架构 4.7 隔离层）；入站回合恒只读，物理禁写，默认关闭（可选，validate 后恒有值） */
   isolation?: boolean;
 }
 
@@ -59,8 +53,6 @@ export interface ValidationResult {
   errors: string[];
   config?: AgentBusConfig;
 }
-
-const INBOUND_MODES: InboundMode[] = ["readonly", "full"];
 
 /** 解析字符串中的 ${VAR} 环境变量引用；缺失时抛 ConfigError 并指明变量名 */
 export function resolveEnvRefs(value: unknown): unknown {
@@ -146,29 +138,7 @@ export function validateConfig(raw: unknown): ValidationResult {
         ? 5
         : (errors.push("rate_limit 必须是 ≥1 的整数"), 5);
 
-  let inbound_mode: InboundMode = "readonly";
-  if (obj.inbound_mode !== undefined) {
-    if (INBOUND_MODES.includes(obj.inbound_mode as InboundMode)) {
-      inbound_mode = obj.inbound_mode as InboundMode;
-    } else {
-      errors.push(`inbound_mode 非法（可选 readonly/full，收到 "${String(obj.inbound_mode)}"）`);
-    }
-  }
-
-  const trust_map: Record<string, InboundMode> = {};
-  if (obj.trust_map !== undefined) {
-    if (obj.trust_map === null || typeof obj.trust_map !== "object" || Array.isArray(obj.trust_map)) {
-      errors.push("trust_map 必须是对象");
-    } else {
-      for (const [k, v] of Object.entries(obj.trust_map as Record<string, unknown>)) {
-        if (INBOUND_MODES.includes(v as InboundMode)) {
-          trust_map[k] = v as InboundMode;
-        } else {
-          errors.push(`trust_map["${k}"] 非法（可选 readonly/full，收到 "${String(v)}"）`);
-        }
-      }
-    }
-  }
+  // 定位收敛：inbound_mode/trust_map 字段已移除（入站恒只读）；旧配置带这两字段自然被忽略，静默兼容
 
   const ack = obj.ack === undefined ? true : obj.ack === true;
 
@@ -197,8 +167,6 @@ export function validateConfig(raw: unknown): ValidationResult {
       allowed_senders,
       hop_limit,
       rate_limit,
-      inbound_mode,
-      trust_map,
       tools,
       ack,
       isolation,

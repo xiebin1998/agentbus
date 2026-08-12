@@ -71,7 +71,6 @@ export interface RawInitConfig {
   allowed_senders: string[];
   tools: Record<string, Record<string, unknown>>;
   ack: boolean;
-  inbound_mode: "readonly";
 }
 
 /** 解析 "host:port"；非法即抛错（init 是唯一入口，必须当场拦下） */
@@ -118,7 +117,6 @@ export function buildInitConfig(
     allowed_senders: [],
     tools: toolCfg,
     ack: true,
-    inbound_mode: "readonly",
   };
 }
 
