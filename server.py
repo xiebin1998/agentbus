@@ -220,6 +220,26 @@ class MetricsStore:
             self._data.pop(identity, None)
 
 
+class PresenceStore:
+    """LWT 在线态：daemon 状态事件（online/offline）以最新一条为准"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._data: Dict[str, dict] = {}
+
+    def update(self, identity: str, state: str, ts: Optional[str], reason: str = "") -> None:
+        with self._lock:
+            self._data[identity] = {"state": state, "ts": ts, "reason": reason}
+
+    def snapshot(self) -> Dict[str, dict]:
+        with self._lock:
+            return {k: dict(v) for k, v in self._data.items()}
+
+    def remove(self, identity: str) -> None:
+        with self._lock:
+            self._data.pop(identity, None)
+
+
 # ─── 指标汇总（控制台指标页复用） ─────────────────────────────────────────
 
 def build_metric_summary(snapshot: Dict[str, dict]) -> dict:
@@ -263,6 +283,38 @@ def _offline_targets(targets: List[str], snapshot: Dict[str, dict], now: datetim
         if now - ts > timedelta(seconds=window_s):
             offline.append(t)
     return offline
+
+
+# ─── TASK-33：presence 统一在线判定（显式状态 + 60s 心跳兜底 + 旧客户端回退） ───
+
+
+def _parse_iso(ts: Any) -> Optional[datetime]:
+    try:
+        d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        return d.replace(tzinfo=timezone.utc) if d.tzinfo is None else d
+    except (ValueError, TypeError):
+        return None
+
+
+# 心跳兜底窗口：presence=online 但超过该秒数无任何心跳 → 强制判离线（断网/遗嘱丢失防线）
+PRESENCE_HEARTBEAT_WINDOW_S = 60
+
+
+def agent_online(key: str, presence: Dict[str, dict], metrics: Dict[str, dict],
+                 now: datetime, heartbeat_s: int = PRESENCE_HEARTBEAT_WINDOW_S) -> bool:
+    """统一在线判定：有 presence 条目 → 显式状态 + 心跳兜底；
+    无条目（旧客户端）→ 回退 90s 指标窗口（_offline_targets 同口径）"""
+    p = presence.get(key)
+    if p is None:
+        return key not in _offline_targets([key], metrics, now)
+    if p.get("state") != "online":
+        return False
+    latest = max(filter(None, (_parse_iso(p.get("ts")),
+                               _parse_iso((metrics.get(key) or {}).get("last_seen")))),
+                 default=None)
+    if latest is None:
+        return False
+    return (now - latest).total_seconds() <= heartbeat_s
 
 
 def can_ack(stored: Optional[dict], caller: str) -> bool:
@@ -397,6 +449,9 @@ _agent_info: Dict[str, AgentInfo] = {}
 
 # TASK-19/24：daemon 指标汇总（全局单例，/health 与共享连接采集共享）
 _metrics_store = MetricsStore()
+
+# LWT 在线态（TASK-33）：status topic 事件流维护，send_message/明细页/list_agents 统一口径
+_presence_store = PresenceStore()
 
 # TASK-24：hub 唯一 MQTT 共享连接（架构 11.8 演进方案 2：线程数 N→1）
 _shared_client: Optional[mqtt.Client] = None
