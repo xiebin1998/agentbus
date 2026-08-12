@@ -914,14 +914,15 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             except ValueError as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))]
             
-            # 目标键解析（无前缀继承发件人 ns）；投递前统一查指标库在线态（TASK-32）
+            # 目标键解析（无前缀继承发件人 ns）；投递前统一在线判定（TASK-33：presence 显式状态 + 60s 心跳兜底，旧客户端回退指标窗口）
             target_keys = []
             for t in targets:
                 t_ns, cid, _tool = resolve_target(t)
                 target_keys.append(session_key(cid, t_ns if t_ns is not None else session.ns))
 
             snapshot = _metrics_store.snapshot()
-            offline = _offline_targets(target_keys, snapshot, datetime.now(timezone.utc))
+            presence = _presence_store.snapshot()
+            offline = [k for k in target_keys if not agent_online(k, presence, snapshot, datetime.now(timezone.utc))]
             if offline:
                 err = {
                     "error": "目标离线，已拒发（仅向在线 Agent 投递）",

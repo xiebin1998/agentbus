@@ -296,6 +296,20 @@ def test_send_message_multi_target_partial_offline_rejects_all(mcp_env):
     assert mcp_env == []
 
 
+def test_send_message_presence_offline_overrides_fresh_metrics(mcp_env):
+    """TASK-33：presence=offline（优雅停/LWT）覆盖新鲜指标心跳 → 拒发（新口径）"""
+    import server
+    now = datetime.now(timezone.utc)
+    server._metrics_store.update("pay/bob", {"injected_ok": 1}, now.isoformat())  # 旧口径会判在线
+    server._presence_store.update("pay/bob", "offline", now.isoformat(), reason="graceful_stop")
+    try:
+        out = _tool(mcp_env, "send_message", {"text": "hi", "to": "bob"})
+        assert out["offline_targets"] == ["pay/bob"]
+        assert mcp_env == []  # 未投 broker
+    finally:
+        server._presence_store.remove("pay/bob")
+
+
 # ─── Plan 3 问题 0：空正文拒发 ────────────────────────────────────────────────
 
 
