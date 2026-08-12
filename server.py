@@ -895,7 +895,7 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             except ValueError as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))]
             
-            # 目标键解析（无前缀继承发件人 ns）；投递前统一在线判定（TASK-33：presence 显式状态 + 60s 心跳兜底，旧客户端回退指标窗口）
+            # 目标键解析（无前缀继承发件人 ns）；投递前统一在线判定（TASK-33：presence 唯一真源 + 60s 心跳兜底）
             target_keys = []
             for t in targets:
                 t_ns, cid, _tool = resolve_target(t)
@@ -979,7 +979,7 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
                 "metric_last_seen": (entry or {}).get("last_seen"),
                 **session.info.to_dict(),
             }
-            # TASK-32：自身档案读 DB（重启不丢）+ 在线态（90s 指标窗口）
+            # TASK-32：自身档案读 DB（重启不丢）+ 在线态（presence 唯一真源）
             if DB_CONN is not None and session.ns:
                 row = hub_store.get_agent(DB_CONN, session.ns, client_id)
                 if row:

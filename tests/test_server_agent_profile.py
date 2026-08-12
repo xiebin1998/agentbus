@@ -29,6 +29,7 @@ def app_ctx(monkeypatch, tmp_path):
     import server
     server.DYNSEC_CLIENT = FakeDynsec()
     server.init_hub_state()
+    monkeypatch.setattr(server, "_presence_store", server.PresenceStore())
     yield server
     # 关连接释放 WAL 文件锁，否则 Windows 上 tmp_path 目录无法清理被后续测试复用旧库
     if server.DB_CONN is not None:
@@ -292,6 +293,7 @@ def test_send_message_multi_target_partial_offline_rejects_all(mcp_env):
     import server
     now = datetime.now(timezone.utc)
     server._metrics_store.update("pay/carol", {"injected_ok": 1}, now.isoformat())
+    server._presence_store.update("pay/carol", "online", now.isoformat(), reason="connected")
     out = _tool(mcp_env, "send_message", {"text": "hi", "to": ["carol", "bob"]})
     assert "error" in out
     assert out["offline_targets"] == ["pay/bob"]
@@ -347,6 +349,7 @@ def test_send_message_passes_session_id_into_payload(mcp_env, monkeypatch):
     import server
     now = datetime.now(timezone.utc)
     server._metrics_store.update("pay/bob", {"injected_ok": 1}, now.isoformat())
+    server._presence_store.update("pay/bob", "online", now.isoformat(), reason="connected")
     captured = []
     monkeypatch.setattr(server, "_shared_client",
                         SimpleNamespace(publish=lambda topic, payload, qos=0:
@@ -366,6 +369,7 @@ def test_send_message_all_online_delivers_with_unconfirmed(mcp_env):
     import server
     now = datetime.now(timezone.utc)
     server._metrics_store.update("pay/bob", {"injected_ok": 1}, now.isoformat())
+    server._presence_store.update("pay/bob", "online", now.isoformat(), reason="connected")
     out = _tool(mcp_env, "send_message", {"text": "hi", "to": "bob"})
     assert out["status"] == "sent"
     assert out["unconfirmed"] == ["pay/bob"]
@@ -451,15 +455,16 @@ def test_snapshot_missing_ns_400(client, app_ctx):
 
 
 def test_snapshot_merges_db_and_online(client, app_ctx):
-    """DB 档案全量下发；online=last_seen 90s 窗口；owner_display_name join users"""
+    """DB 档案全量下发；online=presence 唯一真源（0.2.10）；owner_display_name join users"""
     from hub import store, auth
     store.create_user(app_ctx.DB_CONN, "alice", auth.hash_password("pw"), "user",
                       display_name="小爱")
     store.upsert_agent(app_ctx.DB_CONN, "pay", "ag-on", name="在线者",
                        description="d1", capabilities=["chat"], tools=["t1"], owner="alice")
     store.upsert_agent(app_ctx.DB_CONN, "pay", "ag-off", name="离线者", owner="alice")
-    app_ctx._metrics_store.update("pay/ag-on", {"injected_ok": 1},
-                                  datetime.now(timezone.utc).isoformat())
+    now = datetime.now(timezone.utc).isoformat()
+    app_ctx._metrics_store.update("pay/ag-on", {"injected_ok": 1}, now)
+    app_ctx._presence_store.update("pay/ag-on", "online", now, reason="connected")
     r = client.get("/api/agent/snapshot?ns=pay", headers=_basic("alice", "pw"))
     assert r.status_code == 200, r.text
     data = r.json()
@@ -513,13 +518,14 @@ def mcp_db_env(monkeypatch, tmp_path):
     saved = (dict(server._sessions), dict(server._agent_info))
     server._sessions.clear()
     server._agent_info.clear()
-    old_metrics, old_ready = server._metrics_store, server._shared_ready
+    old_metrics, old_ready, old_presence = server._metrics_store, server._shared_ready, server._presence_store
     server._metrics_store = server.MetricsStore()
+    server._presence_store = server.PresenceStore()
     ev = threading.Event()
     ev.set()
     server._shared_ready = ev
     yield server
-    server._metrics_store, server._shared_ready = old_metrics, old_ready
+    server._metrics_store, server._shared_ready, server._presence_store = old_metrics, old_ready, old_presence
     server._sessions.clear(); server._sessions.update(saved[0])
     server._agent_info.clear(); server._agent_info.update(saved[1])
     if server.DB_CONN is not None:
@@ -566,7 +572,7 @@ def test_update_agent_schema_declares_self_profile_fields():
 
 
 def test_get_status_reads_db_profile(mcp_db_env):
-    """get_status 返回读 DB 的自身档案 + 在线态"""
+    """get_status 返回读 DB 的自身档案 + 在线态（presence 唯一真源）"""
     from hub import store
     store.upsert_agent(mcp_db_env.DB_CONN, "pay", "alice", name="支付助手",
                        description="d", capabilities=["pay"])
@@ -574,9 +580,10 @@ def test_get_status_reads_db_profile(mcp_db_env):
     assert out["name"] == "支付助手"
     assert out["description"] == "d"
     assert out["capabilities"] == ["pay"]
-    assert out["online"] is False  # 无近期指标
-    mcp_db_env._metrics_store.update("pay/alice", {"injected_ok": 1},
-                                     datetime.now(timezone.utc).isoformat())
+    assert out["online"] is False  # 无 presence
+    now = datetime.now(timezone.utc).isoformat()
+    mcp_db_env._metrics_store.update("pay/alice", {"injected_ok": 1}, now)
+    mcp_db_env._presence_store.update("pay/alice", "online", now, reason="connected")
     out = _tool(None, "get_status", {})
     assert out["online"] is True
 
@@ -602,6 +609,7 @@ def console_env(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_agent_info", {})
     monkeypatch.setattr(server, "_sessions", {})
     monkeypatch.setattr(server, "_metrics_store", server.MetricsStore())
+    monkeypatch.setattr(server, "_presence_store", server.PresenceStore())
     yield TestClient(server.app)
     if server.DB_CONN is not None:
         server.DB_CONN.close()
@@ -734,17 +742,23 @@ def test_console_agents_detail_includes_db_fields(console_env):
     assert ph["placeholder"] is True
 
 
-def test_console_agents_online_by_metric_window(console_env):
-    """TASK-32：控制台明细 online 随指标 90s 窗口（daemon 无 SSE 会话也须在线）"""
+def test_console_agents_online_by_presence(console_env):
+    """0.2.10：控制台明细 online 随 presence 唯一真源（光有新鲜指标不算在线）"""
     import server
     console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
     _mk_ns(console_env)
-    server._metrics_store.update("iot/ag-d", {"injected_ok": 1},
-                                 datetime.now(timezone.utc).isoformat())
+    now = datetime.now(timezone.utc).isoformat()
+    server._metrics_store.update("iot/ag-d", {"injected_ok": 1}, now)
+    # 新鲜指标但无 presence → 离线（旧 90s 窗口口径已删）
+    r = console_env.get("/api/console/agents?ns=iot")
+    by_cid = {a["client_id"]: a for a in r.json()["agents"]}
+    assert by_cid["ag-d"]["online"] is False
+    # presence online + 心跳在窗口 → 在线
+    server._presence_store.update("iot/ag-d", "online", now, reason="connected")
     r = console_env.get("/api/console/agents?ns=iot")
     by_cid = {a["client_id"]: a for a in r.json()["agents"]}
     assert by_cid["ag-d"]["online"] is True
-    # 窗口外（无新鲜指标且无会话）→ 离线
+    # 无新鲜指标且无 presence → 离线
     server._metrics_store.update("iot/ag-stale", {"injected_ok": 1},
                                  "2020-01-01T00:00:00+00:00")
     r = console_env.get("/api/console/agents?ns=iot")
