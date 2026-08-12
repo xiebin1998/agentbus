@@ -105,6 +105,27 @@ def test_metrics_ns_filter(app_ctx, client):
     assert client.get("/api/console/metrics", params={"ns": "iot"}).status_code == 403
 
 
+def test_metrics_online_agents_用_presence_统一口径(app_ctx, client, monkeypatch):
+    """TASK-33 DoD-4：overview.online_agents 统计卡走 agent_online，与行内 Badge 同口径"""
+    from datetime import datetime, timezone
+    monkeypatch.setattr(app_ctx, "_presence_store", app_ctx.PresenceStore())
+    monkeypatch.setattr(app_ctx, "_metrics_store", app_ctx.MetricsStore())
+    monkeypatch.setattr(app_ctx, "_sessions", {})
+    _login(client, "root", "rootpw")
+    client.post("/api/console/namespaces", json={"id": "iot", "name": "iot", "description": "",
+                                                 "admin_username": "iot-admin", "admin_password": "pw"})
+    now = datetime.now(timezone.utc).isoformat()
+    # presence online + 新鲜心跳 → 计入
+    app_ctx._presence_store.update("iot/a", "online", now, reason="connected")
+    app_ctx._metrics_store.update("iot/a", {"injected_ok": 1}, now)
+    # presence offline 但 SSE 会话存活 → 不计入（旧 SSE 口径会误计）
+    app_ctx._presence_store.update("iot/b", "offline", now, reason="graceful_stop")
+    app_ctx._sessions["iot/b"] = object()
+    r = client.get("/api/console/metrics", params={"ns": "iot"}).json()
+    assert r["overview"]["online_agents"] == ["iot/a"]
+
+
+
 def test_connect_command(client):
     _login(client, "root", "rootpw")
     client.post("/api/console/namespaces", json={"id": "pay", "name": "支付", "description": "",

@@ -1434,10 +1434,15 @@ async def api_metrics(request: Request):
     if not _ns_visible(user, ns):
         return _json_error("forbidden", 403)
     prefix = f"{ns}/"
+    presence = _presence_store.snapshot()
+    metrics = _metrics_store.snapshot()
+    now = datetime.now(timezone.utc)
     return JSONResponse({
         "daemons": _filtered_snapshot(ns),
         "overview": {
-            "online_agents": [k for k in _sessions.keys() if k.startswith(prefix)],
+            # TASK-33 DoD-4：统计卡与行内 Badge 同口径（agent_online，非 SSE 会话表）
+            "online_agents": [k for k in sorted(set(presence) | set(metrics))
+                              if k.startswith(prefix) and agent_online(k, presence, metrics, now)],
             "registered_agents": [k for k, info in _agent_info.items()
                                   if info.registered and k.startswith(prefix)],
             "total_messages": len(_messages),
