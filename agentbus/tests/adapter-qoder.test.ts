@@ -2,7 +2,7 @@
  * TASK-07: Qoder 适配器（qodercli 实测参数语义 2026-08-09）
  * - -p 是布尔开关，prompt 走位置参数（`--` 分隔防吞）
  * - --session-id <id> 幂等：新 id 建会话，已有 id 续接（create/inject 同一命令形态）
- * - -o json 输出结构化结果；readonly 无 plan 档 → 回退 --tools ""（禁全部内置工具）
+ * - -o json 输出结构化结果；无只读权限档 → 恒用 --tools "" 禁全部内置工具（入站恒只读）
  */
 import { describe, expect, it } from "vitest";
 import { newQoderSessionId, QoderAdapter } from "../src/adapters/qoder.js";
@@ -28,23 +28,7 @@ function stubRun(result: Partial<RunnerResult>): { run: (s: SpawnSpec) => Promis
 const cfg = { workspace: "/proj", timeoutMs: 300_000 };
 
 describe("参数装配", () => {
-  it("fullArgs：dont_ask 权限 + 会话 + json 输出 + prompt 收尾", () => {
-    const adapter = new QoderAdapter(cfg);
-    const args = adapter.fullArgs("请修复 bug", "sess-1");
-    expect(args).toContain("--permission-mode");
-    expect(args[args.indexOf("--permission-mode") + 1]).toBe("dont_ask");
-    expect(args).toContain("--session-id");
-    expect(args[args.indexOf("--session-id") + 1]).toBe("sess-1");
-    expect(args).toContain("-p");
-    expect(args).toContain("-o");
-    expect(args[args.indexOf("-o") + 1]).toBe("json");
-    expect(args).toContain("-w");
-    expect(args[args.indexOf("-w") + 1]).toBe("/proj");
-    expect(args[args.length - 1]).toBe("请修复 bug");
-    expect(args[args.length - 2]).toBe("--"); // prompt 前有 -- 分隔
-  });
-
-  it("readonlyArgs：--tools 空串禁用全部内置工具（无 plan 档的回退方案）", () => {
+  it("readonlyArgs：--tools 空串禁用全部内置工具（无只读权限档的固定方案）", () => {
     const adapter = new QoderAdapter(cfg);
     const args = adapter.readonlyArgs("只许看不许改", "sess-1");
     const i = args.indexOf("--tools");
@@ -72,6 +56,18 @@ describe("回合执行与输出提取", () => {
     expect(turn.output).toBe("已完成修复");
     expect(turn.exitCode).toBe(0);
     expect(turn.timedOut).toBe(false);
+  });
+
+  it("入站恒只读：createSession/inject 固定走只读档（--tools 空串，无 dont_ask）", async () => {
+    const { run, specs } = stubRun({ stdout: '{"result":"ok"}' });
+    const adapter = new QoderAdapter(cfg, run);
+    await adapter.createSession("hi", "s1");
+    await adapter.inject("继续", "s1");
+    for (const spec of specs) {
+      expect(spec.args).toContain("--tools");
+      expect(spec.args[spec.args.indexOf("--tools") + 1]).toBe("");
+      expect(spec.args).not.toContain("dont_ask");
+    }
   });
 
   it("inject 与 createSession 同一命令形态（--session-id 幂等续接）", async () => {

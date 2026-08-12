@@ -6,8 +6,8 @@
  * - `--session-id <id>` 幂等：新 id 建会话，已有 id 续接（create/inject 同一命令形态）
  *   ⚠️ 实测约束：id 必须是合法 UUID，否则报 Invalid session ID（用 newQoderSessionId 生成）
  * - `-o json` 退出时输出结构化结果
- * - 权限枚举 default/accept_edits/bypass_permissions/dont_ask/auto，无 plan 档
- *   → readonly 回退：`--tools ""` 禁用全部内置工具（架构 4.7 三层防线之工具层）
+ * - 权限枚举 default/accept_edits/bypass_permissions/dont_ask/auto，无只读档
+ *   → 恒只读回退：`--tools ""` 禁用全部内置工具（架构 4.7；沟通定位：入站恒只读）
  */
 import { randomUUID } from "node:crypto";
 import { runCommand, type AdapterTurn, type RunnerResult, type SpawnSpec } from "./base.js";
@@ -40,12 +40,7 @@ export class QoderAdapter {
     this.timeoutMs = cfg.timeoutMs ?? 300_000;
   }
 
-  /** full 信任级别参数（架构 4.7） */
-  fullArgs(text: string, sessionId: string): string[] {
-    return this.baseArgs(text, sessionId, ["--permission-mode", "dont_ask"]);
-  }
-
-  /** readonly 信任级别参数：禁全部内置工具，不放宽权限 */
+  /** 只读档参数（唯一档）：禁全部内置工具，不放宽权限 */
   readonlyArgs(text: string, sessionId: string): string[] {
     return this.baseArgs(text, sessionId, ["--tools", ""]);
   }
@@ -64,20 +59,19 @@ export class QoderAdapter {
     return args;
   }
 
-  /** 建会话（daemon 预生成 sessionId，--session-id 幂等语义） */
+  /** 建会话（daemon 预生成 sessionId，--session-id 幂等语义；恒只读档） */
   async createSession(text: string, sessionId: string): Promise<AdapterTurn> {
-    return this.runTurn(this.fullArgs(text, sessionId), sessionId);
+    return this.runTurn(this.readonlyArgs(text, sessionId), sessionId);
   }
 
-  /** 续接注入（与建会话同命令形态，权限参数由调用方按信任级别选择） */
+  /** 续接注入（与建会话同命令形态；恒只读档） */
   async inject(text: string, sessionId: string): Promise<AdapterTurn> {
-    return this.runTurn(this.fullArgs(text, sessionId), sessionId);
+    return this.runTurn(this.readonlyArgs(text, sessionId), sessionId);
   }
 
-  /** 信任级别显式版本的注入（TASK-09 信封链路使用） */
-  async injectWith(text: string, sessionId: string, mode: "readonly" | "full"): Promise<AdapterTurn> {
-    const args = mode === "full" ? this.fullArgs(text, sessionId) : this.readonlyArgs(text, sessionId);
-    return this.runTurn(args, sessionId);
+  /** 续接注入（TASK-09 信封链路使用；恒只读档） */
+  async injectWith(text: string, sessionId: string): Promise<AdapterTurn> {
+    return this.runTurn(this.readonlyArgs(text, sessionId), sessionId);
   }
 
   private async runTurn(args: string[], sessionId: string): Promise<AdapterTurn> {

@@ -4,7 +4,7 @@
  * 契约要点（架构 11.6 用户提供参数面）：
  * - `-z <prompt>` oneshot：只输出最终结果（stdout 即回合输出），自动绕过审批
  * - `-c <名>` 按名建/续会话（会话名 = 推送来源 client_id），建/续同一命令形态（按名幂等）
- * - 无只读权限档（--safe-mode 仅禁自定义扩展）→ readonly 仅信封约束（架构 4.7 回退）
+ * - 无只读权限档（--safe-mode 仅禁自定义扩展）→ 恒只读，仅靠信封约束（架构 4.7）
  * - 配 remote 时经 `ssh [-i key] [user@]host` 注入远端，远端命令为 `cd <workspace> && hermes ...`
  */
 import { describe, expect, it } from "vitest";
@@ -38,11 +38,10 @@ describe("参数装配（本机直连形态）", () => {
     expect(a.createSessionArgs("x", "s")).toEqual(a.injectArgs("x", "s"));
   });
 
-  it("readonly/full 参数形态相同：无只读权限档，readonly 仅信封约束；-z 已自动免确认", () => {
+  it("无 mode 参数：只读仅靠信封约束，建/续形态相同（-z 已自动免确认）", () => {
     const adapter = new HermesAdapter(cfg);
-    expect(adapter.createSessionArgs("m", "be-svc", "readonly")).toEqual(
-      adapter.createSessionArgs("m", "be-svc", "full"),
-    );
+    expect(adapter.createSessionArgs("m", "be-svc")).toEqual(["-z", "m", "-c", "be-svc"]);
+    expect(adapter.injectArgs("m", "be-svc")).toEqual(adapter.createSessionArgs("m", "be-svc"));
   });
 });
 

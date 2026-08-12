@@ -6,8 +6,7 @@
  * - create：`--session-id <uuid>`（daemon 预生成，必须合法 UUID）+ `-n` 会话名
  * - inject：`-r <uuid>` 续接（与 create 不同命令形态，区别于 qoder 族幂等 --session-id）
  * - `--output-format json` 退出时输出结构化结果（result 字段），免解析裸文本
- * - readonly → `--permission-mode plan`（实测档：只读调研，禁写禁执行，架构 4.7）
- * - full → `--permission-mode dontAsk`
+ * - 权限档恒为 `--permission-mode plan`（实测只读档：只读调研，禁写禁执行；沟通定位：入站恒只读）
  */
 import { randomUUID } from "node:crypto";
 import { runCommand, type AdapterTurn, type RunnerResult, type SpawnSpec } from "./base.js";
@@ -41,20 +40,20 @@ export class ClaudeAdapter {
   }
 
   /** 建会话参数（架构 5.2：--session-id + -n） */
-  createArgs(text: string, sessionId: string, mode: "readonly" | "full"): string[] {
+  createArgs(text: string, sessionId: string): string[] {
     const head = ["--session-id", sessionId];
     if (this.cfg.sessionName) head.push("-n", this.cfg.sessionName);
-    return this.baseArgs(text, head, mode);
+    return this.baseArgs(text, head);
   }
 
   /** 续接参数（架构 5.2：-r <uuid>；不重复传 --session-id/-n） */
-  injectArgs(text: string, sessionId: string, mode: "readonly" | "full"): string[] {
-    return this.baseArgs(text, ["-r", sessionId], mode);
+  injectArgs(text: string, sessionId: string): string[] {
+    return this.baseArgs(text, ["-r", sessionId]);
   }
 
   /** 权限参数一律置于 `-- prompt` 之前，避免被位置参数吞掉 */
-  private baseArgs(text: string, head: string[], mode: "readonly" | "full"): string[] {
-    const perm = mode === "full" ? "dontAsk" : "plan";
+  private baseArgs(text: string, head: string[]): string[] {
+    const perm = "plan";
     return [
       ...head,
       "-p",
@@ -65,13 +64,13 @@ export class ClaudeAdapter {
   }
 
   /** 建会话并注入首条消息（daemon 预生成 sessionId） */
-  async createSession(text: string, sessionId: string, mode: "readonly" | "full"): Promise<AdapterTurn> {
-    return this.runTurn(this.createArgs(text, sessionId, mode), sessionId);
+  async createSession(text: string, sessionId: string): Promise<AdapterTurn> {
+    return this.runTurn(this.createArgs(text, sessionId), sessionId);
   }
 
-  /** 信任级别显式的续接注入（TASK-09 信封链路使用） */
-  async injectWith(text: string, sessionId: string, mode: "readonly" | "full"): Promise<AdapterTurn> {
-    return this.runTurn(this.injectArgs(text, sessionId, mode), sessionId);
+  /** 续接注入（TASK-09 信封链路使用；恒只读档） */
+  async injectWith(text: string, sessionId: string): Promise<AdapterTurn> {
+    return this.runTurn(this.injectArgs(text, sessionId), sessionId);
   }
 
   private async runTurn(args: string[], sessionId: string): Promise<AdapterTurn> {

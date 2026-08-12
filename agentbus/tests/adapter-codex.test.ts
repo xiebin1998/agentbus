@@ -4,8 +4,7 @@
  * - 会话 id 实测在 `{"type":"thread.started","thread_id":"<uuid>"}`（2026-08-09 真实回合捕获）
  * - 最终回复实测走 `-o, --output-last-message <file>` 写文件，daemon 读文件（架构 4.6）
  * - `exec resume <id> [PROMPT]` 续接（UUID 或 thread name）
- * - readonly → `-s read-only`；full → `-s workspace-write`（架构 4.7）
- *   ⚠️ 0.146.0 已移除 `-a/--ask-for-approval`（--help 实测），full 档免确认语义待后端可达后补实测
+ * - 沙箱档恒为 `-s read-only`（架构 4.7；沟通定位：入站恒只读）
  * - 实测陷阱：stdin 为未关闭管道时 codex 阻塞等 EOF（base.runCommand 已顺修关闭 stdin）
  */
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
@@ -43,9 +42,9 @@ function stubRun(opts: { stdout?: string; exitCode?: number; timedOut?: boolean;
 const cfg = { workspace: "/proj" };
 
 describe("参数装配", () => {
-  it("createArgs（readonly）：exec + --json + -s read-only + -C + -o + prompt 收尾", () => {
+  it("createArgs：exec + --json + -s read-only + -C + -o + prompt 收尾", () => {
     const adapter = new CodexAdapter(cfg);
-    const args = adapter.createArgs("请修复 bug", "readonly", "/tmp/last.txt");
+    const args = adapter.createArgs("请修复 bug", "/tmp/last.txt");
     expect(args[0]).toBe("exec");
     expect(args).toContain("--json");
     expect(args[args.indexOf("-s") + 1]).toBe("read-only");
@@ -54,15 +53,9 @@ describe("参数装配", () => {
     expect(args[args.length - 1]).toBe("请修复 bug");
   });
 
-  it("full 档 → -s workspace-write", () => {
-    const adapter = new CodexAdapter(cfg);
-    const args = adapter.createArgs("hi", "full", "/tmp/x.txt");
-    expect(args[args.indexOf("-s") + 1]).toBe("workspace-write");
-  });
-
   it("resumeArgs：exec resume <id> + 同套选项 + prompt 收尾", () => {
     const adapter = new CodexAdapter(cfg);
-    const args = adapter.resumeArgs("继续", "sess-uuid-1", "readonly", "/tmp/last.txt");
+    const args = adapter.resumeArgs("继续", "sess-uuid-1", "/tmp/last.txt");
     expect(args[0]).toBe("exec");
     expect(args[1]).toBe("resume");
     expect(args[2]).toBe("sess-uuid-1");
@@ -73,7 +66,7 @@ describe("参数装配", () => {
   it("binary 可参数化（默认 codex）", async () => {
     const { run, specs } = stubRun({ lastMessage: "ok" });
     const adapter = new CodexAdapter({ ...cfg, binary: "my-codex", tmpDir: dir }, run);
-    await adapter.createSession("hi", "full");
+    await adapter.createSession("hi");
     expect(specs[0]!.cmd).toBe("my-codex");
   });
 });
@@ -87,7 +80,7 @@ describe("回合执行：会话 id 解析 + 文件输出", () => {
     ].join("\n");
     const { run, specs } = stubRun({ stdout, lastMessage: "PONG" });
     const adapter = new CodexAdapter({ ...cfg, tmpDir: dir }, run);
-    const turn = await adapter.createSession("Reply PONG", "readonly");
+    const turn = await adapter.createSession("Reply PONG");
     expect(turn.sessionId).toBe("019fe698-902b-71c0-af14-eb6bdf8e2876");
     expect(turn.output).toBe("PONG");
     expect(turn.error).toBeUndefined();
@@ -102,7 +95,7 @@ describe("回合执行：会话 id 解析 + 文件输出", () => {
       lastMessage: "第二轮",
     });
     const adapter = new CodexAdapter({ ...cfg, tmpDir: dir }, run);
-    const turn = await adapter.injectWith("继续", "id-1", "full");
+    const turn = await adapter.injectWith("继续", "id-1");
     expect(turn.output).toBe("第二轮");
     expect(specs[0]!.args.slice(0, 3)).toEqual(["exec", "resume", "id-1"]);
   });
@@ -110,7 +103,7 @@ describe("回合执行：会话 id 解析 + 文件输出", () => {
   it("无 thread.started 事件 → sessionId=null（调用方记告警，不崩）", async () => {
     const { run } = stubRun({ stdout: '{"type":"turn.completed"}', lastMessage: "ok" });
     const adapter = new CodexAdapter({ ...cfg, tmpDir: dir }, run);
-    const turn = await adapter.createSession("hi", "full");
+    const turn = await adapter.createSession("hi");
     expect(turn.sessionId).toBeNull();
     expect(turn.output).toBe("ok");
   });
@@ -118,15 +111,15 @@ describe("回合执行：会话 id 解析 + 文件输出", () => {
   it("-o 文件缺失时输出回退空串（不抛异常）", async () => {
     const { run } = stubRun({ stdout: '{"type":"thread.started","thread_id":"x"}' });
     const adapter = new CodexAdapter({ ...cfg, tmpDir: dir }, run);
-    const turn = await adapter.createSession("hi", "full");
+    const turn = await adapter.createSession("hi");
     expect(turn.output).toBe("");
   });
 
   it("超时传播与非零退出码携带说明", async () => {
     const a1 = new CodexAdapter({ ...cfg, tmpDir: dir }, stubRun({ timedOut: true }).run);
-    expect((await a1.createSession("hi", "full")).error).toContain("超时");
+    expect((await a1.createSession("hi")).error).toContain("超时");
     const a2 = new CodexAdapter({ ...cfg, tmpDir: dir }, stubRun({ exitCode: 2 }).run);
-    expect((await a2.createSession("hi", "full")).error).toContain("退出码 2");
+    expect((await a2.createSession("hi")).error).toContain("退出码 2");
   });
 });
 

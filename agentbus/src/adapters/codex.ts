@@ -6,8 +6,7 @@
  * - 会话 id 在 `{"type":"thread.started","thread_id":"<uuid>"}` 事件（真实回合实测）
  * - 最终回复走 `-o, --output-last-message <file>` 写文件，回合后读文件（架构 4.6）
  * - `exec resume <id> [PROMPT]` 续接（UUID 或 thread name，UUID 优先）
- * - readonly → `-s read-only`；full → `-s workspace-write`（架构 4.7）
- *   ⚠️ 0.146.0 已移除 `-a/--ask-for-approval`，full 档免确认语义待后端可达后补实测
+ * - 沙箱档恒为 `-s read-only`（架构 4.7；沟通定位：入站恒只读）
  * - stdin 阻塞陷阱已由 base.runCommand 统一关闭 stdin 解决
  */
 import { randomUUID } from "node:crypto";
@@ -51,17 +50,17 @@ export class CodexAdapter {
   }
 
   /** 建会话参数（exec + JSONL + 沙箱档 + -o 文件）；prompt 位置参数收尾 */
-  createArgs(text: string, mode: "readonly" | "full", outFile: string): string[] {
-    return ["exec", ...this.commonArgs(mode, outFile), text];
+  createArgs(text: string, outFile: string): string[] {
+    return ["exec", ...this.commonArgs(outFile), text];
   }
 
   /** 续接参数（exec resume <id>；UUID 或 thread name） */
-  resumeArgs(text: string, sessionId: string, mode: "readonly" | "full", outFile: string): string[] {
-    return ["exec", "resume", sessionId, ...this.commonArgs(mode, outFile), text];
+  resumeArgs(text: string, sessionId: string, outFile: string): string[] {
+    return ["exec", "resume", sessionId, ...this.commonArgs(outFile), text];
   }
 
-  private commonArgs(mode: "readonly" | "full", outFile: string): string[] {
-    const sandbox = mode === "full" ? "workspace-write" : "read-only";
+  private commonArgs(outFile: string): string[] {
+    const sandbox = "read-only";
     return [
       "--json",
       "-s", sandbox,
@@ -72,15 +71,15 @@ export class CodexAdapter {
   }
 
   /** 建会话并注入首条消息；会话 id 由 CLI 侧生成（JSONL 提取，daemon 不预生成） */
-  async createSession(text: string, mode: "readonly" | "full"): Promise<CodexTurn> {
+  async createSession(text: string): Promise<CodexTurn> {
     const outFile = join(this.tmpDir, `agentbus-codex-${randomUUID()}.txt`);
-    return this.runTurn(this.createArgs(text, mode, outFile), outFile);
+    return this.runTurn(this.createArgs(text, outFile), outFile);
   }
 
-  /** 信任级别显式的续接注入（TASK-09 信封链路使用） */
-  async injectWith(text: string, sessionId: string, mode: "readonly" | "full"): Promise<CodexTurn> {
+  /** 续接注入（TASK-09 信封链路使用；恒只读档） */
+  async injectWith(text: string, sessionId: string): Promise<CodexTurn> {
     const outFile = join(this.tmpDir, `agentbus-codex-${randomUUID()}.txt`);
-    return this.runTurn(this.resumeArgs(text, sessionId, mode, outFile), outFile);
+    return this.runTurn(this.resumeArgs(text, sessionId, outFile), outFile);
   }
 
   private async runTurn(args: string[], outFile: string): Promise<CodexTurn> {

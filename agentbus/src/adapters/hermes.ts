@@ -5,7 +5,7 @@
  * - `-z <prompt>` oneshot：只输出最终结果（stdout 即回合输出），自动绕过审批
  * - `-c <名>` 按名建/续会话（会话名 = 推送来源 client_id）；建/续同一命令形态（按名幂等）
  *   ⚠️ `-c` 对不存在的会话名是新建还是报错待远端实测；报错则回退 `--resume <id>`（架构 5.5）
- * - 无只读权限档（--safe-mode 仅禁自定义扩展，非只读）→ readonly 仅信封约束（架构 4.7 回退）
+ * - 无只读权限档（--safe-mode 仅禁自定义扩展，非只读）→ 恒只读，仅信封约束（架构 4.7）
  * - 配 remote（架构 4.4 tools.hermes.remote）时经 SSH 注入远端：
  *   `ssh -o BatchMode=yes [-i key] [user@]host "cd <workspace> && hermes -z ... -c ..."`
  */
@@ -53,23 +53,23 @@ export class HermesAdapter {
     return ["-z", text, "-c", sessionName];
   }
 
-  /** readonly/full 形态相同：hermes 无只读权限档（readonly 仅信封约束）；-z 已自动免确认 */
-  createSessionArgs(text: string, sessionName: string, _mode?: "readonly" | "full"): string[] {
+  /** hermes 无只读权限档：只读仅靠信封约束；-z 已自动免确认 */
+  createSessionArgs(text: string, sessionName: string): string[] {
     return this.turnArgs(text, sessionName);
   }
 
-  injectArgs(text: string, sessionName: string, _mode?: "readonly" | "full"): string[] {
+  injectArgs(text: string, sessionName: string): string[] {
     return this.turnArgs(text, sessionName);
   }
 
   /** 建会话并注入首条消息；sessionId 语义 = 会话名（按名续接） */
-  async createSession(text: string, sessionName: string, mode?: "readonly" | "full"): Promise<AdapterTurn> {
-    return this.runTurn(this.createSessionArgs(text, sessionName, mode), sessionName);
+  async createSession(text: string, sessionName: string): Promise<AdapterTurn> {
+    return this.runTurn(this.createSessionArgs(text, sessionName), sessionName);
   }
 
   /** 按名续接注入（与 create 同命令形态） */
-  async inject(text: string, sessionName: string, mode?: "readonly" | "full"): Promise<AdapterTurn> {
-    return this.runTurn(this.injectArgs(text, sessionName, mode), sessionName);
+  async inject(text: string, sessionName: string): Promise<AdapterTurn> {
+    return this.runTurn(this.injectArgs(text, sessionName), sessionName);
   }
 
   private async runTurn(args: string[], sessionName: string): Promise<AdapterTurn> {
