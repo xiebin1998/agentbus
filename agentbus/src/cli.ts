@@ -65,7 +65,14 @@ function realBackgroundDeps(workDir: string): BackgroundDeps {
       spawn(cmd, args, { ...opts, windowsHide: true }).unref();
     },
     kill: (pid) => {
-      try { process.kill(pid, "SIGTERM"); } catch { /* 已死 */ }
+      // Windows 用 taskkill 强杀（process.kill SIGTERM 在 Windows 上不可靠）
+      if (process.platform === "win32") {
+        try {
+          spawnSync("taskkill", ["/F", "/PID", String(pid)], { stdio: "ignore" });
+        } catch { /* 已死 */ }
+      } else {
+        try { process.kill(pid, "SIGTERM"); } catch { /* 已死 */ }
+      }
       // Windows 实测 SIGTERM 为强杀（handler 不运行）→ 按 config 端口回收孤儿 serve（同 daemon stop 口径）
       if (process.platform === "win32") {
         try {
