@@ -18,7 +18,7 @@ def _by_name(tools):
 class TestReadOnlyHint:
     def test_查询与回复类工具声明_readOnlyHint(self):
         tools = _by_name(build_tools())
-        for name in ["list_agents", "get_agent_info", "send_message", "ack_message"]:
+        for name in ["list_agents", "get_agent_info", "send_message"]:
             t = tools[name]
             assert t.annotations is not None, f"{name} 缺少 annotations"
             assert t.annotations.readOnlyHint is True, f"{name} 应声明 readOnlyHint=True"
@@ -48,11 +48,9 @@ class TestDescriptions:
         desc = _by_name(build_tools())["list_agents"].description
         assert "查询" in desc or "列出" in desc
 
-    def test_ack_message_描述限定回执用途(self):
-        desc = _by_name(build_tools())["ack_message"].description
-        assert "确认" in desc or "回执" in desc
-
     def test_工具集完整性(self):
         names = set(_by_name(build_tools()).keys())
-        assert {"update_agent", "send_message", "ack_message",
+        assert {"update_agent", "send_message",
                 "list_agents", "get_agent_info"} <= names
+        # 定位收敛：ack_message 已移除（无消费者死重，工具面收敛为单一发声方式）
+        assert "ack_message" not in names

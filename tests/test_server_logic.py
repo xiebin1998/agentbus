@@ -5,7 +5,6 @@
 - resolve_target: 目标解析（跨 ns、@tool 剥离）
 - build_pub_topics: 群发展开 + 去重
 - check_text_size: 64KB 消息体上限
-- can_ack: ack 归属校验
 """
 import sys
 import threading
@@ -140,29 +139,6 @@ class TestCheckTextSize:
     def test_over_limit_rejected(self):
         with pytest.raises(ValueError):
             server.check_text_size("x" * (server.MAX_TEXT_BYTES + 1))
-
-
-# ---------- can_ack ----------
-
-class TestCanAck:
-    def test_sender_can_ack(self):
-        stored = {"from": "a", "to": "b"}
-        assert server.can_ack(stored, "a") is True
-
-    def test_receiver_can_ack(self):
-        stored = {"from": "a", "to": "b"}
-        assert server.can_ack(stored, "b") is True
-
-    def test_group_receiver_can_ack(self):
-        stored = {"from": "a", "to": ["b", "c"]}
-        assert server.can_ack(stored, "c") is True
-
-    def test_unrelated_caller_denied(self):
-        stored = {"from": "a", "to": "b"}
-        assert server.can_ack(stored, "x") is False
-
-    def test_missing_stored_denied(self):
-        assert server.can_ack(None, "a") is False
 
 
 # ---------- MQTT 就绪门控（TASK-13 冒烟：SSE 握手返回时订阅未完成，早到回复丢失；

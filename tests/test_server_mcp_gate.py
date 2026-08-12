@@ -19,8 +19,10 @@ class TestGateRemoved:
     def test_register_agent_已移出工具清单(self):
         names = {t.name for t in server.build_tools()}
         assert "register_agent" not in names
-        assert {"update_agent", "send_message", "ack_message", "list_agents",
+        assert {"update_agent", "send_message", "list_agents",
                 "get_agent_info", "find_agents_by_capability", "get_status"} <= names
+        # 定位收敛：ack_message 已移除，调用返回未知工具
+        assert "ack_message" not in names
 
     def test_工具描述不再声明门控前提(self):
         for t in server.build_tools():
@@ -60,6 +62,11 @@ class TestNoGateDispatch:
     def test_register_agent_调用返回未知工具(self):
         text = asyncio.run(_call_tool("register_agent",
                                       {"name": "x", "description": "y", "capabilities": []}))
+        assert "Unknown tool" in text
+
+    def test_ack_message_调用返回未知工具(self):
+        """定位收敛：ack_message 已移除（无消费者死重），工具面收敛为 send_message 单一发声方式"""
+        text = asyncio.run(_call_tool("ack_message", {"id": "any"}))
         assert "Unknown tool" in text
 
     def test_未注册未上线不再拦截只读工具(self):

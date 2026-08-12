@@ -23,7 +23,6 @@ MCP 工具：
 ├── get_agent_info(client_id)                         查询 Agent 信息
 ├── find_agents_by_capability(capability)             按能力查找
 ├── list_agents()                                     列出所有 Agent
-├── ack_message(id)                                   确认收到
 └── get_status()                                      获取状态
 """
 
@@ -329,18 +328,6 @@ def agent_online(key: str, presence: Dict[str, dict], metrics: Dict[str, dict],
     if latest is None:
         return False
     return (now - latest).total_seconds() <= heartbeat_s
-
-
-def can_ack(stored: Optional[dict], caller: str) -> bool:
-    """ack 归属校验（架构 11.8 缺陷 4）：仅发送方/接收方可标记已读"""
-    if not stored:
-        return False
-    if stored.get("from") == caller:
-        return True
-    to = stored.get("to")
-    if isinstance(to, list):
-        return caller in to
-    return to == caller
 
 
 # ─── ns 接入与内存治理（TASK-02） ────────────────────────────────────────
@@ -798,16 +785,6 @@ def build_tools() -> List[Tool]:
             annotations=readonly,
         ),
         Tool(
-            name="ack_message",
-            description="对消息 ID 回执确认（确认收到入站消息）；仅用于回应 [AgentBus] 入站信封，不发送任何内容。",
-            inputSchema={
-                "type": "object",
-                "properties": {"id": {"type": "string", "description": "消息 ID"}},
-                "required": ["id"],
-            },
-            annotations=readonly,
-        ),
-        Tool(
             name="list_agents",
             description="查询所有在线 Agent 及其能力列表（只读查询，不修改任何状态）。",
             inputSchema={"type": "object", "properties": {}},
@@ -955,18 +932,6 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
                 result["unconfirmed"] = unknown
                 result["note"] = "以下目标未保持 SSE 会话（可能是纯 MQTT 直连），已尽力发布，在线状态未知"
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
-        
-        elif name == "ack_message":
-            msg_id = arguments["id"]
-            stored = _messages.get(msg_id)
-            if stored is None:
-                return [TextContent(type="text", text=json.dumps({"error": "Unknown message id"}, indent=2))]
-            if not can_ack(stored, session.key):
-                return [TextContent(type="text", text=json.dumps({"error": "无权确认该消息（仅发送方/接收方可 ack）"}, ensure_ascii=False, indent=2))]
-            stored["acknowledged"] = True
-            stored["acknowledged_at"] = datetime.now(timezone.utc).isoformat()
-            logger.info(f"[{session.key}] Acknowledged: {msg_id}")
-            return [TextContent(type="text", text=json.dumps({"status": "acknowledged", "id": msg_id}, indent=2))]
         
         elif name == "list_agents":
             agents = []
