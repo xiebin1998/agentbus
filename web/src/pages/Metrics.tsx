@@ -260,7 +260,14 @@ function AgentRow({ a, onEdit, onDelete }: { a: AgentEntry; onEdit: () => void; 
           {a.tools.map((t) => <Badge key={t} variant="outline">{t}</Badge>)}
         </div>
       </TD>
-      <TD>{a.online ? <Badge variant="success">在线</Badge> : <Badge variant="secondary">离线</Badge>}</TD>
+      <TD>
+        <div className="flex items-center gap-1.5">
+          {a.online
+            ? <Badge variant="success" title="daemon 在线：presence 状态 + 60s 心跳窗口，消息可投递">在线</Badge>
+            : <Badge variant="secondary" title="daemon 离线：消息发送将被拒发">离线</Badge>}
+          {a.sse_connected && <Badge variant="outline" title="MCP SSE 会话存活（可调用工具）">SSE</Badge>}
+        </div>
+      </TD>
       <TD>
         {a.last_seen ? (
           <Badge variant="success">{formatTime(a.last_seen)}</Badge>

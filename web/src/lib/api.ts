@@ -69,6 +69,8 @@ export interface AgentEntry {
   capabilities: string[];
   registered: boolean;
   online: boolean;
+  /** SSE（MCP）会话存活：可调工具，不代表可收消息 */
+  sse_connected: boolean;
   last_seen: string | null;
   report_count: number;
   metrics: Partial<MetricTotals> & { senders?: number; uptime_s?: number };
