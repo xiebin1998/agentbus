@@ -34,6 +34,13 @@ export interface Listener {
   publish(topic: string, payloadJson: string): Promise<void>;
   isConnected(): boolean;
 }
+/**
+ * 在线态 topic（LWT 遗嘱与 online/offline retained 状态通道）
+ */
+export function presenceTopic(ns: string, clientId: string): string {
+  return `/agentbus/ai/status/${ns}/${clientId}`;
+}
+
 
 /**
  * TASK-25：由 broker 配置构造 mqtt.connect 选项（纯函数，便于单测）。

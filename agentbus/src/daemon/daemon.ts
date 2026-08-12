@@ -17,11 +17,9 @@ import { QoderAdapter } from "../adapters/qoder.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { HermesAdapter, type HermesRemoteConfig } from "../adapters/hermes.js";
 import { CodexAdapter } from "../adapters/codex.js";
-import { createListener, type Listener, type ListenerOptions } from "./listener.js";
+import { createListener, type Listener, type ListenerOptions, presenceTopic } from "./listener.js";
 import { RotatingLogger } from "./logger.js";
-import { MetricsCollector, buildMetricPayload, metricTopic, presenceTopic } from "./metrics.js";
 import { acquirePidLock, releasePidLock } from "./pid.js";
-import { QueueManager } from "./queue.js";
 import { knownSenders, loadRegistry, saveRegistry, touchSession, type RegistryData } from "./registry.js";
 import { Router, type RouterConfig } from "./router.js";
 import { ServeManager } from "./serve-manager.js";
@@ -50,7 +48,6 @@ export interface DaemonOptions {
   /** 注入钩子；缺省按工具名走真实适配器 */
   inject?: InjectHandler;
   /** 指标上报周期（TASK-19；默认 30s，测试可注入短间隔） */
-  metricIntervalMs?: number;
   /** TASK-32：致命退出钩子（默认 process.exit；测试注入捕获） */
   onExit?: (code: number) => void;
   /** TASK-32：listener 工厂钩子（默认真 MQTT；测试注入假实现） */
@@ -96,15 +93,12 @@ export class Daemon {
   private router: Router | null = null;
   private listener: Listener | null = null;
   private registry: RegistryData | null = null;
-  private queues = new QueueManager<QueueItem>(20);
   /** TASK-29：同一发件人在同一工具的回合串行（并发不串话）；异会话并行 */
   private sessionLock = new SessionLock();
   /** TASK-30：隔离引用计数（同 workspace 并发回合共享隔离，归零才解除） */
   private isolateStates = new Map<string, { count: number; chain: Promise<void> }>();
   private serveManager = new ServeManager({ warn: (m) => this.logger.warn(m) });
   private logger: RotatingLogger;
-  private metrics = new MetricsCollector();
-  private metricTimer: ReturnType<typeof setInterval> | null = null;
   private pidFile: string;
   private regPath: string;
   private started = false;
@@ -176,21 +170,14 @@ export class Daemon {
       },
       // 连接就绪补报：启动即报几乎必早于 MQTT 连上（被 isConnected 门控跳过），
       // 首连/重连就绪后立即补报一次，避免首次入册等满一个周期（30s）
-      onConnect: () => this.publishMetric(),
-    });
+          });
     void this.listener.start().catch((e: Error) =>
       this.logger.error(`MQTT 首次连接失败，进入重连: ${e.message}`),
     );
 
-    // 5. 指标上报（TASK-19）：启动即报一次 + 周期上报；未就绪时静默跳过，下周期重试
-    const interval = this.opts.metricIntervalMs ?? 30_000;
+    // 5. 启动就绪
     this.started = true;
-    this.publishMetric();
     void this.syncSnapshot();
-    this.metricTimer = setInterval(() => {
-      this.publishMetric();
-      void this.syncSnapshot();
-    }, interval);
 
     this.logger.info(`daemon started: ${this.selfIdentity} 订阅 ${topic}`);
     return { started: true, reason: `daemon 已启动（pid ${process.pid}）` };
@@ -210,7 +197,7 @@ export class Daemon {
     switch (decision.action) {
       case "drop":
         // 指标分类（TASK-19）：去重命中与其余丢弃分开计数
-        this.metrics.count(decision.kind === "dedup" ? "deduped" : "dropped");
+        
         if (decision.alert) this.logger.warn(`丢弃: ${decision.reason}`);
         else this.logger.info(`丢弃: ${decision.reason}`);
         return;
@@ -251,11 +238,7 @@ export class Daemon {
     }
 
     if (decision.queued) {
-      this.metrics.count("queued");
-      // 限速溢出：进 FIFO 队列；满则逐出最旧（落日志）
-      const { evicted } = this.queues.push(decision.tool, { tool: decision.tool, sessionId: entry.sessionId, msg: message! });
-      if (evicted) this.logger.warn(`队列已满，逐出最旧消息 id=${evicted.msg.id}`);
-      this.logger.info(`${decision.reason}（当前队列深度 ${this.queues.depth(decision.tool)}）`);
+      this.logger.info(decision.reason);
       return;
     }
 
@@ -329,7 +312,7 @@ export class Daemon {
       if (isolated) this.isolateRelease(this.resolveWorkspace(tool));
     }
     // 注入结果计数（TASK-19：注入成功率指标源）
-    this.metrics.count(failed ? "injected_fail" : "injected_ok");
+    
 
     // 回复通道（4.6）：expect_reply=true 时代回输出；失败发 control 通知防对方干等
     if (msg.expect_reply) {
@@ -348,8 +331,6 @@ export class Daemon {
 
     // 消费后按 FIFO 续排下一条
     this.router!.dequeue(msg.from);
-    const next = this.queues.pop(tool);
-    if (next) this.runLocked(next.tool, next.sessionId, next.msg, false);
   }
 
   /** 会话工作目录：tools.<工具>.workspace 配置优先，缺省当前目录 */
@@ -533,22 +514,6 @@ export class Daemon {
     await this.listener.publish(topic, JSON.stringify(msg));
   }
 
-  /** 指标上报（TASK-19）：publish 到 /agentbus/ai/metric/<ns>/<client_id>；连接未就绪静默跳过 */
-  private publishMetric(): void {
-    if (!this.started || !this.listener || !this.listener.isConnected()) return;
-    const cfg = this.opts.config;
-    const senders = this.registry ? Object.keys(this.registry.senders).length : 0;
-    // TASK-32：附带 tools（config.tools 键列表）供 hub 归并注册工具
-    const payload = buildMetricPayload(this.selfIdentity, this.metrics, {
-      senders,
-      tools: Object.keys(cfg.tools),
-    });
-    void this.listener.publish(metricTopic(cfg.ns, cfg.client_id), payload).catch((e: Error) =>
-      this.logger.warn(`指标上报失败: ${e.message}`),
-    );
-  }
-
-  /** TASK-32：同伴快照同步（随指标周期）：GET 快照端点 → 原子写 agents.json；失败静默保留旧文件 */
   private async syncSnapshot(): Promise<void> {
     if (!this.started) return;
     const cfg = this.opts.config;
@@ -566,10 +531,6 @@ export class Daemon {
   async stop(): Promise<void> {
     if (!this.started) return;
     this.started = false; // 先行置位：幂等防重入，关闭期间的日志照常落盘
-    if (this.metricTimer) {
-      clearInterval(this.metricTimer);
-      this.metricTimer = null;
-    }
     this.serveManager.stopAll();
     await this.listener?.stop();
     releasePidLock(this.pidFile);

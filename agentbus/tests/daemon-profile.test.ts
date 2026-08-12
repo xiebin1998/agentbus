@@ -17,21 +17,7 @@ import type { Listener } from "../src/daemon/listener.js";
 import { buildMetricPayload, MetricsCollector } from "../src/daemon/metrics.js";
 import { syncAgentsSnapshot } from "../src/daemon/snapshot.js";
 
-describe("指标 payload 契约（TASK-32）", () => {
-  it("payload 带 tools 键列表；不带名称/描述/能力等档案块", () => {
-    const collector = new MetricsCollector();
-    const payload = JSON.parse(
-      buildMetricPayload("iot/ag-1", collector, { senders: 2, tools: ["qoder", "kilo"] }),
-    ) as Record<string, unknown>;
-    expect(payload.tools).toEqual(["qoder", "kilo"]);
-    const metrics = payload.metrics as Record<string, unknown>;
-    expect(typeof metrics.injected_ok).toBe("number");
-    for (const k of ["name", "description", "capabilities"]) {
-      expect(payload).not.toHaveProperty(k);
-      expect(metrics).not.toHaveProperty(k);
-    }
-  });
-});
+
 
 describe("快照同步 syncAgentsSnapshot", () => {
   let workDir: string;

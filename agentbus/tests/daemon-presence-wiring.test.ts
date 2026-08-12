@@ -1,7 +1,7 @@
 /** daemon 装配：listener 工厂必须收到 presence（topic=/agentbus/ai/status/<ns>/<cid>） */
 import { expect, it } from "vitest";
 import { Daemon } from "../src/daemon/daemon.js";
-import { presenceTopic } from "../src/daemon/metrics.js";
+import { presenceTopic } from "../src/daemon/listener.js";
 import type { ListenerOptions } from "../src/daemon/listener.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
