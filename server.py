@@ -86,6 +86,10 @@ TOPIC_MESSAGE = "/agentbus/ai/channel/{client_id}/message"
 TOPIC_METRIC_PREFIX = "/agentbus/ai/metric/"
 TOPIC_METRIC_WILDCARD = "/agentbus/ai/metric/#"
 
+# TASK-33：daemon 在线态通道（LWT 遗嘱 + retained online/offline）
+TOPIC_STATUS_PREFIX = "/agentbus/ai/status/"
+TOPIC_STATUS_WILDCARD = "/agentbus/ai/status/#"
+
 # 四期：共享连接通配订阅（flat 兼容已删除，仅 ns 形态）
 TOPIC_MESSAGE_PREFIX = "/agentbus/ai/channel/"
 TOPIC_MESSAGE_WILDCARD_NS = "/agentbus/ai/channel/+/+/message"
@@ -169,6 +173,16 @@ def parse_metric_topic(topic: str) -> Optional[str]:
     if len(parts) == 2 and parts[0] and parts[1]:
         return f"{parts[0]}/{parts[1]}"
     return None
+
+
+def parse_status_topic(topic: str) -> Optional[str]:
+    """/agentbus/ai/status/<ns>/<cid> → <ns>/<cid>；段数不符返回 None"""
+    if not topic.startswith(TOPIC_STATUS_PREFIX):
+        return None
+    parts = topic[len(TOPIC_STATUS_PREFIX):].split("/")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return None
+    return f"{parts[0]}/{parts[1]}"
 
 
 def parse_message_topic(topic: str) -> Optional[tuple]:
@@ -458,6 +472,25 @@ _shared_client: Optional[mqtt.Client] = None
 _shared_ready = threading.Event()
 
 
+def _handle_presence_message(msg) -> None:
+    """TASK-33 presence 事件入库：payload.identity 优先，回退 topic 推导（retained/遗嘱同路径）"""
+    try:
+        payload = json.loads(msg.payload.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+    if not isinstance(payload, dict):
+        return
+    identity = payload.get("identity")
+    if not (isinstance(identity, str) and identity.strip()):
+        identity = parse_status_topic(msg.topic)
+    if not identity:
+        return
+    state = payload.get("state")
+    if state not in ("online", "offline"):
+        return
+    _presence_store.update(identity, state, payload.get("ts"), str(payload.get("reason") or ""))
+
+
 def _handle_metric_message(msg) -> None:
     """TASK-19 metric 消息入库（原 metric 连接 on_message 逻辑，TASK-24 并入共享连接路由）"""
     try:
@@ -518,10 +551,11 @@ def start_shared_client() -> None:
             c.subscribe([
                 (TOPIC_MESSAGE_WILDCARD_NS, 2),
                 (TOPIC_METRIC_WILDCARD, 1),
+                (TOPIC_STATUS_WILDCARD, 1),
                 (hub_dynsec.RESPONSE_TOPIC, 1),
             ])
             _shared_ready.set()
-            logger.info(f"[hub-shared] subscribed to {TOPIC_MESSAGE_WILDCARD_NS}, {TOPIC_METRIC_WILDCARD}, {hub_dynsec.RESPONSE_TOPIC}")
+            logger.info(f"[hub-shared] subscribed to {TOPIC_MESSAGE_WILDCARD_NS}, {TOPIC_METRIC_WILDCARD}, {TOPIC_STATUS_WILDCARD}, {hub_dynsec.RESPONSE_TOPIC}")
         else:
             logger.error(f"[hub-shared] connect failed: rc={rc}")
 
@@ -534,6 +568,9 @@ def start_shared_client() -> None:
             # 四期：dynsec 命令响应转给客户端执行器（串行请求-响应配对）
             if DYNSEC_CLIENT is not None:
                 DYNSEC_CLIENT.on_response(msg.payload)
+            return
+        if msg.topic.startswith(TOPIC_STATUS_PREFIX):
+            _handle_presence_message(msg)
             return
         if msg.topic.startswith(TOPIC_METRIC_PREFIX):
             _handle_metric_message(msg)

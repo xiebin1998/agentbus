@@ -1,5 +1,6 @@
 """LWT presence 在线态：显式状态 + 60s 心跳兜底 + 无 presence 旧客户端回退指标窗口。"""
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 NOW = datetime(2026, 8, 12, 2, 0, 0, tzinfo=timezone.utc)
 
@@ -49,3 +50,36 @@ def test_presence_store_update_and_snapshot():
     assert snap["iot/b"]["state"] == "offline"
     store.remove("iot/a")
     assert "iot/a" not in store.snapshot()
+
+
+def test_parse_status_topic():
+    import server
+    assert server.parse_status_topic("/agentbus/ai/status/iot/ag-1") == "iot/ag-1"
+    assert server.parse_status_topic("/agentbus/ai/status/onlyone") is None
+    assert server.parse_status_topic("/agentbus/other/x") is None
+
+
+def test_handle_presence_message_updates_store():
+    import server
+    saved = server._presence_store.snapshot()
+    try:
+        msg = SimpleNamespace(
+            topic="/agentbus/ai/status/iot/ag-p",
+            payload=b'{"type":"presence","state":"online","identity":"iot/ag-p","ts":"2026-08-12T02:00:00Z"}',
+        )
+        server._handle_presence_message(msg)
+        assert server._presence_store.snapshot()["iot/ag-p"]["state"] == "online"
+        # 身份缺失时回退 topic 推导
+        msg2 = SimpleNamespace(
+            topic="/agentbus/ai/status/iot/ag-q",
+            payload=b'{"type":"presence","state":"offline","reason":"graceful_stop"}',
+        )
+        server._handle_presence_message(msg2)
+        assert server._presence_store.snapshot()["iot/ag-q"]["state"] == "offline"
+        # 非法 JSON 静默忽略
+        server._handle_presence_message(SimpleNamespace(topic="/agentbus/ai/status/iot/ag-r", payload=b"not-json"))
+        assert "iot/ag-r" not in server._presence_store.snapshot()
+    finally:
+        server._presence_store._data.clear()
+        for k, v in saved.items():
+            server._presence_store.update(k, v["state"], v["ts"], v.get("reason", ""))
