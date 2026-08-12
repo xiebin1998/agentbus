@@ -83,3 +83,23 @@ def test_handle_presence_message_updates_store():
         server._presence_store._data.clear()
         for k, v in saved.items():
             server._presence_store.update(k, v["state"], v["ts"], v.get("reason", ""))
+
+
+def test_handle_presence_message_rejects_cross_ns_identity_spoof():
+    """信任边界：payload.identity 与 topic 身份不一致（跨 ns 伪造）→ 丢弃，不入库"""
+    import server
+    saved = server._presence_store.snapshot()
+    try:
+        msg = SimpleNamespace(
+            topic="/agentbus/ai/status/iot/ag-x",
+            payload=b'{"type":"presence","state":"offline","identity":"pay/victim"}',
+        )
+        server._handle_presence_message(msg)
+        snap = server._presence_store.snapshot()
+        assert "pay/victim" not in snap
+        assert "iot/ag-x" not in snap
+    finally:
+        server._presence_store._data.clear()
+        for k, v in saved.items():
+            server._presence_store.update(k, v["state"], v["ts"], v.get("reason", ""))
+

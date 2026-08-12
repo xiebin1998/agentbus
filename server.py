@@ -473,17 +473,22 @@ _shared_ready = threading.Event()
 
 
 def _handle_presence_message(msg) -> None:
-    """TASK-33 presence 事件入库：payload.identity 优先，回退 topic 推导（retained/遗嘱同路径）"""
+    """TASK-33 presence 事件入库：payload.identity 优先，但必须与 topic 身份一致（防跨 ns 伪造）；
+    缺失时回退 topic 推导（retained/遗嘱同路径）"""
     try:
         payload = json.loads(msg.payload.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return
     if not isinstance(payload, dict):
         return
+    topic_identity = parse_status_topic(msg.topic)
     identity = payload.get("identity")
     if not (isinstance(identity, str) and identity.strip()):
-        identity = parse_status_topic(msg.topic)
+        identity = topic_identity
     if not identity:
+        return
+    if topic_identity and identity != topic_identity:
+        logger.warning(f"presence 身份不匹配丢弃：topic={msg.topic} payload.identity={identity}")
         return
     state = payload.get("state")
     if state not in ("online", "offline"):
@@ -997,13 +1002,14 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
         
         elif name == "get_status":
             snapshot = _metrics_store.snapshot()
+            presence = _presence_store.snapshot()
             entry = snapshot.get(session.key)
             status = {
                 "client_id": client_id,
                 "registered": session.is_registered(),
-                "mqtt_connected": agent_online(session.key, _presence_store.snapshot(), snapshot,
+                "mqtt_connected": agent_online(session.key, presence, snapshot,
                                                datetime.now(timezone.utc)),
-                "presence_state": (_presence_store.snapshot().get(session.key) or {}).get("state"),
+                "presence_state": (presence.get(session.key) or {}).get("state"),
                 "sub_topic": session.sub_topic,
                 "mqtt_broker": f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}",
                 "metric_last_seen": (entry or {}).get("last_seen"),
@@ -1016,7 +1022,7 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
                     status.update({"name": row["name"], "description": row["description"],
                                    "capabilities": row["capabilities"], "tools": row["tools"],
                                    "owner": row["owner"]})
-            status["online"] = not _offline_targets([session.key], snapshot, datetime.now(timezone.utc))
+            status["online"] = agent_online(session.key, presence, snapshot, datetime.now(timezone.utc))
             return [TextContent(type="text", text=json.dumps(status, ensure_ascii=False, indent=2))]
         
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -1640,7 +1646,7 @@ async def api_agent_register(request: Request):
 
 async def api_agent_snapshot(request: Request):
     """TASK-32：ns 内全量 Agent 档案快照（daemon 轮询同步 agents.json 用）。
-    鉴权同注册端点；online=last_seen 90s 窗口。"""
+    鉴权同注册端点；online=agent_online 统一口径（presence + 60s 心跳 / 旧客户端回退 90s 指标）。"""
     owner = _agent_basic_auth(request)
     if owner is None:
         expected = os.getenv("MCP_API_TOKEN") or ""
@@ -1652,6 +1658,7 @@ async def api_agent_snapshot(request: Request):
     rows = hub_store.list_agents(DB_CONN, ns) if DB_CONN is not None else []
     disp = _owner_display_names({r["owner"] for r in rows})
     snapshot = _metrics_store.snapshot()
+    presence = _presence_store.snapshot()
     now = datetime.now(timezone.utc)
     agents = []
     for r in rows:
@@ -1662,7 +1669,7 @@ async def api_agent_snapshot(request: Request):
             "description": r["description"],
             "capabilities": r["capabilities"],
             "tools": r["tools"],
-            "online": key not in _offline_targets([key], snapshot, now),
+            "online": agent_online(key, presence, snapshot, now),
         }
         dn = disp.get(r["owner"], "")
         if dn:
