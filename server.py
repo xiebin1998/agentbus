@@ -1396,15 +1396,7 @@ async def api_metrics(request: Request):
     })
 
 
-async def api_metrics_summary(request: Request):
-    """指标页：该 ns 全部 daemon 指标汇总（?ns= 必填，未授权 403）"""
-    user = hub_auth.current_user(request)
-    ns = (request.query_params.get("ns") or "").strip()
-    if not ns:
-        return _json_error("缺少 ns 参数")
-    if not _ns_visible(user, ns):
-        return _json_error("forbidden", 403)
-    return JSONResponse(build_metric_summary(_filtered_snapshot(ns)))
+# api_metrics_summary 已废弃：metrics 已移除
 
 
 # ─── TASK-31：Agent 明细（注册信息 × 在线状态 × daemon 指标 三源合并）───────
@@ -1666,7 +1658,6 @@ async def api_agent_snapshot(request: Request):
             "name": session.info.name,
             "description": session.info.description,
             "capabilities": session.info.capabilities or [],
-            "tools": list(session.info.tools.keys()) if session.info.tools else [],
             "online": agent_online(key, presence, now),
         })
     return JSONResponse({"generated_at": now.isoformat(), "agents": agents})
@@ -1767,7 +1758,6 @@ app = Starlette(
         Route("/api/console/accounts/{username}/password", hub_auth.session_guard(api_account_password), methods=["POST"]),
         Route("/api/console/connect-command", hub_auth.session_guard(api_connect_command), methods=["GET"]),
         Route("/api/console/metrics", hub_auth.session_guard(api_metrics), methods=["GET"]),
-        Route("/api/console/metrics/summary", hub_auth.session_guard(api_metrics_summary), methods=["GET"]),
         Route("/api/console/agents", hub_auth.session_guard(api_console_agents), methods=["GET"]),
         Route("/api/console/agents/{cid}", hub_auth.session_guard(api_console_agent_patch), methods=["PATCH"]),
         Route("/api/console/agents/{cid}", hub_auth.session_guard(api_console_agent_delete), methods=["DELETE"]),
