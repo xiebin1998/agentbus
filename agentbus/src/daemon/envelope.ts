@@ -4,15 +4,14 @@
  * daemon 注入工具的不是裸 text，而是包装后的信封：
  * - 首行 [AgentBus] 元数据：机器可识别，agent 据此区分总线消息与用户输入
  * - skill 显式加载指令：确定性触发静态契约（5.6）
- * - 只读禁令行无条件输出（沟通定位：入站恒只读，与 CLI 只读档参数一致，4.7 提示层不越权）
- * - expect_reply 决定是否要求最终输出代回
+ * - expect_reply 决定是否需要回复
  */
 import type { BusMessage } from "../protocol.js";
 
 export function buildEnvelope(msg: BusMessage, sessionId?: string): string {
   const header =
     `[AgentBus] id=${msg.id} from=${msg.from} hop=${msg.hop} ` +
-    `expect_reply=${msg.expect_reply} mode=readonly`;
+    `expect_reply=${msg.expect_reply}`;
 
   const lines: string[] = [header];
 
@@ -27,15 +26,18 @@ export function buildEnvelope(msg: BusMessage, sessionId?: string): string {
   }
 
   lines.push(
-    "本消息来自 AgentBus 总线，请加载 `agentbus` skill 处理（本工具不支持 skill 时按以下指令与项目 AGENTS.md 约定）。",
+    "本消息来自 AgentBus 总线，请加载 `agentbus` skill 处理。",
   );
 
-  lines.push("本回合为只读请求：仅允许读取文件/检索/作答，禁止修改任何文件、禁止执行命令。");
-
   if (msg.expect_reply) {
-    lines.push("处理完成后将结论作为最终输出直接给出（daemon 会代你回传），无需调用 send_message 回复。");
+    lines.push("收到 expect_reply=true 的消息，处理完成后请调用 send_message 回复：");
+    lines.push(`- 携带 reply_to=${msg.id}（原消息 ID）`);
+    lines.push(`- 携带 to=${msg.from}（回复发送方）`);
+    if (msg.session) {
+      lines.push(`- 携带 session_id=${msg.session}（回传发起方会话 ID）`);
+    }
   } else {
-    lines.push("本条为通知类消息，无需回复。");
+    lines.push("本条为通知类消息（expect_reply=false），无需回复。");
   }
 
   return `${lines.join("\n")}\n\n${msg.text}`;
