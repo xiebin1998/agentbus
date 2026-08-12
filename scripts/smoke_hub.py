@@ -35,7 +35,7 @@ received: list = []
 def start_verifier() -> mqtt.Client:
     sub = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="smoke-verifier")
     sub.on_connect = lambda c, u, f, rc, p=None: c.subscribe(
-        f"/agenthub/ai/channel/{NS}/{SENDER_ID}/message", qos=1
+        f"/agentbus/ai/channel/{NS}/{SENDER_ID}/message", qos=1
     )
     sub.on_message = lambda c, u, msg: received.append(json.loads(msg.payload))
     sub.connect("127.0.0.1", BROKER_PORT)
