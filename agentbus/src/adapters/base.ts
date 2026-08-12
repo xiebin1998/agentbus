@@ -65,10 +65,13 @@ const CMD_META = /[ \t&|<>^%!()"]/;
  * cmd.exe 参数引用转义（TASK-22 实测：sse_url 中 & 被当命令分隔符导致 codex mcp add 恒失败）：
  * 含元字符时整体加引号（引号内 & 等为字面量），内部引号与尾部反斜杠按 Windows argv 规则翻倍转义；
  * 无元字符不加引号（避免破坏 echo %1 类 shim 的既有行为）。配合 windowsVerbatimArguments 防 libuv 二次加引号。
+ * 换行先压平为空格：实测 cmd.exe 遇换行即断命令（引号内也不例外）——多行信封经 .cmd shim
+ * 时首行之后的指令行与正文会整体丢失（收件方只看到信封头）。cmd 命令行物理上无法承载嵌入换行。
  */
 export function escapeCmdArg(arg: string): string {
-  if (!CMD_META.test(arg)) return arg;
-  const escaped = arg.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1");
+  const flat = arg.replace(/\r?\n/g, " ");
+  if (!CMD_META.test(flat)) return flat;
+  const escaped = flat.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1");
   return `"${escaped}"`;
 }
 

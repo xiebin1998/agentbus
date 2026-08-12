@@ -2,7 +2,7 @@
  * TASK-07: Adapter 执行框架 base.ts —— spawn 收集 stdout/stderr + 超时 kill
  */
 import { describe, expect, it } from "vitest";
-import { resolveSpawnTarget } from "../src/adapters/base.js";
+import { escapeCmdArg, resolveSpawnTarget } from "../src/adapters/base.js";
 
 describe("resolveSpawnTarget（TASK-27 抽出：长活进程复用 Windows shim 解析）", () => {
   it("非 win32：原样返回无前缀", () => {
@@ -19,7 +19,7 @@ describe("resolveSpawnTarget（TASK-27 抽出：长活进程复用 Windows shim 
 });
 
 import { runCommand } from "../src/adapters/base.js";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -177,4 +177,38 @@ describe("runCommand", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, PROC_TIMEOUT);
+
+  it.skipIf(process.platform !== "win32")("Windows：.cmd 多行参数不被换行截断（信封正文在首行之后，实测 cmd.exe 遇换行即断命令）", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-multiline-"));
+    const shim = join(dir, "multiline-shim.cmd");
+    const outfile = join(dir, "received.txt");
+    // %1 重定向写文件：规避 cmd echo 的 OEM 码页转码与嵌套引号问题，读回按 UTF-8 断言
+    writeFileSync(shim, `@echo off\r\n> "${outfile}" echo %1\r\n`, "utf-8");
+    const envelope = [
+      "[AgentBus] id=msg-test from=iot/ag-x hop=0 expect_reply=true mode=readonly",
+      "INSTRUCTION-LINE: load skill.",
+      "",
+      "BODY-MARKER: weekend homework question.",
+    ].join("\n");
+    try {
+      const result = await runCommand({ cmd: shim, args: [envelope], timeoutMs: 10_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.exitCode).toBe(0);
+      const received = readFileSync(outfile, "utf-8");
+      // 指令行与正文必须完整送达（修复前：首行之后内容全部丢失）
+      expect(received).toContain("INSTRUCTION-LINE: load skill.");
+      expect(received).toContain("BODY-MARKER: weekend homework question.");
+      expect(received).toContain("[AgentBus] id=msg-test");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, PROC_TIMEOUT);
+});
+
+describe("escapeCmdArg 换行安全", () => {
+  it("多行参数压平换行：cmd.exe 命令行无法承载嵌入换行（引号内也断命令）", () => {
+    expect(escapeCmdArg("line1\nline2\r\nline3")).not.toMatch(/[\r\n]/);
+    expect(escapeCmdArg("line1\nline2")).toContain("line1");
+    expect(escapeCmdArg("line1\nline2")).toContain("line2");
+  });
 });
