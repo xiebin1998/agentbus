@@ -8,6 +8,7 @@ import { Layout, Tab, tabsForRole } from "@/components/Layout";
 import { Login } from "@/pages/Login";
 import { Namespaces } from "@/pages/Namespaces";
 import { Accounts } from "@/pages/Accounts";
+import { Graph } from "@/pages/Graph";
 import { Metrics } from "@/pages/Metrics";
 import { Connect } from "@/pages/Connect";
 
@@ -19,7 +20,7 @@ function Shell() {
   function loadStoredTab(username: string): Tab {
     try {
       const v = localStorage.getItem("agentbus.tab." + username);
-      if (v === "namespaces" || v === "accounts" || v === "metrics" || v === "connect") return v;
+      if (v === "namespaces" || v === "accounts" || v === "graph" || v === "metrics" || v === "connect") return v;
     } catch {
       /* 隐私模式等场景忽略 */
     }
@@ -57,6 +58,7 @@ function Shell() {
     <Layout tab={active} onTab={setTab}>
       {active === "namespaces" && <Namespaces />}
       {active === "accounts" && <Accounts />}
+      {active === "graph" && <Graph />}
       {active === "metrics" && <Metrics />}
       {active === "connect" && <Connect />}
     </Layout>

@@ -1,4 +1,5 @@
-"""SQLite 存储：users / namespaces / ns_members / sessions / agents（sqlite3 标准库，零依赖）。"""
+"""SQLite 存储：users / namespaces / ns_members / sessions（sqlite3 标准库，零依赖）。
+agents 表已废弃：Agent 档案不再持久化，只存内存。"""
 import json
 import sqlite3
 
@@ -18,13 +19,6 @@ CREATE TABLE IF NOT EXISTS ns_members(
 CREATE TABLE IF NOT EXISTS sessions(
   token TEXT PRIMARY KEY, username TEXT NOT NULL,
   created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS agents(
-  ns_id TEXT NOT NULL, client_id TEXT NOT NULL,
-  name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-  capabilities TEXT NOT NULL DEFAULT '[]', tools TEXT NOT NULL DEFAULT '[]',
-  owner TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  PRIMARY KEY(ns_id, client_id));
 """
 
 
@@ -159,91 +153,4 @@ def delete_session(conn, token) -> None:
     conn.commit()
 
 
-# ---------- agents 档案表（TASK-32）：单一事实源，(ns_id, client_id) 复合主键 ----------
-
-
-def _agent_row(row):
-    return {"ns_id": row[0], "client_id": row[1], "name": row[2], "description": row[3],
-            "capabilities": json.loads(row[4]), "tools": json.loads(row[5]),
-            "owner": row[6], "created_at": row[7], "updated_at": row[8]}
-
-
-def upsert_agent(conn, ns_id, client_id, name="", description="", capabilities=None,
-                 tools=None, owner="", fill=False) -> None:
-    """写入 Agent 档案：默认全字段覆盖；fill=True 时仅补空字段不覆盖已有值（幂等注册/占位补齐）。"""
-    caps = json.dumps(capabilities or [])
-    tls = json.dumps(tools or [])
-    if not fill:
-        conn.execute("""INSERT INTO agents(ns_id,client_id,name,description,capabilities,tools,owner,created_at,updated_at)
-                        VALUES(?,?,?,?,?,?,?,datetime('now'),datetime('now'))
-                        ON CONFLICT(ns_id,client_id) DO UPDATE SET
-                          name=excluded.name, description=excluded.description,
-                          capabilities=excluded.capabilities, tools=excluded.tools,
-                          owner=excluded.owner, updated_at=datetime('now')""",
-                     (ns_id, client_id, name, description, caps, tls, owner))
-        conn.commit()
-        return
-    row = conn.execute("SELECT 1 FROM agents WHERE ns_id=? AND client_id=?",
-                       (ns_id, client_id)).fetchone()
-    if row is None:
-        conn.execute("""INSERT INTO agents(ns_id,client_id,name,description,capabilities,tools,owner,created_at,updated_at)
-                        VALUES(?,?,?,?,?,?,?,datetime('now'),datetime('now'))""",
-                     (ns_id, client_id, name, description, caps, tls, owner))
-    else:
-        # 只补空字段：文本看空串，列表看 '[]'，owner 空串可被后续注册补齐；
-        # 占位行的 name==client_id 视为空槽，可被真身注册覆盖
-        conn.execute("""UPDATE agents SET
-                          name=CASE WHEN name='' OR name=client_id THEN ? ELSE name END,
-                          description=CASE WHEN description='' THEN ? ELSE description END,
-                          capabilities=CASE WHEN capabilities='[]' THEN ? ELSE capabilities END,
-                          tools=CASE WHEN tools='[]' THEN ? ELSE tools END,
-                          owner=CASE WHEN owner='' THEN ? ELSE owner END,
-                          updated_at=datetime('now')
-                        WHERE ns_id=? AND client_id=?""",
-                     (name, description, caps, tls, owner, ns_id, client_id))
-    conn.commit()
-
-
-def get_agent(conn, ns_id, client_id):
-    row = conn.execute("""SELECT ns_id,client_id,name,description,capabilities,tools,owner,created_at,updated_at
-                          FROM agents WHERE ns_id=? AND client_id=?""",
-                       (ns_id, client_id)).fetchone()
-    return _agent_row(row) if row else None
-
-
-def list_agents(conn, ns_id):
-    rows = conn.execute("""SELECT ns_id,client_id,name,description,capabilities,tools,owner,created_at,updated_at
-                           FROM agents WHERE ns_id=? ORDER BY client_id""", (ns_id,))
-    return [_agent_row(r) for r in rows]
-
-
-def list_all_agents(conn):
-    """全部 ns 的档案（hub 启动恢复用）"""
-    rows = conn.execute("""SELECT ns_id,client_id,name,description,capabilities,tools,owner,created_at,updated_at
-                           FROM agents ORDER BY ns_id,client_id""")
-    return [_agent_row(r) for r in rows]
-
-
-def update_agent(conn, ns_id, client_id, name=None, description=None, capabilities=None, tools=None) -> bool:
-    """部分字段更新（仅非 None 参数）；owner 不经此变更。返回是否命中既有行。"""
-    sets, params = [], []
-    if name is not None:
-        sets.append("name=?"); params.append(name)
-    if description is not None:
-        sets.append("description=?"); params.append(description)
-    if capabilities is not None:
-        sets.append("capabilities=?"); params.append(json.dumps(capabilities))
-    if tools is not None:
-        sets.append("tools=?"); params.append(json.dumps(tools))
-    if not sets:
-        return conn.execute("SELECT 1 FROM agents WHERE ns_id=? AND client_id=?",
-                            (ns_id, client_id)).fetchone() is not None
-    cur = conn.execute(f"UPDATE agents SET {', '.join(sets)}, updated_at=datetime('now') "
-                       "WHERE ns_id=? AND client_id=?", params + [ns_id, client_id])
-    conn.commit()
-    return cur.rowcount > 0
-
-
-def delete_agent(conn, ns_id, client_id) -> None:
-    conn.execute("DELETE FROM agents WHERE ns_id=? AND client_id=?", (ns_id, client_id))
-    conn.commit()
+# agents 表已废弃：Agent 档案不再持久化，只存内存（_agent_info）
