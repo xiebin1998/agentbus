@@ -24,6 +24,8 @@ export interface ListenerOptions {
   onConnect?: () => void;
   /** 重连间隔（默认 2000ms；测试注入短间隔加速指纹观测） */
   reconnectPeriodMs?: number;
+  /** 在线态（presence）：配置后注册 LWT 遗嘱 + 连接就绪发 online / stop 发 offline（retained） */
+  presence?: { topic: string; identity: string };
 }
 
 export interface Listener {
@@ -37,12 +39,22 @@ export interface Listener {
  * TASK-25：由 broker 配置构造 mqtt.connect 选项（纯函数，便于单测）。
  * TLS 时校验证书；配置 ca（自签 CA 路径）时加载为信任锚，文件缺失直接抛错。
  */
-export function buildConnectOptions(broker: BrokerConfig): IClientOptions {
+export function buildConnectOptions(broker: BrokerConfig, presence?: { topic: string; identity: string }): IClientOptions {
   const opts: IClientOptions = {
     clean: false,
     username: broker.username || undefined,
     password: broker.password || undefined,
   };
+  if (presence) {
+    // keepalive 30s：断网场景 broker ~45s 内发现并触发 LWT（压在 hub 60s 兜底线内）
+    opts.keepalive = 30;
+    opts.will = {
+      topic: presence.topic,
+      payload: JSON.stringify({ type: "presence", state: "offline", identity: presence.identity, reason: "unexpected_disconnect" }),
+      qos: 1,
+      retain: true,
+    };
+  }
   if (broker.tls) {
     opts.rejectUnauthorized = true;
     if (broker.ca) {
@@ -88,7 +100,7 @@ export function createListener(opts: ListenerOptions): Listener {
       return new Promise<void>((resolve, reject) => {
         opts.onStatus?.("connecting", buildUrl());
         client = mqtt.connect(buildUrl(), {
-          ...buildConnectOptions(opts.broker),
+          ...buildConnectOptions(opts.broker, opts.presence),
           clientId: opts.clientId,
           reconnectPeriod: opts.reconnectPeriodMs ?? 2000,
           connectTimeout: 10_000,
@@ -102,6 +114,13 @@ export function createListener(opts: ListenerOptions): Listener {
               opts.onStatus?.("error", `订阅失败: ${err.message}`);
             } else {
               subscribed = true;
+              if (opts.presence) {
+                client!.publish(
+                  opts.presence.topic,
+                  JSON.stringify({ type: "presence", state: "online", identity: opts.presence.identity, ts: new Date().toISOString() }),
+                  { qos: 1, retain: true },
+                );
+              }
               opts.onStatus?.("connected");
               opts.onConnect?.();
             }
@@ -153,8 +172,20 @@ export function createListener(opts: ListenerOptions): Listener {
         subscribed = false;
         stopping = true; // 主动停止不计入断连指纹
         if (!client) return resolve();
-        client.end(false, () => resolve());
+        const c = client;
         client = null;
+        const finish = () => c.end(false, () => resolve());
+        if (opts.presence && c.connected) {
+          // 优雅停止先发 offline，让 hub 立即翻转状态；发布成功后再断连
+          c.publish(
+            opts.presence.topic,
+            JSON.stringify({ type: "presence", state: "offline", identity: opts.presence.identity, reason: "graceful_stop", ts: new Date().toISOString() }),
+            { qos: 1, retain: true },
+            () => finish(),
+          );
+        } else {
+          finish();
+        }
       });
     },
 
