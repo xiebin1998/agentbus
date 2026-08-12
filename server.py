@@ -34,9 +34,11 @@ import os
 import re
 import threading
 import uuid
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Dict, List, Union
+from dataclasses import dataclass, field
 
 import paho.mqtt.client as mqtt
 from mcp.server import Server
@@ -98,6 +100,20 @@ MAX_TEXT_BYTES = 64 * 1024
 
 
 # ─── 纯逻辑层（TASK-01 提取，可单测；行为规则见架构 3.1 兼容规则） ────────────────
+
+
+@dataclass
+class PendingReply:
+    """等待回复的请求条目"""
+    event: asyncio.Event = field(default_factory=asyncio.Event)
+    reply: Optional[dict] = None
+    error: Optional[str] = None
+    created_at: float = field(default_factory=time.time)
+
+
+# 全局等待回复存储：{msg_id: PendingReply}
+_pending_replies: Dict[str, PendingReply] = {}
+
 
 def build_sub_topic(client_id: str, ns: Optional[str] = None) -> str:
     """构造订阅/推送 topic。ns=None → 旧 flat topic（兼容存量）；显式 ns → ns topic"""
@@ -579,6 +595,15 @@ def start_shared_client() -> None:
             return
         if not isinstance(payload, dict):
             return
+        # 匹配等待中的回复
+        reply_to = payload.get("reply_to")
+        if reply_to and reply_to in _pending_replies:
+            pending = _pending_replies[reply_to]
+            pending.reply = payload
+            pending.event.set()  # 唤醒等待方
+            logger.info(f"[hub] matched pending reply for msg_id={reply_to}")
+            return  # 已被等待方消费，不再推送
+
         sender = payload.get("redirect_client_id") or payload.get("from", "?")
         logger.info(f"[{key}] Received from [{sender}]: {str(payload.get('text', ''))[:50]}")
         asyncio.run_coroutine_threadsafe(session._push_to_mcp(payload), session.loop)
