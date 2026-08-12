@@ -16,19 +16,23 @@ def group_name(ns_id: str) -> str:
 
 
 def ns_acl_entries(ns_id: str) -> list:
-    """一个 ns 的 ACL 条目：channel 读写 + metric 写。
+    """一个 ns 的 ACL 条目：channel 读写 + metric 写 + status 写（presence）。
 
     实测：createRole 不采纳内联 acl，须用 addRoleACL 逐条下发；
     ACL 条目字段为 acltype（非 access）。
+    0.2.10：补 status publish——daemon presence（online/offline/遗嘱）靠它送达 hub，
+    缺此条则 broker 默认拒发，控制台在线态失真。
     """
     ch = f"/agentbus/ai/channel/{ns_id}/#"
     mt = f"/agentbus/ai/metric/{ns_id}/#"
+    st = f"/agentbus/ai/status/{ns_id}/#"
     return [
         {"acltype": "publishClientSend", "topic": ch, "allow": True, "priority": 10},
         {"acltype": "publishClientReceive", "topic": ch, "allow": True, "priority": 10},
         {"acltype": "subscribePattern", "topic": ch, "allow": True, "priority": 10},
         {"acltype": "unsubscribePattern", "topic": ch, "allow": True, "priority": 10},
         {"acltype": "publishClientSend", "topic": mt, "allow": True, "priority": 11},
+        {"acltype": "publishClientSend", "topic": st, "allow": True, "priority": 12},
     ]
 
 

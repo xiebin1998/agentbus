@@ -109,12 +109,16 @@ def test_timeout(client):
 
 
 def test_ns_acl_entries():
-    # 实测：ACL 条目用 acltype 字段；channel 读/写 + metric 写
+    # 实测：ACL 条目用 acltype 字段；channel 读/写 + metric 写 + status 写（presence，0.2.10）
     entries = dynsec.ns_acl_entries("pay")
     assert dynsec.group_name("pay") == "ns-pay"
     topics = {e["topic"] for e in entries}
     assert "/agentbus/ai/channel/pay/#" in topics
     assert "/agentbus/ai/metric/pay/#" in topics
+    assert "/agentbus/ai/status/pay/#" in topics
+    # status 仅允许 publish（daemon 发 presence；订阅是 hub 侧 hub-admin 全量权限）
+    st = [e for e in entries if e["topic"] == "/agentbus/ai/status/pay/#"]
+    assert len(st) == 1 and st[0]["acltype"] == "publishClientSend"
     assert all("acltype" in e and "access" not in e for e in entries)
     # channel 至少含发布与订阅两类 acltype
     ch_types = {e["acltype"] for e in entries if e["topic"] == "/agentbus/ai/channel/pay/#"}
