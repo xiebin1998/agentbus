@@ -175,6 +175,9 @@ export class Daemon {
         }
         this.logger.info(`MQTT ${status}${detail ? `: ${detail}` : ""}`);
       },
+      // 连接就绪补报：启动即报几乎必早于 MQTT 连上（被 isConnected 门控跳过），
+      // 首连/重连就绪后立即补报一次，避免首次入册等满一个周期（30s）
+      onConnect: () => this.publishMetric(),
     });
     void this.listener.start().catch((e: Error) =>
       this.logger.error(`MQTT 首次连接失败，进入重连: ${e.message}`),

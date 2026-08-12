@@ -86,6 +86,28 @@ const latestMetrics = (reports: Array<{ payload: Record<string, unknown> }>) =>
   (reports[reports.length - 1]?.payload.metrics ?? {}) as Record<string, number>;
 
 describe("daemon 指标上报", { timeout: 30000 }, () => {
+  it("启动即报先于 MQTT 连接就绪时，连接成功后立即补报一次（不等周期）", async () => {
+    const collector = await makeMetricCollector();
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-metrics-onconnect-"));
+    const daemon = new Daemon({
+      config: makeConfig({ ack: false }),
+      workDir: dir,
+      // 周期拉长到 120s：3s 内唯一可能的上报来源是连接成功触发的补报
+      metricIntervalMs: 120_000,
+      inject: async () => ({ output: "ok" }),
+    });
+    expect(daemon.start()).toMatchObject({ started: true });
+    const deadline = Date.now() + 3000;
+    while (collector.reports.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(collector.reports.length).toBeGreaterThanOrEqual(1);
+    expect(collector.reports[0]!.topic).toBe("/agentbus/ai/metric/default/fe-test");
+    await daemon.stop();
+    collector.client.end(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it("启动即报 + 周期上报到 metric topic；注入成功/失败、去重、白名单丢弃均计数", async () => {
     const collector = await makeMetricCollector();
     const dir = mkdtempSync(join(tmpdir(), "agentbus-metrics-"));

@@ -20,6 +20,8 @@ export interface ListenerOptions {
   onMessage: (payloadJson: string, topic: string) => void;
   /** 状态回调（日志用）；identity_conflict = TASK-32 断连指纹（同 clientId 互踢） */
   onStatus?: (status: "connecting" | "connected" | "reconnecting" | "offline" | "error" | "identity_conflict", detail?: string) => void;
+  /** 连接+订阅就绪回调（首连与重连均触发）；指标补报用，此时 isConnected() 已为 true */
+  onConnect?: () => void;
   /** 重连间隔（默认 2000ms；测试注入短间隔加速指纹观测） */
   reconnectPeriodMs?: number;
 }
@@ -101,6 +103,7 @@ export function createListener(opts: ListenerOptions): Listener {
             } else {
               subscribed = true;
               opts.onStatus?.("connected");
+              opts.onConnect?.();
             }
             // 无论成败都解阻塞 start()：连接已建立，订阅失败仅降级为未就绪（日志已记）
             if (firstConnect) {
