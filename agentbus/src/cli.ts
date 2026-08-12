@@ -66,6 +66,15 @@ function realBackgroundDeps(workDir: string): BackgroundDeps {
     },
     kill: (pid) => {
       try { process.kill(pid, "SIGTERM"); } catch { /* 已死 */ }
+      // Windows 实测 SIGTERM 为强杀（handler 不运行）→ 按 config 端口回收孤儿 serve（同 daemon stop 口径）
+      if (process.platform === "win32") {
+        try {
+          const cfg = loadConfig(join(workDir, "config.json"));
+          reclaimServePorts(cfg.tools, (port) => killServePort(port, { warn: (m) => console.warn(m) }));
+        } catch {
+          /* config 不可读时跳过回收，不影响 restart 本身 */
+        }
+      }
     },
     // 同步睡：CLI 同步流程内轮询 pid，Atomics.wait 不占事件循环回调
     sleepMs: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),

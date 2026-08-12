@@ -176,12 +176,17 @@ export function createListener(opts: ListenerOptions): Listener {
         client = null;
         const finish = () => c.end(false, () => resolve());
         if (opts.presence && c.connected) {
-          // 优雅停止先发 offline，让 hub 立即翻转状态；发布成功后再断连
+          // 优雅停止先发 offline，让 hub 立即翻转状态；发布成功或 2s 超时后断连
+          // （超时兜底：极端时序下 mqtt.js 掉包路径会丢弃用户回调，无兜底则 stop 永挂）
+          let done = false;
+          const finishOnce = () => { if (!done) { done = true; finish(); } };
+          const timer = setTimeout(finishOnce, 2000);
+          timer.unref?.();
           c.publish(
             opts.presence.topic,
             JSON.stringify({ type: "presence", state: "offline", identity: opts.presence.identity, reason: "graceful_stop", ts: new Date().toISOString() }),
             { qos: 1, retain: true },
-            () => finish(),
+            () => { clearTimeout(timer); finishOnce(); },
           );
         } else {
           finish();

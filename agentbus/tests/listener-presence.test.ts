@@ -83,8 +83,9 @@ describe("listener presence 生命周期", () => {
     expect(retained.retain).toBe(true);
 
     // 优雅停止：观察者收到 live offline（graceful_stop）
+    let offlineWatcher: MqttClient | null = null;
     const offlineSeen = new Promise<{ payload: string }>((resolve) => {
-      watchEndless(PRESENCE.topic, (m) => {
+      offlineWatcher = watchEndless(PRESENCE.topic, (m) => {
         const p = JSON.parse(m.payload);
         if (p.state === "offline") resolve({ payload: m.payload });
       });
@@ -95,6 +96,7 @@ describe("listener presence 生命周期", () => {
     expect(fp.state).toBe("offline");
     expect(fp.reason).toBe("graceful_stop");
     watch.end();
+    offlineWatcher!.end();
   });
 
   it("异常掉线（broker 侧踢断连接）→ LWT 遗嘱发 offline", async () => {
