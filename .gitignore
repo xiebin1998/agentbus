@@ -73,3 +73,7 @@ TASKS.md
 # 临时产物
 tsconfig.tsbuildinfo
 .tmp-commit-msg.txt
+docs
+TASKS.md
+ARCHITECTURE.md
+PLAN.md
