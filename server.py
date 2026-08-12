@@ -1449,18 +1449,20 @@ async def api_metrics_summary(request: Request):
 
 def build_agent_detail(ns: str, agent_info: Dict[str, Any], sessions: Dict[str, Any],
                        metrics: Dict[str, dict], db_agents: Optional[Dict[str, dict]] = None,
-                       now: Optional[datetime] = None) -> List[dict]:
+                       now: Optional[datetime] = None,
+                       presence: Optional[Dict[str, dict]] = None) -> List[dict]:
     """纯函数多源合并（便于单测）：key 取并集按 ns 前缀过滤，字典序稳定输出。
 
     - agent_info（_agent_info）→ name/description/capabilities/registered
-    - sessions（_sessions）→ online（SSE 会话存活）
+    - sessions（_sessions）→ sse_connected（MCP SSE 会话存活，仅表示可调工具）
     - metrics（MetricsStore 快照）→ metrics/last_seen/report_count
     - db_agents（TASK-32，按 client_id 索引的 agents 表行）→ 档案真源：
       tools/registered_at/owner/placeholder，并进 key 并集（仅有档案的也可见）
-    - online（TASK-32 修正）：SSE 会话存活 或 指标 last_seen 在 90s 窗口内
-      （daemon 纯 MQTT 上报无会话，也须在明细显示在线）
+    - online（TASK-33）：presence 显式状态 + 60s 心跳兜底；无 presence 条目（旧客户端）
+      回退 90s 指标窗口 —— 表示投递可达，与 SSE 会话无关
     """
     db_agents = db_agents or {}
+    presence = presence or {}
     prefix = f"{ns}/"
     keys = sorted({k for k in list(agent_info) + list(sessions) + list(metrics)
                    if k.startswith(prefix)}
@@ -1478,7 +1480,8 @@ def build_agent_detail(ns: str, agent_info: Dict[str, Any], sessions: Dict[str, 
             "capabilities": (list(row["capabilities"]) if row
                              else (list(info.capabilities) if info else [])),
             "registered": bool(row) or bool(info and info.registered),
-            "online": k in sessions or k not in _offline_targets([k], metrics, now),
+            "online": agent_online(k, presence, metrics, now),
+            "sse_connected": k in sessions,
             "last_seen": m.get("last_seen"),
             "report_count": m.get("report_count", 0),
             "metrics": m.get("metrics") or {},
@@ -1512,7 +1515,8 @@ async def api_console_agents(request: Request):
     if not _ns_visible(user, ns):
         return _json_error("forbidden", 403)
     db_rows = {a["client_id"]: a for a in hub_store.list_agents(DB_CONN, ns)} if DB_CONN is not None else {}
-    rows = build_agent_detail(ns, _agent_info, _sessions, _metrics_store.snapshot(), db_rows)
+    rows = build_agent_detail(ns, _agent_info, _sessions, _metrics_store.snapshot(), db_rows,
+                              presence=_presence_store.snapshot())
     disp = _owner_display_names({r["owner"] for r in rows})
     for r in rows:
         r["owner_display_name"] = disp.get(r["owner"], "")

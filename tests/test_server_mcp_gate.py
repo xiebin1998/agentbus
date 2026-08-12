@@ -3,6 +3,7 @@ TASK-32: 去门控回归 —— 无门控全放行；register_agent 工具已删
 保留 TASK-31 三源合并（注册信息 × 在线状态 × daemon 指标）。
 """
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 
@@ -90,14 +91,35 @@ class TestBuildAgentDetail:
         rows = server.build_agent_detail("iot", agent_info, sessions, metrics)
         assert [r["client_id"] for r in rows] == ["be", "fe"]  # key 并集按序
         fe = rows[1]
-        assert fe["name"] == "前端助手" and fe["registered"] is True and fe["online"] is True
+        assert fe["name"] == "前端助手" and fe["registered"] is True
+        # TASK-33 新口径：online = presence/指标判定（无 presence 无指标 → 离线）；SSE 存活单列 sse_connected
+        assert fe["online"] is False and fe["sse_connected"] is True
         assert fe["capabilities"] == ["code"] and fe["description"] == "负责前端"
         be = rows[0]
-        assert be["registered"] is False and be["online"] is False
+        assert be["registered"] is False and be["online"] is False and be["sse_connected"] is False
         assert be["metrics"] == {"injected_ok": 5} and be["report_count"] == 2
 
     def test_空源返回空列表(self):
         assert server.build_agent_detail("iot", {}, {}, {}) == []
+
+    def test_online_用_presence_口径且_sse_connected_两态分离(self):
+        """TASK-33：presence=offline 但 SSE 会话存活 → online False + sse_connected True"""
+        now = datetime.now(timezone.utc)
+        info = server.AgentInfo("iot/x")
+        sessions = {"iot/x": object()}
+        presence = {"iot/x": {"state": "offline", "ts": now.isoformat()}}
+        rows = server.build_agent_detail("iot", {"iot/x": info}, sessions, {},
+                                         now=now, presence=presence)
+        assert rows[0]["online"] is False        # daemon 离线 → 投递不可达
+        assert rows[0]["sse_connected"] is True  # 但 SSE 会话还在（两态分开展示）
+
+    def test_online_presence_online_新鲜心跳(self):
+        """presence=online + 新心跳 → online True（无 SSE 会话也不影响）"""
+        now = datetime.now(timezone.utc)
+        presence = {"iot/y": {"state": "online", "ts": now.isoformat()}}
+        metrics = {"iot/y": {"last_seen": now.isoformat(), "report_count": 1}}
+        rows = server.build_agent_detail("iot", {}, {}, metrics, now=now, presence=presence)
+        assert rows[0]["online"] is True and rows[0]["sse_connected"] is False
 
 
 class TestConsoleAgentsApi:
@@ -119,6 +141,7 @@ class TestConsoleAgentsApi:
         monkeypatch.setattr(server, "_agent_info", {})
         monkeypatch.setattr(server, "_sessions", {})
         monkeypatch.setattr(server, "_metrics_store", server.MetricsStore())
+        monkeypatch.setattr(server, "_presence_store", server.PresenceStore())
         from starlette.testclient import TestClient
         yield TestClient(server.app)
         if server.DB_CONN is not None:
@@ -151,11 +174,14 @@ class TestConsoleAgentsApi:
         info.capabilities = ["ui"]
         server._agent_info["iot/fe"] = info
         server._sessions["iot/fe"] = object()
-        server._metrics_store.update("iot/fe", {"injected_ok": 1}, "2026-08-11T00:00:00+00:00")
+        # TASK-33 新口径：online 由 presence + 心跳决定（SSE 会话单列 sse_connected）
+        now_iso = datetime.now(timezone.utc).isoformat()
+        server._metrics_store.update("iot/fe", {"injected_ok": 1}, now_iso)
+        server._presence_store.update("iot/fe", "online", now_iso, reason="connected")
         r = env.get("/api/console/agents?ns=iot")
         assert r.status_code == 200
         agents = r.json()["agents"]
         assert len(agents) == 1
         a = agents[0]
-        assert a["client_id"] == "fe" and a["registered"] and a["online"]
+        assert a["client_id"] == "fe" and a["registered"] and a["online"] and a["sse_connected"]
         assert a["metrics"] == {"injected_ok": 1} and a["name"] == "前端"
