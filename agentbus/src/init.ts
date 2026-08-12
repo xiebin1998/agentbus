@@ -143,7 +143,7 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   const lines: string[] = [];
   const { projectRoot, homeDir } = deps;
 
-  // TASK-32：存量 config 保留原 client_id / agent_name / agent_description（幂等重跑不撞名、--skip-agent 时保留档案）
+  // TASK-32：存量 config 保留原 client_id / agent_name / agent_description（幂等重跑不撞名）
   const existingConfigPath = join(projectRoot, ".agentbus", "config.json");
   let existingClientId = "";
   let existingAgentName = "";
@@ -190,8 +190,8 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   let answers: Required<Pick<InitCliOptions, "tools" | "scope" | "ns" | "broker" | "sseUrl">> & { clientId: string };
   let agentName: string;
   let agentDescription: string;
-  // 自动检测：已有 Agent 信息则跳过，没有才创建
-  const hasExistingAgent = !!existingAgentName;
+  // 已有 client_id 说明已存在 Agent 身份，跳过 Agent 信息问答和上报
+  const hasExistingAgent = !!existingClientId;
   const defaultClientId = eff.clientId?.trim() || existingClientId || randomClientId();
   if (eff.yes) {
     // TASK-28 一键安装契约：--yes 未指定工具时自动探测全部已知 CLI，取已安装集
@@ -214,11 +214,11 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
       broker: eff.broker ?? "localhost:18830",
       sseUrl: eff.sseUrl ?? "",
     };
-    // 已有 Agent 信息则保留，否则用默认值
+    // 已有 Agent 身份则保留原档案，否则用默认值
     if (hasExistingAgent) {
       agentName = existingAgentName;
       agentDescription = existingAgentDescription;
-      lines.push(`✓ 保留已有 Agent 档案 "${existingAgentName}"`);
+      lines.push(`✓ 已有 Agent 身份（${existingClientId}），保留原档案`);
     } else {
       agentName = (eff.agentName ?? "").trim() || basename(projectRoot);
       agentDescription = (eff.agentDescription ?? "").trim();
@@ -236,11 +236,11 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
       broker: String(await prompter("broker", eff.broker ?? "localhost:18830")),
       sseUrl: String(await prompter("sseUrl", eff.sseUrl ?? "")),
     };
-    // 已有 Agent 信息则跳过问答，否则走正常流程
+    // 已有 Agent 身份则跳过问答，保留原档案
     if (hasExistingAgent) {
       agentName = existingAgentName;
       agentDescription = existingAgentDescription;
-      lines.push(`✓ 保留已有 Agent 档案 "${existingAgentName}"`);
+      lines.push(`✓ 已有 Agent 身份（${existingClientId}），保留原档案`);
     } else {
       // TASK-32：名称必答（默认建议目录名，空值重问）；描述可选（回车跳过）
       agentName = "";
