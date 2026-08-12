@@ -1,7 +1,7 @@
 /**
  * TASK-15: daemon defaultInject 的 claude 分发接线
  * config tools.claude 且未注入 inject 钩子时，应走 ClaudeAdapter：
- * - 首条消息 createSession（--session-id 形态），mode 按信任分级
+ * - 首条消息 createSession（--session-id 形态，恒只读档）
  * - 第二条消息 injectWith（-r 续接形态）
  */
 import { mkdtempSync, rmSync } from "node:fs";
@@ -27,12 +27,12 @@ vi.mock("../src/adapters/claude.js", () => ({
     constructor(cfg: unknown) {
       ctorConfigs.push(cfg);
     }
-    async createSession(text: string, sessionId: string, mode: string) {
-      calls.push({ method: "createSession", args: [text, sessionId, mode] });
+    async createSession(text: string, sessionId: string) {
+      calls.push({ method: "createSession", args: [text, sessionId] });
       return { sessionId, output: "claude 建会话输出", exitCode: 0, timedOut: false };
     }
-    async injectWith(text: string, sessionId: string, mode: string) {
-      calls.push({ method: "injectWith", args: [text, sessionId, mode] });
+    async injectWith(text: string, sessionId: string) {
+      calls.push({ method: "injectWith", args: [text, sessionId] });
       return { sessionId, output: "claude 续接输出", exitCode: 0, timedOut: false };
     }
   },
@@ -51,8 +51,6 @@ function makeConfig(overrides: Partial<AgentBusConfig> = {}): AgentBusConfig {
     allowed_senders: [],
     hop_limit: 3,
     rate_limit: 100,
-    inbound_mode: "readonly",
-    trust_map: {},
     tools: { claude: {} },
     ack: true,
     ...overrides,
@@ -92,7 +90,7 @@ function publishToDaemon(msg: Record<string, unknown>): void {
 }
 
 describe("defaultInject claude 分发", { timeout: 30000 }, () => {
-  it("首条走 createSession（readonly → plan 参数由适配器负责），第二条走 injectWith 复用会话", async () => {
+  it("首条走 createSession（恒只读档参数由适配器负责），第二条走 injectWith 复用会话", async () => {
     const dir = mkdtempSync(join(tmpdir(), "agentbus-claude-wire-"));
     const daemon = new Daemon({ config: makeConfig({ ack: false }), workDir: dir });
     expect(daemon.start()).toMatchObject({ started: true });
@@ -101,31 +99,13 @@ describe("defaultInject claude 分发", { timeout: 30000 }, () => {
     publishToDaemon({ id: "c-1", from: "be-svc", to: "fe-test", text: "第一条" });
     await waitFor(() => calls.length >= 1);
     expect(calls[0]!.method).toBe("createSession");
-    expect(calls[0]!.args[2]).toBe("readonly");
+    expect(calls[0]!.args.length).toBe(2); // 恒只读：mode 参数已移除
 
     publishToDaemon({ id: "c-2", from: "be-svc", to: "fe-test", text: "第二条" });
     await waitFor(() => calls.length >= 2);
     expect(calls[1]!.method).toBe("injectWith");
     // 会话复用：续接使用首条生成的 sessionId
     expect(calls[1]!.args[1]).toBe(calls[0]!.args[1]);
-
-    await daemon.stop();
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("trust_map full → mode 传入 full", async () => {
-    calls.length = 0;
-    const dir = mkdtempSync(join(tmpdir(), "agentbus-claude-wire2-"));
-    const daemon = new Daemon({
-      config: makeConfig({ ack: false, trust_map: { "ci-bot": "full" } }),
-      workDir: dir,
-    });
-    daemon.start();
-    await waitFor(() => daemon.status().connected);
-
-    publishToDaemon({ id: "c-3", from: "ci-bot", to: "fe-test", text: "full 消息" });
-    await waitFor(() => calls.length >= 1);
-    expect(calls[0]!.args[2]).toBe("full");
 
     await daemon.stop();
     rmSync(dir, { recursive: true, force: true });

@@ -2,7 +2,7 @@
  * TASK-06/09: Daemon 主体装配（架构 4.2 / 4.3 / 4.6 / 4.7 / 5.3）
  *
  * 数据流：listener → JSON 解析 → router（八步）→ ack 回发 → touchSession + 注册表原子写
- *        → 信任判定 + 信封包装 → inject 适配器回合 → 捕获 output
+ *        → 信封包装（恒只读） → inject 适配器回合 → 捕获 output
  *        → expect_reply=true 时 makeReply 代回 / 失败发 control 通知（4.6 兜底）
  *
  * 注入点：inject 为依赖注入钩子 —— 集成测试用假实现；缺省走真实适配器（qoder/kilo 族）。
@@ -10,7 +10,7 @@
 import { join, dirname } from "node:path";
 import { mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import type { AgentBusConfig, InboundMode } from "../config.js";
+import type { AgentBusConfig } from "../config.js";
 import { newMsgId, makeReply, type BusMessage } from "../protocol.js";
 import { OpenCodeKiloAdapter } from "../adapters/opencode-kilo.js";
 import { QoderAdapter } from "../adapters/qoder.js";
@@ -28,16 +28,14 @@ import { ServeManager } from "./serve-manager.js";
 import { SessionLock } from "./session-lock.js";
 import { syncAgentsSnapshot, lookupAgentName } from "./snapshot.js";
 import { buildEnvelope } from "./envelope.js";
-import { resolveTrust } from "./trust.js";
 import { applyReadonly, removeReadonly } from "../isolate.js";
 
-/** 注入上下文：信封已按信任级别包装；注入器返回回合输出（代回的原料） */
+/** 注入上下文：信封恒按只读包装；注入器返回回合输出（代回的原料） */
 export interface InjectContext {
   tool: string;
   sessionId: string;
   envelope: string;
   msg: BusMessage;
-  mode: InboundMode;
   senderName: string;
   /** 该发件人在此工具的首条消息（适配器可据此建会话） */
   isNew: boolean;
@@ -274,15 +272,14 @@ export class Daemon {
 
   private async injectAndDrain(tool: string, sessionId: string, msg: BusMessage, isNew: boolean): Promise<void> {
     const cfg = this.opts.config;
-    // 信任分级 + 信封（4.6/4.7）：参数层与提示层一致
-    const mode = resolveTrust(msg.from, cfg.inbound_mode, cfg.trust_map);
+    // 信封（4.6/4.7）：沟通定位入站恒只读，参数层与提示层一致
     // Plan 3 问题 1：会话标题优先用快照里的 Agent 名称（如"心语大师"），未命中回退 client_id
     const senderClientId = msg.from.includes("/") ? msg.from.slice(msg.from.indexOf("/") + 1) : msg.from;
     const senderName = lookupAgentName(this.opts.workDir, senderClientId) ?? senderClientId;
 
-    // TASK-30 隔离层（可选）：readonly 回合在 OS 层物理禁写，参数层被绕过时仍安全
+    // TASK-30 隔离层（可选）：入站回合在 OS 层物理禁写，参数层被绕过时仍安全（无豁免）
     let isolated = false;
-    if (cfg.isolation && mode === "readonly") {
+    if (cfg.isolation) {
       isolated = await this.isolateAcquire(this.resolveWorkspace(tool));
     }
 
@@ -296,9 +293,9 @@ export class Daemon {
       const attempts = replyToSession ? 2 : 1;
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
         // 信封携带本次注入的会话 id（agent 发消息时用作 session_id）
-        const envelope = buildEnvelope(msg, mode, sessionId);
+        const envelope = buildEnvelope(msg, sessionId);
         try {
-          const turn = await handler({ tool, sessionId, envelope, msg, mode, senderName, isNew });
+          const turn = await handler({ tool, sessionId, envelope, msg, senderName, isNew });
           output = turn.output;
           // kilo 族会话 id 由 CLI 侧生成：回写注册表保持续接正确
           if (turn.sessionId && turn.sessionId !== sessionId) {
@@ -440,8 +437,8 @@ export class Daemon {
           sessionName: ctx.senderName,
         });
         const turn = ctx.isNew
-          ? await adapter.createSession(ctx.envelope, ctx.sessionId, ctx.mode)
-          : await adapter.injectWith(ctx.envelope, ctx.sessionId, ctx.mode);
+          ? await adapter.createSession(ctx.envelope, ctx.sessionId)
+          : await adapter.injectWith(ctx.envelope, ctx.sessionId);
         if (turn.error) throw new Error(turn.error);
         return { output: turn.output };
       }
@@ -452,8 +449,8 @@ export class Daemon {
           workspace,
         });
         const turn = ctx.isNew
-          ? await adapter.createSession(ctx.envelope, ctx.mode)
-          : await adapter.injectWith(ctx.envelope, ctx.sessionId, ctx.mode);
+          ? await adapter.createSession(ctx.envelope)
+          : await adapter.injectWith(ctx.envelope, ctx.sessionId);
         if (turn.error) throw new Error(turn.error);
         return { output: turn.output, sessionId: turn.sessionId ?? undefined };
       }
@@ -465,8 +462,8 @@ export class Daemon {
           remote: parseHermesRemote(toolCfg.remote),
         });
         const turn = ctx.isNew
-          ? await adapter.createSession(ctx.envelope, ctx.senderName, ctx.mode)
-          : await adapter.inject(ctx.envelope, ctx.senderName, ctx.mode);
+          ? await adapter.createSession(ctx.envelope, ctx.senderName)
+          : await adapter.inject(ctx.envelope, ctx.senderName);
         if (turn.error) throw new Error(turn.error);
         return { output: turn.output };
       }
@@ -476,7 +473,7 @@ export class Daemon {
         workspace,
         sessionName: ctx.senderName,
       });
-      const turn = await adapter.injectWith(ctx.envelope, ctx.sessionId, ctx.mode);
+      const turn = await adapter.injectWith(ctx.envelope, ctx.sessionId);
       if (turn.error) throw new Error(turn.error);
       return { output: turn.output };
     };

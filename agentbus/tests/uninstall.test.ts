@@ -121,7 +121,6 @@ function seedInitProject(daemonPid = process.pid) {
       allowed_senders: [],
       tools: { qoder: {}, kilo: {}, hermes: {} },
       ack: true,
-      inbound_mode: "readonly",
     }),
     "utf-8",
   );

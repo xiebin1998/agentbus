@@ -137,8 +137,6 @@ describe("daemon identity_conflict 处置（TASK-32）", () => {
       allowed_senders: [],
       hop_limit: 3,
       rate_limit: 100,
-      inbound_mode: "readonly",
-      trust_map: {},
       tools: { kilo: {} },
       ack: true,
     };
@@ -218,8 +216,6 @@ describe("daemon 快照同步接线（随指标周期）", () => {
       allowed_senders: [],
       hop_limit: 3,
       rate_limit: 100,
-      inbound_mode: "readonly",
-      trust_map: {},
       tools: { kilo: {} },
       ack: true,
     };

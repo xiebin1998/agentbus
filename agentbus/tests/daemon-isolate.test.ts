@@ -1,9 +1,9 @@
 /**
  * TASK-30: daemon 隔离接线（架构 4.7 三层防线之隔离层）
  *
- * 验收语义：readonly 回合在 OS 层物理禁写（参数层被绕过时仍安全）——
+ * 验收语义：入站回合在 OS 层物理禁写（参数层被绕过时仍安全）——
  * isolation=true 时 daemon 在注入回合窗口内对工作目录施加只读，回合结束解除；
- * full 回合与 isolation=false 时不施加。
+ * isolation=false 时不施加（无信任豁免：入站恒只读，隔离恒适用）。
  */
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
@@ -53,7 +53,6 @@ function publish(from: string, id: string, text: string): void {
 /** 组装 daemon：workspace 为独立临时目录（含 .agentbus 子目录，隔离需排除它） */
 async function runScenario(opts: {
   isolation: boolean;
-  trustMap?: Record<string, "readonly" | "full">;
 }): Promise<{ probes: boolean[]; workspace: string; cleanup: () => Promise<void> }> {
   const workspace = mkdtempSync(join(tmpdir(), "agentbus-iso-ws-"));
   mkdirSync(join(workspace, ".agentbus"), { recursive: true });
@@ -66,8 +65,6 @@ async function runScenario(opts: {
     allowed_senders: [],
     hop_limit: 3,
     rate_limit: 100,
-    inbound_mode: "readonly",
-    trust_map: opts.trustMap ?? {},
     tools: { kilo: { workspace } },
     ack: true,
     isolation: opts.isolation,
@@ -96,7 +93,7 @@ async function runScenario(opts: {
 }
 
 describe.skipIf(process.platform !== "win32")("TASK-30: isolation 接线（真机 icacls）", () => {
-  it("isolation=true + readonly：回合窗口内物理禁写，回合后解除", async () => {
+  it("isolation=true：回合窗口内物理禁写，回合后解除", async () => {
     const { probes, workspace, cleanup } = await runScenario({ isolation: true });
     try {
       publish("be-svc", "iso-1", "只读回合");
@@ -109,18 +106,7 @@ describe.skipIf(process.platform !== "win32")("TASK-30: isolation 接线（真�
     }
   }, 30_000);
 
-  it("isolation=true + full（trust_map 提权）：不施加隔离", async () => {
-    const { probes, cleanup } = await runScenario({ isolation: true, trustMap: { "ci-bot": "full" } });
-    try {
-      publish("ci-bot", "iso-2", "完整权限回合");
-      await waitFor(() => probes.length === 1);
-      expect(probes[0]).toBe(false);
-    } finally {
-      await cleanup();
-    }
-  }, 30_000);
-
-  it("isolation=false（默认）：readonly 回合也不施加隔离", async () => {
+  it("isolation=false（默认）：不施加隔离", async () => {
     const { probes, cleanup } = await runScenario({ isolation: false });
     try {
       publish("be-svc", "iso-3", "普通回合");
@@ -144,8 +130,6 @@ describe.skipIf(process.platform !== "win32")("TASK-30: isolation 接线（真�
         allowed_senders: [],
         hop_limit: 3,
         rate_limit: 100,
-        inbound_mode: "readonly",
-        trust_map: {},
         tools: { kilo: { workspace } },
         ack: true,
         isolation: false,
@@ -182,8 +166,6 @@ describe.skipIf(process.platform !== "win32")("TASK-30: isolation 接线（真�
         allowed_senders: [],
         hop_limit: 3,
         rate_limit: 100,
-        inbound_mode: "readonly",
-        trust_map: {},
         tools: { kilo: { workspace } },
         ack: true,
         isolation: true,

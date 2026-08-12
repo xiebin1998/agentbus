@@ -53,8 +53,6 @@ function makeConfig(overrides: Partial<AgentBusConfig> = {}): AgentBusConfig {
     allowed_senders: [],
     hop_limit: 3,
     rate_limit: 100,
-    inbound_mode: "readonly",
-    trust_map: {},
     tools: { opencode: {} },
     ack: true,
     ...overrides,

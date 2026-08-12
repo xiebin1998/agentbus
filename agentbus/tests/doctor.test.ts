@@ -25,8 +25,6 @@ const CONFIG = {
   allowed_senders: [],
   hop_limit: 3,
   rate_limit: 5,
-  inbound_mode: "readonly",
-  trust_map: {},
   tools: { qoder: {} },
   ack: true,
 };

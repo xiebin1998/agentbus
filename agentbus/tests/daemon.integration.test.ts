@@ -26,8 +26,6 @@ function makeConfig(overrides: Partial<AgentBusConfig> = {}): AgentBusConfig {
     allowed_senders: [],
     hop_limit: 3,
     rate_limit: 100,
-    inbound_mode: "readonly",
-    trust_map: {},
     tools: { kilo: {} },
     ack: true,
     ...overrides,
@@ -124,7 +122,6 @@ describe("daemon 端到端：路由 + ack + 会话", () => {
     expect(env.split("\n")[0]).toBe("[AgentBus] id=msg-e2e-1 from=default/be-svc hop=0 expect_reply=true mode=readonly");
     expect(env).toContain("禁止修改任何文件");
     expect(env.trimEnd().endsWith("你好")).toBe(true);
-    expect(records[0]!.ctx.mode).toBe("readonly");
     expect(records[0]!.ctx.tool).toBe("kilo");
   });
 
@@ -217,32 +214,6 @@ describe("代回通道分支语义", () => {
     expect(notice.text).toContain("CLI 超时模拟");
     expect(notice.reply_to).toBe("msg-fail-1");
     expect(notice.expect_reply).toBe(false);
-
-    await daemon.stop();
-    sender.client.end(true);
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  it("trust_map 覆盖：ci-bot 获得 full，信封 mode=full 无只读禁令", async () => {
-    dir = mkdtempSync(join(tmpdir(), "agentbus-daemon-trust-"));
-    const records: Recorded[] = [];
-    const daemon = new Daemon({
-      config: makeConfig({ trust_map: { "default/be-svc": "full" }, ack: false }),
-      workDir: dir,
-      inject: async (ctx) => {
-        records.push({ ctx });
-        return { output: "ok" };
-      },
-    });
-    daemon.start();
-    sender = await makeSender();
-    await waitFor(() => daemon.status().connected);
-
-    publishToDaemon({ id: "msg-trust-1", from: "default/be-svc", to: "fe-test", text: "全权处理" });
-    await waitFor(() => records.length === 1);
-    expect(records[0]!.ctx.mode).toBe("full");
-    expect(records[0]!.ctx.envelope.split("\n")[0]).toContain("mode=full");
-    expect(records[0]!.ctx.envelope).not.toContain("禁止修改任何文件");
 
     await daemon.stop();
     sender.client.end(true);

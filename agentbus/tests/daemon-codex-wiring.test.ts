@@ -26,12 +26,12 @@ vi.mock("../src/adapters/codex.js", () => ({
     constructor(cfg: unknown) {
       ctorConfigs.push(cfg);
     }
-    async createSession(text: string, mode: string) {
-      calls.push({ method: "createSession", args: [text, mode] });
+    async createSession(text: string) {
+      calls.push({ method: "createSession", args: [text] });
       return { sessionId: "thread-real-id", output: "codex 建会话输出", exitCode: 0, timedOut: false };
     }
-    async injectWith(text: string, sessionId: string, mode: string) {
-      calls.push({ method: "injectWith", args: [text, sessionId, mode] });
+    async injectWith(text: string, sessionId: string) {
+      calls.push({ method: "injectWith", args: [text, sessionId] });
       return { sessionId, output: "codex 续接输出", exitCode: 0, timedOut: false };
     }
   },
@@ -50,8 +50,6 @@ function makeConfig(overrides: Partial<AgentBusConfig> = {}): AgentBusConfig {
     allowed_senders: [],
     hop_limit: 3,
     rate_limit: 100,
-    inbound_mode: "readonly",
-    trust_map: {},
     tools: { codex: {} },
     ack: true,
     ...overrides,
@@ -101,7 +99,7 @@ describe("defaultInject codex 分发", { timeout: 30000 }, () => {
     publishToDaemon({ id: "x-1", from: "be-svc", to: "fe-test", text: "第一条" });
     await waitFor(() => calls.length >= 1);
     expect(calls[0]!.method).toBe("createSession");
-    expect(calls[0]!.args[1]).toBe("readonly");
+    expect(calls[0]!.args.length).toBe(1); // 恒只读：mode 参数已移除
 
     publishToDaemon({ id: "x-2", from: "be-svc", to: "fe-test", text: "第二条" });
     await waitFor(() => calls.length >= 2);
