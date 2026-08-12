@@ -236,10 +236,12 @@ def mcp_env(monkeypatch):
     server._sessions.clear()
     server._agent_info.clear()
     monkeypatch.setattr(server, "_metrics_store", server.MetricsStore())
+    monkeypatch.setattr(server, "_presence_store", server.PresenceStore())
     calls = []
     monkeypatch.setattr(server, "_shared_client",
                         SimpleNamespace(publish=lambda topic, payload, qos=0:
-                                        calls.append(topic) or SimpleNamespace(rc=0)))
+                                        calls.append(topic) or SimpleNamespace(rc=0),
+                                        is_connected=lambda: True))
     ev = threading.Event()
     ev.set()
     monkeypatch.setattr(server, "_shared_ready", ev)
@@ -308,6 +310,21 @@ def test_send_message_presence_offline_overrides_fresh_metrics(mcp_env):
         assert mcp_env == []  # 未投 broker
     finally:
         server._presence_store.remove("pay/bob")
+
+
+def test_list_agents_mqtt_connected_反映目标_daemon_而非_hub_链路(mcp_env):
+    """TASK-33：hub 共享连接在线但目标 daemon presence=offline → mqtt_connected=false"""
+    import server
+    now = datetime.now(timezone.utc)
+    out = _tool(mcp_env, "list_agents", {})
+    me = next(a for a in out if a["client_id"] == "pay/alice")
+    # 自身无 presence/指标 → 离线（旧口径会因 hub 连接在线误报 true）
+    assert me["mqtt_connected"] is False
+    server._presence_store.update("pay/alice", "online", now.isoformat(), reason="connected")
+    server._metrics_store.update("pay/alice", {"injected_ok": 1}, now.isoformat())
+    out2 = _tool(mcp_env, "list_agents", {})
+    me2 = next(a for a in out2 if a["client_id"] == "pay/alice")
+    assert me2["mqtt_connected"] is True
 
 
 # ─── Plan 3 问题 0：空正文拒发 ────────────────────────────────────────────────

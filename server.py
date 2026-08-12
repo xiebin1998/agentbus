@@ -649,7 +649,7 @@ class AgentSession:
 
     @property
     def connected(self) -> bool:
-        """mqtt_connected 语义（list_agents/get_status 用）：共享连接在线即全员可达"""
+        """仅内部用（hub 共享链路健康探测）；对外 mqtt_connected 字段一律走 agent_online"""
         return _shared_client is not None and _shared_client.is_connected()
 
     def is_registered(self) -> bool:
@@ -965,9 +965,11 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
         
         elif name == "list_agents":
             agents = []
+            presence = _presence_store.snapshot()
+            metrics = _metrics_store.snapshot()
             for cid, sess in _sessions.items():
                 info = sess.info.to_dict()
-                info["mqtt_connected"] = sess.connected
+                info["mqtt_connected"] = agent_online(sess.key, presence, metrics, datetime.now(timezone.utc))
                 agents.append(info)
             return [TextContent(type="text", text=json.dumps(agents, ensure_ascii=False, indent=2))]
         
@@ -976,7 +978,8 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             if target in _agent_info:
                 info = _agent_info[target].to_dict()
                 if target in _sessions:
-                    info["mqtt_connected"] = _sessions[target].connected
+                    info["mqtt_connected"] = agent_online(target, _presence_store.snapshot(),
+                                                          _metrics_store.snapshot(), datetime.now(timezone.utc))
                 return [TextContent(type="text", text=json.dumps(info, ensure_ascii=False, indent=2))]
             return [TextContent(type="text", text=json.dumps({"error": "Agent not found"}, indent=2))]
         
@@ -998,7 +1001,9 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             status = {
                 "client_id": client_id,
                 "registered": session.is_registered(),
-                "mqtt_connected": session.connected,
+                "mqtt_connected": agent_online(session.key, _presence_store.snapshot(), snapshot,
+                                               datetime.now(timezone.utc)),
+                "presence_state": (_presence_store.snapshot().get(session.key) or {}).get("state"),
                 "sub_topic": session.sub_topic,
                 "mqtt_broker": f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}",
                 "metric_last_seen": (entry or {}).get("last_seen"),
