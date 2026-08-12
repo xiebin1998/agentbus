@@ -1,4 +1,5 @@
-"""LWT presence 在线态：显式状态 + 60s 心跳兜底 + 无 presence 旧客户端回退指标窗口。"""
+"""LWT presence 在线态：presence 唯一真源（显式状态 + 60s 心跳兜底）。
+0.2.10：删除旧客户端 90s 指标窗口回退——daemon stop 即翻离线，不再假在线。"""
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -31,13 +32,12 @@ def test_presence_offline_even_with_fresh_heartbeat():
     assert server.agent_online("iot/a", presence, metrics, NOW) is False
 
 
-def test_no_presence_entry_falls_back_to_legacy_metric_window():
-    """旧客户端（0.2.6 前无 presence）：回退 90s 指标窗口，不破坏存量"""
+def test_no_presence_entry_is_offline():
+    """0.2.10 起 presence 唯一真源：无条目直接离线（即使指标新鲜）"""
     import server
     metrics_fresh = {"iot/a": {"last_seen": _ts(30)}}
-    metrics_stale = {"iot/a": {"last_seen": _ts(150)}}
-    assert server.agent_online("iot/a", {}, metrics_fresh, NOW) is True
-    assert server.agent_online("iot/a", {}, metrics_stale, NOW) is False
+    assert server.agent_online("iot/a", {}, metrics_fresh, NOW) is False
+    assert server.agent_online("iot/a", {}, {}, NOW) is False
 
 
 def test_presence_store_update_and_snapshot():

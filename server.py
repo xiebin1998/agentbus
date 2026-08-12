@@ -298,7 +298,7 @@ def _offline_targets(targets: List[str], snapshot: Dict[str, dict], now: datetim
     return offline
 
 
-# ─── TASK-33：presence 统一在线判定（显式状态 + 60s 心跳兜底 + 旧客户端回退） ───
+# ─── TASK-33：presence 统一在线判定（0.2.10：presence 唯一真源 + 60s 心跳兜底） ───
 
 
 def _parse_iso(ts: Any) -> Optional[datetime]:
@@ -315,12 +315,11 @@ PRESENCE_HEARTBEAT_WINDOW_S = 60
 
 def agent_online(key: str, presence: Dict[str, dict], metrics: Dict[str, dict],
                  now: datetime, heartbeat_s: int = PRESENCE_HEARTBEAT_WINDOW_S) -> bool:
-    """统一在线判定：有 presence 条目 → 显式状态 + 心跳兜底；
-    无条目（旧客户端）→ 回退 90s 指标窗口（_offline_targets 同口径）"""
+    """统一在线判定（0.2.10 收敛）：presence 唯一真源——条目 state=online 且心跳
+    （presence ts / 指标 last_seen 取新）在窗口内才算在线；无条目/offline/心跳超期
+    一律离线。旧客户端 90s 指标回退已删：daemon stop 即翻离线，不再假在线。"""
     p = presence.get(key)
-    if p is None:
-        return key not in _offline_targets([key], metrics, now)
-    if p.get("state") != "online":
+    if p is None or p.get("state") != "online":
         return False
     latest = max(filter(None, (_parse_iso(p.get("ts")),
                                _parse_iso((metrics.get(key) or {}).get("last_seen")))),
@@ -1439,8 +1438,8 @@ def build_agent_detail(ns: str, agent_info: Dict[str, Any], sessions: Dict[str, 
     - metrics（MetricsStore 快照）→ metrics/last_seen/report_count
     - db_agents（TASK-32，按 client_id 索引的 agents 表行）→ 档案真源：
       tools/registered_at/owner/placeholder，并进 key 并集（仅有档案的也可见）
-    - online（TASK-33）：presence 显式状态 + 60s 心跳兜底；无 presence 条目（旧客户端）
-      回退 90s 指标窗口 —— 表示投递可达，与 SSE 会话无关
+    - online（TASK-33）：presence 唯一真源 + 60s 心跳兜底；无 presence 条目即离线
+      （0.2.10：旧 90s 指标回退已删）
     """
     db_agents = db_agents or {}
     presence = presence or {}
@@ -1620,7 +1619,7 @@ async def api_agent_register(request: Request):
 
 async def api_agent_snapshot(request: Request):
     """TASK-32：ns 内全量 Agent 档案快照（daemon 轮询同步 agents.json 用）。
-    鉴权同注册端点；online=agent_online 统一口径（presence + 60s 心跳 / 旧客户端回退 90s 指标）。"""
+    鉴权同注册端点；online=agent_online 统一口径（presence 唯一真源 + 60s 心跳兜底）。"""
     owner = _agent_basic_auth(request)
     if owner is None:
         expected = os.getenv("MCP_API_TOKEN") or ""
