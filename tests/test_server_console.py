@@ -72,6 +72,10 @@ def test_metric_client_publish_delivers_end_to_end():
         import pytest
         sub.loop_stop(); sub.disconnect()
         pytest.skip(f"broker 拒绝连接（rc={conn['rc']}，未配 MQTT_USERNAME），跳过端到端验证")
+    if conn["rc"] is None:
+        import pytest
+        sub.loop_stop(); sub.disconnect()
+        pytest.skip("CONNACK 未在窗口内到达（连接不完整），跳过端到端验证")
     time.sleep(1.0)
 
     pub = mqtt2.Client(client_id="pytest-metric-pub", protocol=mqtt2.MQTTv311,

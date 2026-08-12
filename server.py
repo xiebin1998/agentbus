@@ -548,7 +548,11 @@ class AgentSession:
         self.mcp_session: Optional[ServerSession] = None
         self.sub_topic = build_sub_topic(client_id, ns)
 
-        self.info = AgentInfo(self.key)
+        # 已有档案（hub 重启从 DB 恢复 / 上一会话遗留）必须复用而非覆盖：
+        # 否则每次 SSE 重连都会把名称/描述/能力/注册态抹成空白，
+        # list_agents/get_agent_info 返回空壳，/health 的 registered_agents 丢失
+        existing = _agent_info.get(self.key)
+        self.info = existing if existing is not None else AgentInfo(self.key)
         _agent_info[self.key] = self.info
 
     @property

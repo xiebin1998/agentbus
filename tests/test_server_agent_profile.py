@@ -380,6 +380,31 @@ def test_sse_disconnect_keeps_agent_info(monkeypatch):
         server._agent_info.clear(); server._agent_info.update(saved[1])
 
 
+def test_session_init_reuses_existing_agent_info():
+    """SSE（重）连新建会话不得覆盖已有档案：hub 重启从 DB 恢复的名称/注册态
+    会在 agent 重连时被空白 AgentInfo 抹掉 → list_agents/get_agent_info 返回空壳。"""
+    import server
+    saved = dict(server._agent_info)
+    server._agent_info.clear()
+    try:
+        existing = server.AgentInfo("iot/ag-x")
+        existing.name = "心语大师"
+        existing.registered = True
+        existing.capabilities = ["chat"]
+        server._agent_info["iot/ag-x"] = existing
+
+        session = server.AgentSession("ag-x", asyncio.new_event_loop(), "iot")
+
+        info = server._agent_info["iot/ag-x"]
+        assert info is existing, "新会话必须复用已有档案对象，不得新建覆盖"
+        assert info.name == "心语大师"
+        assert info.registered is True
+        assert session.info is existing
+    finally:
+        server._agent_info.clear()
+        server._agent_info.update(saved)
+
+
 # ─── TASK-32 Task 5：快照端点（DB 档案 × 在线态） ────────────────────
 
 
