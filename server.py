@@ -1537,8 +1537,9 @@ async def api_console_agent_patch(request: Request):
 
 
 async def api_console_agent_delete(request: Request):
-    """Plan 3 问题 4：删除 Agent 明细档案（DB 档案行 + 内存指标条目 + 注册态一次清净）。
-    session_guard + _can_manage_ns；越权 403；无此行 404。
+    """删除 Agent 明细（0.2.10 best-effort）：DB 档案行有则删，内存态
+    （指标/注册态/presence/存活 SSE 会话）全清；无档案也返回 200——有什么删什么。
+    session_guard + _can_manage_ns；越权 403。
     注意：该身份若仍在线（daemon 在跑），下次指标上报会自动重建占位行——
     清理测试数据的正确姿势是先停对应 daemon 再删除。"""
     user = hub_auth.current_user(request)
@@ -1548,12 +1549,15 @@ async def api_console_agent_delete(request: Request):
         return _json_error("缺少 ns/client_id")
     if not _can_manage_ns(user, ns):
         return _json_error("forbidden", 403)
-    if DB_CONN is None or hub_store.get_agent(DB_CONN, ns, cid) is None:
-        return _json_error("未找到该 Agent 档案", 404)
-    hub_store.delete_agent(DB_CONN, ns, cid)
+    if DB_CONN is not None and hub_store.get_agent(DB_CONN, ns, cid) is not None:
+        hub_store.delete_agent(DB_CONN, ns, cid)
     key = session_key(cid, ns)
     _metrics_store.remove(key)
     _agent_info.pop(key, None)
+    _presence_store.remove(key)
+    session = _sessions.get(key)
+    if session is not None:
+        session.close()  # close 内部已从 _sessions/路由表摘除
     logger.info(f"[agent-profile] console deleted {ns}/{cid} by {user['username']}")
     return JSONResponse({"status": "deleted", "client_id": cid})
 

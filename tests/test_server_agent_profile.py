@@ -692,10 +692,20 @@ def test_delete_agent_success_clears_db_metrics_and_info(console_env):
     assert "iot/ag-1" not in server._metrics_store.snapshot()
 
 
-def test_delete_agent_unknown_404(console_env):
+def test_delete_agent_best_effort_no_profile_200(console_env):
+    """0.2.10：无 DB 档案（如仅内存态的 SSE 身份）也返回 200，并清空内存态——有什么删什么，不报错"""
+    import server
     console_env.post("/api/auth/login", json={"username": "root", "password": "rootpw"})
     _mk_ns(console_env)
-    assert console_env.delete("/api/console/agents/ghost?ns=iot").status_code == 404
+    server._metrics_store.update("iot/ghost", {"injected_ok": 1},
+                                 datetime.now(timezone.utc).isoformat())
+    server._presence_store.update("iot/ghost", "online",
+                                  datetime.now(timezone.utc).isoformat(), reason="")
+    r = console_env.delete("/api/console/agents/ghost?ns=iot")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "deleted"
+    assert "iot/ghost" not in server._metrics_store.snapshot()
+    assert "iot/ghost" not in server._presence_store.snapshot()
 
 
 # ─── TASK-32 Task 5：明细 API 补 DB 字段 + hub 重启恢复 ─────────────────
