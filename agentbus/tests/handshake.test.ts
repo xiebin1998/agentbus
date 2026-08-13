@@ -174,6 +174,154 @@ describe("handshake: hello_ack handling", () => {
   });
 });
 
+describe("receive hello and reply hello_ack", () => {
+  let probeClient: mqtt.MqttClient;
+
+  beforeEach(async () => {
+    probeClient = mqtt.connect(`mqtt://127.0.0.1:${port}`, { clientId: `probe-hello-${randomUUID()}` });
+    await new Promise<void>((resolve, reject) => {
+      probeClient.on("connect", () => resolve());
+      probeClient.on("error", reject);
+    });
+  });
+
+  it("creates channel and replies hello_ack on hello", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-recv-hello-"));
+    const daemon = new Daemon({
+      config: makeConfig(),
+      workDir: dir,
+      inject: async () => ({ output: "ok" }),
+    });
+    expect(daemon.start()).toMatchObject({ started: true });
+    await waitFor(() => daemon.status().connected);
+
+    const daemonAny = daemon as any;
+
+    // 订阅 alice 的 topic 以捕获 hello_ack
+    const aliceTopic = "/agentbus/ai/channel/ns/alice/message";
+    const helloAckPromise = new Promise<any>((resolve) => {
+      probeClient.subscribe(aliceTopic, () => {});
+      probeClient.on("message", (_topic: string, payload: Buffer) => {
+        const msg = JSON.parse(payload.toString());
+        if (msg.type === "hello_ack") resolve(msg);
+      });
+    });
+
+    // 发送 hello 消息到 daemon
+    const hello = {
+      id: "h-001",
+      from: "ns/alice",
+      to: "ns/test-daemon",
+      text: "",
+      type: "hello",
+      session: "ses-alice-001",
+      hop: 0,
+      reply_to: null,
+      expect_reply: false,
+      timestamp: new Date().toISOString(),
+    };
+    broker.publish({
+      cmd: "publish",
+      topic: "/agentbus/ai/channel/ns/test-daemon/message",
+      payload: JSON.stringify(hello),
+      qos: 1,
+      retain: false,
+      dup: false,
+    }, () => {});
+
+    // 等待 hello_ack 被发送
+    const helloAck = await helloAckPromise;
+    // 等待 daemon 侧异步日志写完
+    await new Promise((r) => setTimeout(r, 200));
+
+    // 验证通道已创建且状态为 ESTABLISHED
+    const channel = daemonAny.channels.get("ns/alice");
+    expect(channel).not.toBeNull();
+    expect(channel.state).toBe("ESTABLISHED");
+    expect(channel.remoteSessionId).toBe("ses-alice-001");
+
+    // 验证 hello_ack 消息内容
+    expect(helloAck.type).toBe("hello_ack");
+    expect(helloAck.from).toBe("ns/test-daemon");
+    expect(helloAck.to).toBe("ns/alice");
+    expect(helloAck.session).toBe(channel.localSessionId);
+    expect(helloAck.hop).toBe(1);
+    expect(helloAck.expect_reply).toBe(false);
+
+    // 验证日志
+    const log = readFileSync(join(dir, "logs", "daemon.log"), "utf-8");
+    expect(log).toContain("收到 hello");
+    expect(log).toContain("ns/alice");
+    expect(log).toContain("ses-alice-001");
+    expect(log).toContain("hello_ack 已发送");
+
+    probeClient.end();
+    await daemon.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("updates existing channel on repeated hello", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentbus-recv-hello-repeat-"));
+    const daemon = new Daemon({
+      config: makeConfig(),
+      workDir: dir,
+      inject: async () => ({ output: "ok" }),
+    });
+    expect(daemon.start()).toMatchObject({ started: true });
+    await waitFor(() => daemon.status().connected);
+
+    const daemonAny = daemon as any;
+
+    // 预创建通道（SYN_SENT 状态，模拟之前发起过出站）
+    const [channel] = daemonAny.channels.getOrCreate("ns/alice", "placeholder");
+    expect(channel.state).toBe("SYN_SENT");
+
+    // 订阅 alice 的 topic 以捕获 hello_ack
+    const aliceTopic = "/agentbus/ai/channel/ns/alice/message";
+    const helloAckPromise = new Promise<any>((resolve) => {
+      probeClient.subscribe(aliceTopic, () => {});
+      probeClient.on("message", (_topic: string, payload: Buffer) => {
+        const msg = JSON.parse(payload.toString());
+        if (msg.type === "hello_ack") resolve(msg);
+      });
+    });
+
+    // 发送 hello
+    const hello = {
+      id: "h-002",
+      from: "ns/alice",
+      to: "ns/test-daemon",
+      text: "",
+      type: "hello",
+      session: "ses-alice-002",
+      hop: 0,
+      reply_to: null,
+      expect_reply: false,
+      timestamp: new Date().toISOString(),
+    };
+    broker.publish({
+      cmd: "publish",
+      topic: "/agentbus/ai/channel/ns/test-daemon/message",
+      payload: JSON.stringify(hello),
+      qos: 1,
+      retain: false,
+      dup: false,
+    }, () => {});
+
+    const helloAck = await helloAckPromise;
+
+    // 通道应从 SYN_SENT 更新为 ESTABLISHED
+    expect(channel.state).toBe("ESTABLISHED");
+    expect(channel.remoteSessionId).toBe("ses-alice-002");
+    expect(helloAck.type).toBe("hello_ack");
+    expect(helloAck.session).toBe(channel.localSessionId);
+
+    probeClient.end();
+    await daemon.stop();
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
 describe("send_message outbound path", () => {
   let probeClient: mqtt.MqttClient;
 

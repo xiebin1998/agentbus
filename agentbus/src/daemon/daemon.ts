@@ -180,7 +180,7 @@ export class Daemon {
   }
 
   /** 入站处理：解析 → 路由 → 各分支副作用（决策原因全部落日志） */
-  private handleMessage(payloadJson: string): void {
+  private async handleMessage(payloadJson: string): Promise<void> {
     let raw: unknown;
     try {
       raw = JSON.parse(payloadJson);
@@ -201,6 +201,23 @@ export class Daemon {
       } else {
         this.logger.info(`hello_ack 无匹配 pendingHandshake from=${message.from}`);
       }
+      return;
+    }
+
+    // hello 消息：建通道 + 回 hello_ack（纯控制路径，不触发 kilo）
+    if (message?.type === "hello") {
+      const [channel, isNew] = this.channels.getOrCreate(message.from, message.id);
+      if (isNew || channel.state !== "ESTABLISHED") {
+        // 学到对方 session
+        if (message.session) {
+          this.channels.updateRemoteSession(message.from, message.session);
+        }
+        this.channels.setState(message.from, "ESTABLISHED");
+        this.logger.info(`收到 hello：${message.from} session=${message.session}，通道 ${isNew ? "新建" : "更新"} → ESTABLISHED`);
+      }
+
+      // 回 hello_ack
+      await this.sendHelloAck(message, channel);
       return;
     }
 
@@ -627,6 +644,32 @@ export class Daemon {
     await this.publish(topic, hello);
     this.logger.info(`握手消息已发送 → ${channel.remote} session=${channel.localSessionId}`);
     return true;
+  }
+
+  /** 收到 hello 后回复 hello_ack：携带本 daemon 的 localSessionId */
+  private async sendHelloAck(original: BusMessage, channel: Channel): Promise<void> {
+    const topic = senderTopic(original.from);
+    if (!topic) {
+      this.logger.warn(`hello_ack 丢弃：${original.from} 非 ns 形态身份`);
+      return;
+    }
+    if (!this.listener || !this.listener.isConnected()) return;
+
+    const helloAck: BusMessage = {
+      id: newMsgId(),
+      from: this.selfIdentity,
+      redirect_client_id: this.selfIdentity,
+      to: original.from,
+      text: "",
+      type: "hello_ack",
+      reply_to: null,
+      hop: original.hop + 1,
+      expect_reply: false,
+      session: channel.localSessionId,
+      timestamp: new Date().toISOString(),
+    };
+    await this.publish(topic, helloAck);
+    this.logger.info(`hello_ack 已发送 → ${original.from} session=${channel.localSessionId}`);
   }
 
   private waitForHandshake(remote: string, timeoutMs: number): Promise<void> {
