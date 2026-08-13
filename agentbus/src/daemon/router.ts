@@ -57,8 +57,7 @@ export interface RouteResult {
 export interface RouterOptions {
   /** 注入式时钟（测试用） */
   now?: () => number;
-  /** sessions.json 中已有记录的发件人集合（步骤 6 判定） */
-  knownSenders?: Set<string>;
+  // 简化方案：不再使用 knownSenders，isNew 判定改为看消息是否带 session 字段
 }
 
 /** 有界去重集合（LRU：has 访问也刷新热度，容量满逐出最旧） */
@@ -99,7 +98,6 @@ export class Router {
   /** 每个来源的排队深度 */
   private queueDepths = new Map<string, number>();
   private now: () => number;
-  private knownSenders: Set<string>;
 
   constructor(
     private cfg: RouterConfig,
@@ -107,7 +105,7 @@ export class Router {
   ) {
     this.seen = new LruSet(cfg.dedupCapacity);
     this.now = opts.now ?? Date.now;
-    this.knownSenders = opts.knownSenders ?? new Set();
+    // 简化方案：不再维护 knownSenders，isNew 判定改为看消息是否带 session 字段
   }
 
   /** 队列消费一条后调用，释放排队深度 */
@@ -174,6 +172,16 @@ export class Router {
       };
     }
 
+    // 握手消息走控制路径（不注入 AI 回合）
+    if (m.type === "hello" || m.type === "hello_ack") {
+      this.seen.add(m.id);
+      return {
+        decision: { action: "control", reason: `${m.type}：握手消息，走控制路径` },
+        ack: null,
+        message: m,
+      };
+    }
+
     // 步骤 4：目标工具判定（@tool 限定 → default_tool → 未配置则忽略）
     const tool = extractTool(m.to) ?? this.cfg.defaultTool;
     if (!(tool in this.cfg.tools)) {
@@ -201,12 +209,12 @@ export class Router {
       evictOldest = depth > this.cfg.queueMax;
     }
 
-    // 步骤 6：会话判定（陌生发件人由 daemon 侧 create_session + 写 sessions.json）
-    const isNewSender = !this.knownSenders.has(sender);
+    // 步骤 6：会话判定已移至 daemon 层（通道管理器负责）
+    // 路由器不再判断 isNew，由 daemon 根据通道是否存在来决定
+    const isNewSender = false;
 
-    // 步骤 7：记入去重 LRU（last_active 由注册表更新）
+    // 步骤 7：记入去重 LRU
     this.seen.add(m.id);
-    this.knownSenders.add(sender);
 
     // 步骤 8：ack（一律 type=control，不触发对方回合）
     const ack = this.cfg.ack ? makeAck(this.cfg.selfIdentity, m) : null;

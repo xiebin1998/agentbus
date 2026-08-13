@@ -126,6 +126,31 @@ describe("步骤 3：control 短路", () => {
   });
 });
 
+describe("hello/hello_ack routing", () => {
+  it("routes hello to control action", () => {
+    const router = new Router(makeConfig());
+    const raw = { from: "ns/alice", type: "hello", session: "ses-001", text: "" };
+    const result = router.route(raw);
+    expect(result.decision.action).toBe("control");
+    expect(result.message?.type).toBe("hello");
+  });
+
+  it("routes hello_ack to control action", () => {
+    const router = new Router(makeConfig());
+    const raw = { from: "ns/bob", type: "hello_ack", session: "ses-002", text: "" };
+    const result = router.route(raw);
+    expect(result.decision.action).toBe("control");
+    expect(result.message?.type).toBe("hello_ack");
+  });
+
+  it("hello does not trigger inject", () => {
+    const router = new Router(makeConfig());
+    const raw = { from: "ns/alice", type: "hello", text: "" };
+    const result = router.route(raw);
+    expect(result.decision.action).not.toBe("inject");
+  });
+});
+
 describe("步骤 4：工具判定", () => {
   it("to 带 @tool 限定 → 指定工具", () => {
     const router = new Router(makeConfig());
