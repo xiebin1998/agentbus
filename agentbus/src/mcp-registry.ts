@@ -4,7 +4,7 @@
  * 红线 1 Claude 与 Qoder 共用 .mcp.json —— 读→合并→写回，严禁整文件覆盖
  * 红线 2 claude/qodercli -s 默认 local —— scope 必须显式落到明确文件路径，绝不允许隐式 local
  * 红线 3 kilo mcp add 实测写全局 —— Kilo 项目级必须直写 .kilo/kilo.json，不得使用 CLI
- * 红线 4 键名/传输字段差异 —— Claude/Qoder 用 mcpServers+"sse"；Kilo/OpenCode 用 mcp+"remote"
+ * 红线 4 键名/传输字段差异 —— Claude/Qoder 用 mcpServers+"stdio"；Kilo/OpenCode 用 mcp+"stdio"
  * 红线 5 文件必须 UTF-8 无 BOM（kilo 遇 BOM 报 ConfigJsonError 静默跳过）
  * 红线 6 Codex 仅全局 —— project 请求回退 global（CLI 注册），并明确告知用户
  * 红线 7 回写验证 —— 写后读回确认注册成功（doctor 亦复用 verifyMcpFile）
@@ -34,9 +34,12 @@ export interface McpPlan {
   warnings: string[];
 }
 
-const sseEntry = (url: string) => ({ type: "sse", url });
-const remoteEntry = (url: string) => ({ type: "remote", url });
-const cliAddArgs = (url: string) => ["mcp", "add", MCP_NAME, "--url", url];
+const stdioEntry = () => ({
+  type: "stdio",
+  command: "agentbus",
+  args: ["mcp", "--stdio"],
+});
+const cliAddArgs = () => ["mcp", "add", MCP_NAME, "--stdio"];
 
 /** 按工具与 scope 生成注册计划（纯函数，不做任何磁盘/进程操作） */
 export function planMcpRegistration(
@@ -58,7 +61,7 @@ export function planMcpRegistration(
           : tool === "claude"
             ? join(homeDir, ".claude.json")
             : join(homeDir, ".qoder", "mcp.json");
-      // 红线 4：mcpServers + sse
+      // 红线 4：mcpServers + stdio
       return {
         tool,
         requestedScope,
@@ -66,7 +69,7 @@ export function planMcpRegistration(
         method: "file",
         path,
         sectionKey: "mcpServers",
-        entry: sseEntry(sseUrl),
+        entry: stdioEntry(),
         warnings,
       };
     }
@@ -80,7 +83,7 @@ export function planMcpRegistration(
           method: "file",
           path: join(projectRoot, ".kilo", "kilo.json"),
           sectionKey: "mcp",
-          entry: remoteEntry(sseUrl),
+          entry: stdioEntry(),
           warnings,
         };
       }
@@ -90,7 +93,7 @@ export function planMcpRegistration(
         scope: "global",
         method: "cli",
         binary: "kilo",
-        cliArgs: cliAddArgs(sseUrl),
+        cliArgs: cliAddArgs(),
         warnings,
       };
     }
@@ -106,7 +109,7 @@ export function planMcpRegistration(
         method: "file",
         path,
         sectionKey: "mcp",
-        entry: remoteEntry(sseUrl),
+        entry: stdioEntry(),
         warnings,
       };
     }
@@ -121,7 +124,7 @@ export function planMcpRegistration(
         scope: "global",
         method: "cli",
         binary: "codex",
-        cliArgs: cliAddArgs(sseUrl),
+        cliArgs: cliAddArgs(),
         warnings,
       };
     }

@@ -145,9 +145,9 @@ describe("runInit --yes 全链路（非交互）", () => {
   it("步骤 4：project scope 注册写入 .mcp.json（claude/qoder 共用）与 .kilo/kilo.json", async () => {
     await init();
     const mcpJson = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf-8"));
-    expect(mcpJson.mcpServers.agentbus.type).toBe("sse");
+    expect(mcpJson.mcpServers.agentbus.type).toBe("stdio");
     const kiloJson = JSON.parse(readFileSync(join(root, ".kilo", "kilo.json"), "utf-8"));
-    expect(kiloJson.mcp.agentbus.type).toBe("remote");
+    expect(kiloJson.mcp.agentbus.type).toBe("stdio");
   });
 
   it("步骤 5：拉起 daemon（detached spawn daemon start）", async () => {

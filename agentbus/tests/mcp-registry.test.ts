@@ -4,7 +4,7 @@
  * 红线 1 Claude 与 Qoder 共用 .mcp.json —— 必须合并，严禁整文件覆盖
  * 红线 2 claude/qodercli -s 默认 local —— project/global 必须落到明确的文件路径
  * 红线 3 kilo mcp add 实测写全局 —— Kilo 项目级必须直写 .kilo/kilo.json，不用 CLI
- * 红线 4 键名/传输字段差异 —— mcpServers+sse vs mcp+remote，不可混用
+ * 红线 4 键名/传输字段差异 —— 统一 stdio 格式，所有工具均用 { type:"stdio", command:"agentbus", args:["mcp","--stdio"] }
  * 红线 5 文件必须 UTF-8 无 BOM（kilo 遇 BOM 静默跳过）
  * 红线 6 Codex 仅全局 —— project 请求必须回退并明确告知
  * 红线 7 回写验证 —— 写后必须读回确认注册成功
@@ -37,12 +37,12 @@ afterEach(() => {
 });
 
 describe("planMcpRegistration scope 映射（红线 2/3/4/6）", () => {
-  it("claude project → 直写项目根 .mcp.json（mcpServers + sse）", () => {
+  it("claude project → 直写项目根 .mcp.json（mcpServers + stdio）", () => {
     const plan = planMcpRegistration("claude", "project", SSE_URL, root, home);
     expect(plan.method).toBe("file");
     expect(plan.path).toBe(join(root, ".mcp.json"));
     expect(plan.sectionKey).toBe("mcpServers");
-    expect(plan.entry).toEqual({ type: "sse", url: SSE_URL });
+    expect(plan.entry).toEqual({ type: "stdio", command: "agentbus", args: ["mcp", "--stdio"] });
   });
 
   it("红线 2：claude/qoder 的 project 与 global 落到明确区分的文件路径，绝无隐式 local", () => {
@@ -66,15 +66,15 @@ describe("planMcpRegistration scope 映射（红线 2/3/4/6）", () => {
     const plan = planMcpRegistration("kilo", "global", SSE_URL, root, home);
     expect(plan.method).toBe("cli");
     expect(plan.binary).toBe("kilo");
-    expect(plan.cliArgs).toEqual(["mcp", "add", MCP_NAME, "--url", SSE_URL]);
+    expect(plan.cliArgs).toEqual(["mcp", "add", MCP_NAME, "--stdio"]);
   });
 
-  it("红线 4：opencode 用 mcp 键 + type=remote，与 claude/qoder 的 mcpServers+sse 不混用", () => {
+  it("红线 4：opencode 用 mcp 键 + type=stdio，与 claude/qoder 统一 stdio 格式", () => {
     const plan = planMcpRegistration("opencode", "project", SSE_URL, root, home);
     expect(plan.method).toBe("file");
     expect(plan.path).toBe(join(root, "opencode.json"));
     expect(plan.sectionKey).toBe("mcp");
-    expect(plan.entry).toEqual({ type: "remote", url: SSE_URL });
+    expect(plan.entry).toEqual({ type: "stdio", command: "agentbus", args: ["mcp", "--stdio"] });
 
     const global = planMcpRegistration("opencode", "global", SSE_URL, root, home);
     expect(global.path).toBe(join(home, ".config", "opencode", "opencode.json"));
@@ -85,7 +85,7 @@ describe("planMcpRegistration scope 映射（红线 2/3/4/6）", () => {
     expect(plan.method).toBe("cli");
     expect(plan.scope).toBe("global");
     expect(plan.binary).toBe("codex");
-    expect(plan.cliArgs).toEqual(["mcp", "add", MCP_NAME, "--url", SSE_URL]);
+    expect(plan.cliArgs).toEqual(["mcp", "add", MCP_NAME, "--stdio"]);
     expect(plan.warnings.join(" ")).toContain("全局");
   });
 
@@ -98,8 +98,8 @@ describe("planMcpRegistration scope 映射（红线 2/3/4/6）", () => {
 
 describe("upsertMcpJson 合并语义（红线 1）", () => {
   it("无文件时生成最小结构", () => {
-    const out = JSON.parse(upsertMcpJson(undefined, "mcpServers", MCP_NAME, { type: "sse", url: SSE_URL }));
-    expect(out).toEqual({ mcpServers: { agentbus: { type: "sse", url: SSE_URL } } });
+    const out = JSON.parse(upsertMcpJson(undefined, "mcpServers", MCP_NAME, { type: "stdio", command: "agentbus", args: ["mcp", "--stdio"] }));
+    expect(out).toEqual({ mcpServers: { agentbus: { type: "stdio", command: "agentbus", args: ["mcp", "--stdio"] } } });
   });
 
   it("红线 1：合并保留已有服务器与其他顶层键，严禁整文件覆盖", () => {
@@ -107,17 +107,17 @@ describe("upsertMcpJson 合并语义（红线 1）", () => {
       topLevel: "keep-me",
       mcpServers: { other: { type: "stdio", command: "x" } },
     });
-    const out = JSON.parse(upsertMcpJson(existing, "mcpServers", MCP_NAME, { type: "sse", url: SSE_URL }));
+    const out = JSON.parse(upsertMcpJson(existing, "mcpServers", MCP_NAME, { type: "stdio", command: "agentbus", args: ["mcp", "--stdio"] }));
     expect(out.topLevel).toBe("keep-me");
     expect(out.mcpServers.other).toEqual({ type: "stdio", command: "x" });
-    expect(out.mcpServers[MCP_NAME].url).toBe(SSE_URL);
+    expect(out.mcpServers[MCP_NAME]).toEqual({ type: "stdio", command: "agentbus", args: ["mcp", "--stdio"] });
   });
 
   it("红线 5：已有内容带 BOM 时先剥离再解析，输出不带 BOM", () => {
     const withBom = `\uFEFF${JSON.stringify({ mcp: {} })}`;
-    const out = upsertMcpJson(withBom, "mcp", MCP_NAME, { type: "remote", url: SSE_URL });
+    const out = upsertMcpJson(withBom, "mcp", MCP_NAME, { type: "stdio", command: "agentbus", args: ["mcp", "--stdio"] });
     expect(out.charCodeAt(0)).not.toBe(0xfeff);
-    expect(JSON.parse(out).mcp[MCP_NAME].type).toBe("remote");
+    expect(JSON.parse(out).mcp[MCP_NAME].type).toBe("stdio");
   });
 
   it("已有文件不是合法 JSON 时抛错（不覆盖用户数据）", () => {
@@ -149,7 +149,7 @@ describe("registerMcpFile 写盘与回写验证（红线 5/7）", () => {
     registerMcpFile(plan);
     const parsed = JSON.parse(readFileSync(plan.path!, "utf-8"));
     expect(parsed.mcpServers.keep).toBeDefined();
-    expect(parsed.mcpServers[MCP_NAME].url).toBe(SSE_URL);
+    expect(parsed.mcpServers[MCP_NAME]).toEqual({ type: "stdio", command: "agentbus", args: ["mcp", "--stdio"] });
   });
 
   it("红线 7：verifyMcpFile 在键缺失时返回 false", () => {
