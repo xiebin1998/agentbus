@@ -17,6 +17,12 @@ import { randomUUID } from "node:crypto";
 
 export type ChannelState = "SYN_SENT" | "ESTABLISHED";
 
+export interface HandshakeEntry {
+  remote: string;
+  resolve: () => void;
+  timer: NodeJS.Timeout;
+}
+
 export interface Channel {
   channelId: string;
   remote: string;
@@ -34,6 +40,8 @@ export interface Channel {
 export class ChannelManager {
   /** remote → Channel */
   private channels = new Map<string, Channel>();
+  /** remote → pending handshake entry */
+  private pendingHandshakes = new Map<string, HandshakeEntry>();
 
   /** 入站消息：查找或创建通道，返回 [channel, isNew] */
   getOrCreate(remote: string, messageId: string): [Channel, boolean] {
@@ -83,6 +91,19 @@ export class ChannelManager {
       ch.state = state;
       ch.updatedAt = new Date().toISOString();
     }
+  }
+
+  /** 注册待完成的握手（发送 hello 后调用） */
+  trackPendingHandshake(remote: string, resolve: () => void, timer: NodeJS.Timeout): void {
+    this.pendingHandshakes.set(remote, { remote, resolve, timer });
+  }
+
+  /** 消费待完成的握手（收到 hello_ack 后调用），不存在返回 null */
+  consumePendingHandshake(remote: string): HandshakeEntry | null {
+    const entry = this.pendingHandshakes.get(remote);
+    if (!entry) return null;
+    this.pendingHandshakes.delete(remote);
+    return entry;
   }
 
   /** 删除通道 */

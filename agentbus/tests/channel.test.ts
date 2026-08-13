@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { ChannelManager, type ChannelState } from "../src/daemon/channel";
 
 describe("ChannelManager", () => {
@@ -69,6 +69,35 @@ describe("ChannelManager", () => {
       const r2 = channels.find((c) => c.remote === "r2")!;
       expect(r1.state).toBe("ESTABLISHED");
       expect(r2.state).toBe("SYN_SENT");
+    });
+  });
+
+  describe("pendingHandshakes", () => {
+    it("trackPendingHandshake + consumePendingHandshake round-trip", () => {
+      const resolve = vi.fn();
+      const timer = setTimeout(() => {}, 1000);
+      mgr.trackPendingHandshake("remote-x", resolve, timer);
+
+      const entry = mgr.consumePendingHandshake("remote-x");
+      expect(entry).not.toBeNull();
+      expect(entry!.remote).toBe("remote-x");
+      expect(entry!.resolve).toBe(resolve);
+      expect(entry!.timer).toBe(timer);
+      clearTimeout(timer);
+    });
+
+    it("consumePendingHandshake returns null for unknown remote", () => {
+      expect(mgr.consumePendingHandshake("no-such-remote")).toBeNull();
+    });
+
+    it("consumePendingHandshake removes the entry (second call returns null)", () => {
+      const resolve = vi.fn();
+      const timer = setTimeout(() => {}, 1000);
+      mgr.trackPendingHandshake("remote-y", resolve, timer);
+
+      expect(mgr.consumePendingHandshake("remote-y")).not.toBeNull();
+      expect(mgr.consumePendingHandshake("remote-y")).toBeNull();
+      clearTimeout(timer);
     });
   });
 });
