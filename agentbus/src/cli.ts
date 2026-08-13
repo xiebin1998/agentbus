@@ -28,6 +28,15 @@ const pkg = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf-8"),
 ) as { version: string };
 
+/** Read daemon IPC address from workDir/daemon.ipc */
+function readDaemonAddress(workDir: string): string {
+  try {
+    return readFileSync(join(workDir, "daemon.ipc"), "utf-8").trim();
+  } catch {
+    throw new Error(`无法读取 daemon IPC 地址（${workDir}/daemon.ipc 不存在）。请先启动 daemon。`);
+  }
+}
+
 /** 工作目录解析：--config 指定 config.json 路径，默认 ./.agentbus/config.json */
 function resolveWorkDir(configOpt?: string): string {
   return configOpt ? dirname(resolve(configOpt)) : resolve(".agentbus");
@@ -486,6 +495,62 @@ export function buildProgram(): Command {
         console.log("[update] daemon 未运行，无需重启");
       }
       console.log("[update] 更新完成，可运行 agentbus doctor 验证");
+    });
+
+  program
+    .command("mcp")
+    .description("MCP stdio 桥进程（由 AI 客户端 fork，不直接调用）")
+    .option("--stdio", "使用 stdio 传输（MCP 协议）")
+    .option("--daemon <address>", "daemon IPC 地址（默认从 workDir/daemon.ipc 读取）")
+    .option("-c, --config <path>", "config.json 路径（默认 .agentbus/config.json）")
+    .action(async (opts: { stdio?: boolean; daemon?: string; config?: string }) => {
+      if (!opts.stdio) {
+        console.error("请指定 --stdio");
+        process.exit(1);
+      }
+      const workDir = resolveWorkDir(opts.config);
+      const address = opts.daemon || readDaemonAddress(workDir);
+      const { McpBridge } = await import("./daemon/mcp-bridge.js");
+      const bridge = new McpBridge({ daemonAddress: address });
+      await bridge.connect();
+
+      // stdio 循环：读 JSON-RPC from stdin, 转发到 daemon, 写回 stdout
+      process.stdin.setEncoding("utf8");
+      let processing = false;
+      const queue: string[] = [];
+
+      const processNext = async () => {
+        if (processing || queue.length === 0) return;
+        processing = true;
+        const line = queue.shift()!;
+        try {
+          const response = await bridge.handleRequest(line);
+          if (response) process.stdout.write(response + "\n");
+        } catch (e) {
+          const errResp = JSON.stringify({
+            jsonrpc: "2.0",
+            error: { code: -32603, message: (e as Error).message },
+          });
+          process.stdout.write(errResp + "\n");
+        }
+        processing = false;
+        if (queue.length > 0) processNext();
+      };
+
+      process.stdin.on("data", (chunk: string) => {
+        const lines = chunk.split("\n");
+        for (const line of lines) {
+          if (line.trim()) queue.push(line.trim());
+        }
+        processNext();
+      });
+
+      process.stdin.on("end", () => {
+        bridge.disconnect().then(() => process.exit(0));
+      });
+
+      // 保持进程存活
+      await new Promise(() => {});
     });
 
   return program;
