@@ -137,11 +137,9 @@ describe("daemon 端到端：路由 + ack + 会话", () => {
     expect(reply.from).toBe("default/fe-test");
   });
 
-  it("会话写入 sessions.json（UUID），同一发件人复用", async () => {
-    const reg = JSON.parse(readFileSync(join(dir, "sessions.json"), "utf-8"));
-    const firstSession = reg.senders["default/be-svc"].kilo.sessionId;
+  it("通道复用：同一发件人复用同一 session，isNew=false", async () => {
+    const firstSession = records[0]!.ctx.sessionId;
     expect(firstSession).toMatch(/^[0-9a-f-]{36}$/);
-    expect(records[0]!.ctx.sessionId).toBe(firstSession);
 
     publishToDaemon({ id: "msg-e2e-2", from: "default/be-svc", to: "fe-test", text: "再来一条" });
     await waitFor(() => records.length === 2);

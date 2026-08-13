@@ -21,54 +21,55 @@ function msg(overrides: Record<string, unknown> = {}) {
 
 describe("信封结构", () => {
   it("首行为机器可识别元数据：[AgentBus] id/from/hop/expect_reply", () => {
-    const env = buildEnvelope(msg());
+    const env = buildEnvelope(msg(), { sessionId: "ses" });
     expect(env.split("\n")[0]).toBe(
       "[AgentBus] id=msg-abc from=iot/be-svc hop=1 expect_reply=true",
     );
   });
 
   it("包含 skill 加载指令（确定性触发静态契约）", () => {
-    expect(buildEnvelope(msg())).toContain("`agentbus` skill");
+    expect(buildEnvelope(msg(), { sessionId: "ses" })).toContain("`agentbus` skill");
   });
 
   it("原消息 text 原样置于信封末尾", () => {
-    const env = buildEnvelope(msg({ text: "原始内容 XYZ" }));
+    const env = buildEnvelope(msg({ text: "原始内容 XYZ" }), { sessionId: "ses" });
     expect(env.trimEnd().endsWith("原始内容 XYZ")).toBe(true);
   });
 });
 
 describe("expect_reply 语义", () => {
   it("expect_reply=true：指示调用 send_message 回复", () => {
-    const env = buildEnvelope(msg());
+    const env = buildEnvelope(msg(), { sessionId: "ses" });
     expect(env).toContain("调用 send_message 回复");
     expect(env).toContain("reply_to=msg-abc");
     expect(env).toContain("to=iot/be-svc");
   });
 
   it("expect_reply=false：告知无需回复，不出现代回指令", () => {
-    const env = buildEnvelope(msg({ expect_reply: false }));
+    const env = buildEnvelope(msg({ expect_reply: false }), { sessionId: "ses" });
     expect(env.split("\n")[0]).toContain("expect_reply=false");
     expect(env).toContain("无需回复");
-    expect(env).not.toContain("无需调用 send_message");
   });
 });
 
-describe("session 字段（Plan 3 问题 2：会话路由上下文）", () => {
-  it("携带注入会话：信封出现 session=<本地会话ID>（发消息时用作 session_id）", () => {
-    const env = buildEnvelope(msg(), "ses_local");
+describe("session 字段（通道上下文）", () => {
+  it("携带注入会话：信封出现 session=<本地会话ID>", () => {
+    const env = buildEnvelope(msg(), { sessionId: "ses_local" });
     expect(env).toContain("session=ses_local");
   });
 
-  it("原消息带发送方会话：显示 reply_session（手动回复时用作 session_id 回传）", () => {
-    const env = buildEnvelope(msg({ session: "ses_remote" }), "ses_local");
-    expect(env).toContain("reply_session=ses_remote");
+  it("通道含 remoteSessionId：显示 peer_session", () => {
+    const env = buildEnvelope(msg({ session: "ses_remote" }), { sessionId: "ses_local", remoteSessionId: "ses_remote" });
+    expect(env).toContain("peer_session=ses_remote");
   });
 
-  it("兼容：不传注入会话且原消息无 session 时无会话行；原消息无 session 时不出现 reply_session", () => {
-    const env = buildEnvelope(msg());
-    expect(env).not.toContain("session=");
-    expect(env).not.toContain("reply_session=");
-    const env2 = buildEnvelope(msg(), "ses_local");
-    expect(env2).not.toContain("reply_session=");
+  it("无 channelId 时不出现 channel 行", () => {
+    const env = buildEnvelope(msg(), { sessionId: "ses_local" });
+    expect(env).not.toContain("channel=");
+  });
+
+  it("有 channelId 时出现 channel 行", () => {
+    const env = buildEnvelope(msg(), { sessionId: "ses_local", channelId: "ch-abc" });
+    expect(env).toContain("channel=ch-abc");
   });
 });

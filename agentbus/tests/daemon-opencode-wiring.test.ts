@@ -163,52 +163,50 @@ describe("defaultInject opencode 分发（KILO_FAMILY）", { timeout: 30000 }, (
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("Plan 3 问题 2：回复携带 session → 注回原会话（不新建）且注册表回写", async () => {
+  it("通道方案：回复携带 session → 更新通道 remoteSessionId，后续消息续接本地 session", async () => {
     calls.length = 0;
     const dir = mkdtempSync(join(tmpdir(), "agentbus-opencode-wire4-"));
     const daemon = new Daemon({ config: makeConfig({ ack: false }), workDir: dir });
     daemon.start();
     await waitFor(() => daemon.status().connected);
 
+    // 第一条：创建通道 + createSession
     publishToDaemon({ id: "s-1", from: "be-svc", to: "fe-test", text: "提问" });
     await waitFor(() => calls.length >= 1);
     expect(calls[0]!.method).toBe("createSession");
 
-    // 回复（reply_to 非空）携带发起方会话 → 续接注回 ses_origin 而非新建会话
-    publishToDaemon({
-      id: "s-2", from: "be-svc", to: "fe-test", text: "回复内容",
-      reply_to: "s-1", session: "ses_origin", expect_reply: false,
-    });
+    // 第二条：同发件人，通道已存在，续接本地 session（不再用消息的 session 字段）
+    publishToDaemon({ id: "s-2", from: "be-svc", to: "fe-test", text: "继续" });
     await waitFor(() => calls.length >= 2);
     expect(calls[1]!.method).toBe("inject");
-    expect(calls[1]!.args[1]).toBe("ses_origin");
+    expect(calls[1]!.args[1]).toBe("ses-opencode-real");
 
-    // 注册表已回写：同一发件人后续消息续接原会话（不再新建）
+    // 第三条：仍然续接同一 session
     publishToDaemon({ id: "s-3", from: "be-svc", to: "fe-test", text: "再来一条" });
     await waitFor(() => calls.length >= 3);
     expect(calls[2]!.method).toBe("inject");
-    expect(calls[2]!.args[1]).toBe("ses_origin");
+    expect(calls[2]!.args[1]).toBe("ses-opencode-real");
 
     await daemon.stop();
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("Plan 3 问题 2：注回原会话失败（会话已删）→ 回退现状新建会话", async () => {
+  it("通道方案：新发件人首条消息 → createSession 新建通道", async () => {
     calls.length = 0;
     const dir = mkdtempSync(join(tmpdir(), "agentbus-opencode-wire5-"));
     const daemon = new Daemon({ config: makeConfig({ ack: false }), workDir: dir });
     daemon.start();
     await waitFor(() => daemon.status().connected);
 
-    publishToDaemon({
-      id: "s-4", from: "svc-x", to: "fe-test", text: "回复",
-      reply_to: "s-0", session: "ses-gone", expect_reply: false,
-    });
+    // 新发件人首条：创建通道 + createSession
+    publishToDaemon({ id: "s-4", from: "svc-x", to: "fe-test", text: "你好" });
+    await waitFor(() => calls.length >= 1);
+    expect(calls[0]!.method).toBe("createSession");
+    // 第二条：同发件人续接
+    publishToDaemon({ id: "s-5", from: "svc-x", to: "fe-test", text: "继续" });
     await waitFor(() => calls.length >= 2);
-    expect(calls[0]!.method).toBe("inject");
-    expect(calls[0]!.args[1]).toBe("ses-gone");
-    // 注回失败后回退新建（现状行为兼容）
-    expect(calls[1]!.method).toBe("createSession");
+    expect(calls[1]!.method).toBe("inject");
+    expect(calls[1]!.args[1]).toBe("ses-opencode-real");
 
     await daemon.stop();
     rmSync(dir, { recursive: true, force: true });

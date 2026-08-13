@@ -207,16 +207,16 @@ describe("步骤 5：限速与队列", () => {
   });
 });
 
-describe("步骤 6：会话判定", () => {
-  it("陌生发件人标记 isNewSender（daemon 侧将 create_session）", () => {
+describe("步骤 6：会话判定（已移至 daemon/ChannelManager 层）", () => {
+  it("路由器不再判断 isNewSender，始终返回 false", () => {
     const router = new Router(makeConfig());
     const { decision } = router.route(msg({ from: "new-guy" }));
     expect(decision.action).toBe("inject");
-    if (decision.action === "inject") expect(decision.isNewSender).toBe(true);
+    if (decision.action === "inject") expect(decision.isNewSender).toBe(false);
   });
 
-  it("sessions.json 已有记录的发件人不建新会话", () => {
-    const router = new Router(makeConfig(), { knownSenders: new Set(["be-svc"]) });
+  it("已知发件人同样 isNewSender=false（会话判定由 daemon 通道层负责）", () => {
+    const router = new Router(makeConfig());
     const { decision } = router.route(msg());
     if (decision.action === "inject") expect(decision.isNewSender).toBe(false);
   });
