@@ -526,6 +526,7 @@ export class Daemon {
     }
     // 携带本 daemon 的本地 session ID，让发送方学到
     const reply = makeReply(this.selfIdentity, original, output, channel.localSessionId);
+    this.logger.info(`代回构造：selfIdentity=${this.selfIdentity} config.ns=${this.opts.config.ns} reply.from=${reply.from}`);
     await this.publish(topic, reply);
     this.logger.info(`代回已发送 → ${original.from}（原消息 ${original.id}，session=${channel.localSessionId}，${output.length} 字符）`);
   }
@@ -596,7 +597,7 @@ export class Daemon {
 
   /** 出站消息：自动握手 + session 填充 */
   async sendMessage(to: string, text: string, expectReply: boolean, timeoutMs = 30000): Promise<{ status: string; reply?: string }> {
-    const toIdentity = `${this.opts.config.ns}/${to}`;
+    const toIdentity = to.includes("/") ? to : `${this.opts.config.ns}/${to}`;
     const msgId = newMsgId();
 
     // 1. 查找或创建通道
@@ -725,7 +726,8 @@ export class Daemon {
       const to = args.to as string;
       const text = args.text as string;
       const waitReply = args.wait_reply as boolean | undefined;
-      const result = await this.sendMessage(to, text, !!waitReply);
+      // IPC 调用超时 5 分钟（AI 推理可能耗时较长）
+      const result = await this.sendMessage(to, text, !!waitReply, 300_000);
       return result;
     });
 

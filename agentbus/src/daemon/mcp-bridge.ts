@@ -123,7 +123,7 @@ export class McpBridge {
 
       this.socket!.write(ipcReq + "\n");
 
-      // Timeout after 60 s
+      // Timeout after 5 min (AI inference can be slow)
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(reqId);
         resolve(
@@ -133,7 +133,7 @@ export class McpBridge {
             error: { code: -32603, message: "IPC timeout" },
           }),
         );
-      }, 60_000);
+      }, 300_000);
 
       this.pendingRequests.set(reqId, {
         resolve: (data) => {
