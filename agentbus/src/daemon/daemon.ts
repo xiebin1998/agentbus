@@ -20,12 +20,12 @@ import { CodexAdapter } from "../adapters/codex.js";
 import { createListener, type Listener, type ListenerOptions, presenceTopic } from "./listener.js";
 import { RotatingLogger } from "./logger.js";
 import { acquirePidLock, releasePidLock } from "./pid.js";
-import { knownSenders, loadRegistry, saveRegistry, touchSession, type RegistryData } from "./registry.js";
 import { Router, type RouterConfig } from "./router.js";
 import { ServeManager } from "./serve-manager.js";
 import { SessionLock } from "./session-lock.js";
 import { syncAgentsSnapshot, lookupAgentName } from "./snapshot.js";
-import { buildEnvelope } from "./envelope.js";
+import { buildEnvelope, type EnvelopeContext } from "./envelope.js";
+import { ChannelManager, type Channel } from "./channel.js";
 import { applyReadonly, removeReadonly } from "../isolate.js";
 
 /** 注入上下文：信封恒按只读包装；注入器返回回合输出（代回的原料） */
@@ -92,7 +92,6 @@ function parseHermesRemote(raw: unknown): HermesRemoteConfig | undefined {
 export class Daemon {
   private router: Router | null = null;
   private listener: Listener | null = null;
-  private registry: RegistryData | null = null;
   /** TASK-29：同一发件人在同一工具的回合串行（并发不串话）；异会话并行 */
   private sessionLock = new SessionLock();
   /** TASK-30：隔离引用计数（同 workspace 并发回合共享隔离，归零才解除） */
@@ -100,12 +99,12 @@ export class Daemon {
   private serveManager = new ServeManager({ warn: (m) => this.logger.warn(m) });
   private logger: RotatingLogger;
   private pidFile: string;
-  private regPath: string;
   private started = false;
+  /** 通道管理器：维护与所有对应方的通信通道 */
+  private channels = new ChannelManager();
 
   constructor(private opts: DaemonOptions) {
     this.pidFile = join(opts.workDir, "daemon.pid");
-    this.regPath = join(opts.workDir, "sessions.json");
     // 架构 6.2：日志落 .agentbus/logs/daemon.log，目录不存在时自建（手动 daemon start 不依赖 init）
     const logPath = join(opts.workDir, "logs", "daemon.log");
     mkdirSync(dirname(logPath), { recursive: true });
@@ -131,10 +130,7 @@ export class Daemon {
       this.logger.info(`接管 stale pid 锁（旧 pid=${lock.staleTakenOver}）`);
     }
 
-    // 2. 注册表（损坏自动备份恢复）
-    this.registry = loadRegistry(this.regPath);
-
-    // 3. 路由器（会话判定用注册表快照）
+    // 2. 路由器（会话判定：消息有 session 字段 → 续接；无 → 新建）
     const cfg = this.opts.config;
     const routerCfg: RouterConfig = {
       selfIdentity: this.selfIdentity,
@@ -148,7 +144,7 @@ export class Daemon {
       dedupCapacity: 1000,
       queueMax: 20,
     };
-    this.router = new Router(routerCfg, { knownSenders: knownSenders(this.registry) });
+    this.router = new Router(routerCfg);
 
     // 4. MQTT 层：首次连接失败不致命，mqtt.js 内部持续重连
     const topic = `/agentbus/ai/channel/${cfg.ns}/${cfg.client_id}/message`;
@@ -194,6 +190,20 @@ export class Daemon {
     }
     const { decision, ack, message } = this.router!.route(raw);
 
+    // hello_ack 走控制路径但需要额外处理：更新通道状态 + resolve pendingHandshake
+    if (message?.type === "hello_ack") {
+      const entry = this.channels.consumePendingHandshake(message.from);
+      if (entry) {
+        this.channels.updateRemoteSession(message.from, message.session!);
+        this.channels.setState(message.from, "ESTABLISHED");
+        entry.resolve();
+        this.logger.info(`握手完成：${message.from} session=${message.session}`);
+      } else {
+        this.logger.info(`hello_ack 无匹配 pendingHandshake from=${message.from}`);
+      }
+      return;
+    }
+
     switch (decision.action) {
       case "drop":
         // 指标分类（TASK-19）：去重命中与其余丢弃分开计数
@@ -216,25 +226,27 @@ export class Daemon {
       void this.publishAck(ack).catch((e: Error) => this.logger.warn(`ack 发送失败: ${e.message}`));
     }
 
-    // 会话查询/创建 + 注册表原子落盘（步骤 6/7）；会话 id 统一 UUID（qoder 硬约束）
-    const { entry, isNew } = touchSession(
-      this.registry!,
-      message!.from,
-      decision.tool,
-      () => randomUUID(),
-      Date.now(),
-    );
-    // Plan 3 问题 2：回复携带发起方会话 id → 注回原会话（不按发件人身份新建），
-    // 注册表同步回写，同一发件人后续消息续接同一会话
-    const replyToSession =
-      Boolean(message!.reply_to) && typeof message!.session === "string" && message!.session !== "";
-    if (replyToSession) {
-      entry.sessionId = message!.session!;
-      this.logger.info(`回复 ${message!.id} 携带 session，注回原会话 ${entry.sessionId}`);
+    // 通道方案：daemon 维护与每个对应方的通道
+    // 收到回复时（reply_to 有值 + expect_reply=false）：提取 session 字段更新通道
+    if (message!.reply_to && !message!.expect_reply && message!.session) {
+      const pending = this.channels.consumePendingReply(message!.reply_to);
+      if (pending) {
+        this.channels.updateRemoteSession(message!.from, message!.session);
+        this.logger.info(`回复处理：更新 ${message!.from} 的 remoteSession=${message!.session}`);
+      } else {
+        this.logger.info(`回复处理：未找到 pending reply for ${message!.reply_to}`);
+      }
+      return;
     }
-    saveRegistry(this.regPath, this.registry!);
-    if (isNew && !replyToSession) {
-      this.logger.info(`新发件人 ${message!.from}，创建 ${decision.tool} 会话 ${entry.sessionId}`);
+
+    // 入站消息：查找或创建通道
+    const [channel, isNew] = this.channels.getOrCreate(message!.from, message!.id);
+    const sessionId = channel.localSessionId;
+
+    if (isNew) {
+      this.logger.info(`新发件人 ${message!.from}，创建通道 ${channel.channelId.slice(0, 8)}，本地 session=${sessionId}`);
+    } else {
+      this.logger.info(`发件人 ${message!.from} 通道已存在，续接 session=${sessionId}`);
     }
 
     if (decision.queued) {
@@ -242,18 +254,18 @@ export class Daemon {
       return;
     }
 
-    void this.runLocked(decision.tool, entry.sessionId, message!, replyToSession ? false : isNew);
+    void this.runLocked(decision.tool, sessionId, message!, isNew, channel);
   }
 
   /** 按 工具|发件人 串行排队（同源同会话回合不重叠）；限速队列续排也走同一入口 */
-  private runLocked(tool: string, sessionId: string, msg: BusMessage, isNew: boolean): void {
+  private runLocked(tool: string, sessionId: string, msg: BusMessage, isNew: boolean, channel: Channel): void {
     const key = `${tool}|${msg.from}`;
     void this.sessionLock
-      .run(key, () => this.injectAndDrain(tool, sessionId, msg, isNew))
+      .run(key, () => this.injectAndDrain(tool, sessionId, msg, isNew, channel))
       .catch((e: Error) => this.logger.error(`回合链异常: ${e.message}`));
   }
 
-  private async injectAndDrain(tool: string, sessionId: string, msg: BusMessage, isNew: boolean): Promise<void> {
+  private async injectAndDrain(tool: string, sessionId: string, msg: BusMessage, isNew: boolean, channel: Channel): Promise<void> {
     const cfg = this.opts.config;
     // 信封（4.6/4.7）：沟通定位入站恒只读，参数层与提示层一致
     // Plan 3 问题 1：会话标题优先用快照里的 Agent 名称（如"心语大师"），未命中回退 client_id
@@ -269,38 +281,36 @@ export class Daemon {
     let output = "";
     let failed = false;
     let failReason = "";
-    // Plan 3 问题 2：回复带 session 须注回原会话；注入失败（原会话已删）回退现状新建一次
-    const replyToSession = Boolean(msg.reply_to) && typeof msg.session === "string" && msg.session !== "";
     try {
       const handler = this.opts.inject ?? this.defaultInject();
-      const attempts = replyToSession ? 2 : 1;
+      // 续接会话时允许重试（kilo 那边会话可能已丢失）
+      const attempts = isNew ? 1 : 2;
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        // 信封携带本次注入的会话 id（agent 发消息时用作 session_id）
-        const envelope = buildEnvelope(msg, sessionId);
+        // 信封携带通道上下文
+        const envCtx: EnvelopeContext = {
+          sessionId,
+          channelId: channel.channelId,
+          remoteSessionId: channel.remoteSessionId ?? undefined,
+        };
+        const envelope = buildEnvelope(msg, envCtx);
         try {
           const turn = await handler({ tool, sessionId, envelope, msg, senderName, isNew });
           output = turn.output;
-          // kilo 族会话 id 由 CLI 侧生成：回写注册表保持续接正确
+          // kilo 族会话 id 由 CLI 侧生成：更新通道本地 session
           if (turn.sessionId && turn.sessionId !== sessionId) {
-            const perTool = this.registry!.senders[msg.from];
-            if (perTool?.[tool]) {
-              perTool[tool]!.sessionId = turn.sessionId;
-              saveRegistry(this.regPath, this.registry!);
-              sessionId = turn.sessionId;
-            }
+            channel.localSessionId = turn.sessionId;
+            this.logger.info(`kilo 创建新会话 ${turn.sessionId}，通道 ${channel.channelId.slice(0, 8)} 已更新`);
           }
           break;
         } catch (e) {
-          if (attempt >= attempts) throw e;
-          // 原会话可能已被删：回退现状行为（新建会话）重试一次
+          const errMsg = (e as Error).message;
+          // 检测 "Session not found" 类错误：回退新建会话
+          const isSessionLost = errMsg.includes("Session not found") || errMsg.includes("session") && errMsg.includes("not");
+          if (attempt >= attempts || !isSessionLost) throw e;
+          // 原会话已丢失：回退新建会话重试一次
           const freshId = randomUUID();
-          const perTool = this.registry!.senders[msg.from];
-          if (perTool?.[tool]) {
-            perTool[tool]!.sessionId = freshId;
-            saveRegistry(this.regPath, this.registry!);
-          }
-          this.logger.warn(`注回原会话失败（${(e as Error).message}），回退新建会话 ${freshId}`);
-          sessionId = freshId;
+          channel.localSessionId = freshId;
+          this.logger.warn(`注回原会话失败（${errMsg}），回退新建会话 ${freshId}`);
           isNew = true;
         }
       }
@@ -311,17 +321,16 @@ export class Daemon {
     } finally {
       if (isolated) this.isolateRelease(this.resolveWorkspace(tool));
     }
-    // 注入结果计数（TASK-19：注入成功率指标源）
-    
 
     // 回复通道（4.6）：expect_reply=true 时代回输出；失败发 control 通知防对方干等
+    // 代回时携带本 daemon 的本地 session ID，让发送方学到并存储到通道
     if (msg.expect_reply) {
       if (failed) {
         void this.publishFailure(msg, failReason).catch((e: Error) =>
           this.logger.warn(`失败通知发送失败: ${e.message}`),
         );
       } else if (output.trim()) {
-        void this.publishReply(msg, output).catch((e: Error) =>
+        void this.publishReply(msg, output, channel).catch((e: Error) =>
           this.logger.warn(`代回发送失败: ${e.message}`),
         );
       } else {
@@ -471,16 +480,20 @@ export class Daemon {
     this.logger.info(`ack 已回发 → ${to}（原消息 ${ack.reply_to}）`);
   }
 
-  /** 代回（4.6 步骤 3）：reply_to=原消息 / hop+1 / expect_reply=false 终止互询 */
-  private async publishReply(original: BusMessage, output: string): Promise<void> {
+  /** 代回（4.6 步骤 3）：reply_to=原消息 / hop+1 / expect_reply=false 终止互询
+   *  session 字段携带本 daemon 的本地 session ID，发送方收到后存储到通道 */
+  private async publishReply(original: BusMessage, output: string, channel: Channel): Promise<void> {
     const topic = senderTopic(original.from);
     if (!topic) {
       this.logger.warn(`代回丢弃：发件人 ${original.from} 非 ns 形态身份（flat 兼容已删除）`);
       return;
     }
-    const reply = makeReply(this.selfIdentity, original, output);
+    // 携带本 daemon 的本地 session ID，让发送方学到
+    const reply = makeReply(this.selfIdentity, original, output, channel.localSessionId);
     await this.publish(topic, reply);
-    this.logger.info(`代回已发送 → ${original.from}（原消息 ${original.id}，${output.length} 字符）`);
+    // 跟踪待回复：发送方收到后会根据 reply_to 匹配
+    this.channels.trackPendingReply(original.id, channel.channelId, channel.localSessionId);
+    this.logger.info(`代回已发送 → ${original.from}（原消息 ${original.id}，session=${channel.localSessionId}，${output.length} 字符）`);
   }
 
   /** 注入失败通知（4.6 兜底）：control 类型不触发对方回合 */
@@ -541,7 +554,7 @@ export class Daemon {
     return {
       running: this.started,
       connected: this.listener?.isConnected() ?? false,
-      senderCount: this.registry ? Object.keys(this.registry.senders).length : 0,
+      senderCount: 0, // 简化方案：不再维护本地发件人计数
     };
   }
 }
