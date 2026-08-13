@@ -135,6 +135,38 @@ describe("makeReply（daemon 代回）", () => {
   });
 });
 
+describe("normalize type extension for hello/hello_ack", () => {
+  it("parses hello type", () => {
+    const raw = { from: "ns/alice", type: "hello", text: "" };
+    const msg = normalize(raw);
+    expect(msg?.type).toBe("hello");
+  });
+
+  it("parses hello_ack type", () => {
+    const raw = { from: "ns/bob", type: "hello_ack", text: "" };
+    const msg = normalize(raw);
+    expect(msg?.type).toBe("hello_ack");
+  });
+
+  it("falls back to text for unknown type", () => {
+    const raw = { from: "ns/alice", type: "unknown" };
+    const msg = normalize(raw);
+    expect(msg?.type).toBe("text");
+  });
+
+  it("still parses control type", () => {
+    const raw = { from: "ns/alice", type: "control" };
+    const msg = normalize(raw);
+    expect(msg?.type).toBe("control");
+  });
+
+  it("defaults to text when type is missing", () => {
+    const raw = { from: "ns/alice" };
+    const msg = normalize(raw);
+    expect(msg?.type).toBe("text");
+  });
+});
+
 describe("session 字段（Plan 3 问题 2：会话回注路由依据）", () => {
   it("合法字符串保留（发送方本地会话 ID）", () => {
     expect(normalize({ from: "a", session: "ses_abc123" })!.session).toBe("ses_abc123");

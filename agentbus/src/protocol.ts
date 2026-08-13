@@ -15,8 +15,8 @@ export interface BusMessage {
   /** 目标：client_id / <ns>/<client_id> / 带 @tool 后缀 / 数组群发 */
   to: string | string[];
   text: string;
-  /** text=触发完整回合；control=仅记日志不注入（环路抑制） */
-  type: "text" | "control";
+  /** text=触发完整回合；control=仅记日志不注入（环路抑制）；hello/hello_ack=握手协议 */
+  type: "text" | "control" | "hello" | "hello_ack";
   /** 本消息回复的目标消息 id（回复必填） */
   reply_to: string | null;
   /** 跳数，缺省 0；超过 hop_limit 丢弃（环路熔断） */
@@ -50,7 +50,11 @@ export function normalize(raw: unknown): BusMessage | null {
     return null;
   }
 
-  const type = obj.type === "control" ? "control" : "text";
+  const type =
+    obj.type === "control" ? "control" :
+    obj.type === "hello" ? "hello" :
+    obj.type === "hello_ack" ? "hello_ack" :
+    "text";
   const hopRaw = obj.hop;
   const hop = typeof hopRaw === "number" && Number.isFinite(hopRaw) && hopRaw >= 0
     ? Math.floor(hopRaw)
@@ -98,9 +102,10 @@ export function makeAck(selfId: string, original: BusMessage): BusMessage {
 
 /**
  * 组装代回复（架构 4.6）：daemon 捕获注入输出后回传给发件人，expect_reply=false 终止链条。
- * session 回显原消息携带的发起方会话 id：发起方 daemon 据此把回复注回原会话（Plan 3 问题 2）。
+ * session 字段携带回复方（接收方）daemon 创建的本地会话 ID，
+ * 发送方 daemon 收到后提取并存储到通道，下次发消息时带上此 session。
  */
-export function makeReply(selfId: string, original: BusMessage, text: string): BusMessage {
+export function makeReply(selfId: string, original: BusMessage, text: string, responderSession?: string): BusMessage {
   return {
     id: newMsgId(),
     from: selfId,
@@ -111,7 +116,7 @@ export function makeReply(selfId: string, original: BusMessage, text: string): B
     reply_to: original.id,
     hop: original.hop + 1,
     expect_reply: false,
-    session: original.session,
+    session: responderSession ?? original.session,
     timestamp: new Date().toISOString(),
   };
 }
