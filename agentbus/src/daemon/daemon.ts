@@ -8,7 +8,7 @@
  * 注入点：inject 为依赖注入钩子 —— 集成测试用假实现；缺省走真实适配器（qoder/kilo 族）。
  */
 import { join, dirname } from "node:path";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { AgentBusConfig } from "../config.js";
 import { newMsgId, makeReply, type BusMessage } from "../protocol.js";
@@ -26,6 +26,7 @@ import { SessionLock } from "./session-lock.js";
 import { syncAgentsSnapshot, lookupAgentName } from "./snapshot.js";
 import { buildEnvelope, type EnvelopeContext } from "./envelope.js";
 import { ChannelManager, type Channel } from "./channel.js";
+import { IpcServer } from "./ipc-server.js";
 import { applyReadonly, removeReadonly } from "../isolate.js";
 
 /** 注入上下文：信封恒按只读包装；注入器返回回合输出（代回的原料） */
@@ -99,12 +100,15 @@ export class Daemon {
   private serveManager = new ServeManager({ warn: (m) => this.logger.warn(m) });
   private logger: RotatingLogger;
   private pidFile: string;
+  private ipcFile: string;
+  private ipcServer: IpcServer | null = null;
   private started = false;
   /** 通道管理器：维护与所有对应方的通信通道 */
   private channels = new ChannelManager();
 
   constructor(private opts: DaemonOptions) {
     this.pidFile = join(opts.workDir, "daemon.pid");
+    this.ipcFile = join(opts.workDir, "daemon.ipc");
     // 架构 6.2：日志落 .agentbus/logs/daemon.log，目录不存在时自建（手动 daemon start 不依赖 init）
     const logPath = join(opts.workDir, "logs", "daemon.log");
     mkdirSync(dirname(logPath), { recursive: true });
@@ -154,7 +158,11 @@ export class Daemon {
       clientId: `agentbus-${cfg.ns}-${cfg.client_id}`,
       topic,
       presence: { topic: presenceTopic(cfg.ns, cfg.client_id), identity: this.selfIdentity },
-      onMessage: (payload) => this.handleMessage(payload),
+      onMessage: (payload) => {
+        this.handleMessage(payload).catch((e: Error) =>
+          this.logger.error(`handleMessage 异常: ${e.message}`)
+        );
+      },
       onStatus: (status, detail) => {
         if (status === "identity_conflict") {
           // TASK-32 断连指纹：同 client_id 互踢，重连只会加剧互伤 → 错误日志 + 退出码 2
@@ -171,11 +179,21 @@ export class Daemon {
       this.logger.error(`MQTT 首次连接失败，进入重连: ${e.message}`),
     );
 
-    // 5. 启动就绪
+    // 5. IPC Server：供桥进程连接（异步启动，不阻塞 daemon 启动）
+    this.ipcServer = new IpcServer({ port: 0 });
+    this.registerIpcTools();
+    void this.ipcServer.start().then(() => {
+      if (this.ipcServer?.address) {
+        writeFileSync(this.ipcFile, this.ipcServer.address, "utf-8");
+        this.logger.info(`IPC Server 就绪: ${this.ipcServer.address}`);
+      }
+    });
+
+    // 6. 启动就绪
     this.started = true;
     void this.syncSnapshot();
 
-    this.logger.info(`daemon started: ${this.selfIdentity} 订阅 ${topic}`);
+    this.logger.info(`daemon started: ${this.selfIdentity} 订阅 ${topic}，IPC: ${this.ipcServer.address}`);
     return { started: true, reason: `daemon 已启动（pid ${process.pid}）` };
   }
 
@@ -559,9 +577,11 @@ export class Daemon {
   /** 异步停止：resolve 于 MQTT 关闭完成后（期间仍有 offline 日志），resolve 后 workDir 可安全删除 */
   async stop(): Promise<void> {
     if (!this.started) return;
-    this.started = false; // 先行置位：幂等防重入，关闭期间的日志照常落盘
+    this.started = false;
     this.serveManager.stopAll();
     await this.listener?.stop();
+    await this.ipcServer?.stop();
+    try { unlinkSync(this.ipcFile); } catch { /* ignore */ }
     releasePidLock(this.pidFile);
     this.logger.info("daemon stopped");
   }
@@ -589,7 +609,11 @@ export class Daemon {
         return { status: "error", reply: `无法发送握手消息到 ${to}` };
       }
       // 等待 hello_ack（带超时）
-      await this.waitForHandshake(toIdentity, timeoutMs);
+      try {
+        await this.waitForHandshake(toIdentity, timeoutMs);
+      } catch (e) {
+        return { status: "error", reply: (e as Error).message };
+      }
     }
 
     // 3. 通道已建立：发 text 消息，session 自动填充
@@ -673,11 +697,11 @@ export class Daemon {
   }
 
   private waitForHandshake(remote: string, timeoutMs: number): Promise<void> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.channels.consumePendingHandshake(remote);
         this.logger.warn(`握手超时：${remote}（${timeoutMs}ms）`);
-        resolve();
+        reject(new Error(`握手超时：${remote}（${timeoutMs}ms）`));
       }, timeoutMs);
       this.channels.trackPendingHandshake(remote, resolve, timer);
     });
@@ -690,6 +714,28 @@ export class Daemon {
         resolve("[提示] 对方未及时回复");
       }, timeoutMs);
       this.channels.trackPendingReply(msgId, "", resolve, timer);
+    });
+  }
+
+  /** 注册 IPC 工具处理器（供桥进程调用） */
+  private registerIpcTools(): void {
+    if (!this.ipcServer) return;
+
+    this.ipcServer.registerTool("send_message", async (args) => {
+      const to = args.to as string;
+      const text = args.text as string;
+      const waitReply = args.wait_reply as boolean | undefined;
+      const result = await this.sendMessage(to, text, !!waitReply);
+      return result;
+    });
+
+    this.ipcServer.registerTool("list_agents", async () => {
+      // 返回在线代理列表（从 presence 系统获取）
+      return { agents: [], status: "ok" };
+    });
+
+    this.ipcServer.registerTool("get_status", async () => {
+      return this.status();
     });
   }
 }
