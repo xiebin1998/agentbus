@@ -23,6 +23,13 @@ export interface HandshakeEntry {
   timer: NodeJS.Timeout;
 }
 
+export interface PendingReplyEntry {
+  msgId: string;
+  channelKey: string;
+  resolve: (reply: string) => void;
+  timer: NodeJS.Timeout;
+}
+
 export interface Channel {
   channelId: string;
   remote: string;
@@ -42,6 +49,8 @@ export class ChannelManager {
   private channels = new Map<string, Channel>();
   /** remote → pending handshake entry */
   private pendingHandshakes = new Map<string, HandshakeEntry>();
+  /** msgId → pending reply entry */
+  private pendingReplies = new Map<string, PendingReplyEntry>();
 
   /** 入站消息：查找或创建通道，返回 [channel, isNew] */
   getOrCreate(remote: string, messageId: string): [Channel, boolean] {
@@ -103,6 +112,20 @@ export class ChannelManager {
     const entry = this.pendingHandshakes.get(remote);
     if (!entry) return null;
     this.pendingHandshakes.delete(remote);
+    return entry;
+  }
+
+  /** 注册待回复（send_message with wait_reply 时调用） */
+  trackPendingReply(msgId: string, channelKey: string, resolve: (reply: string) => void, timer: NodeJS.Timeout): void {
+    this.pendingReplies.set(msgId, { msgId, channelKey, resolve, timer });
+  }
+
+  /** 消费待回复（收到回复时调用），返回 null 表示无匹配 */
+  consumePendingReply(msgId: string): PendingReplyEntry | null {
+    const entry = this.pendingReplies.get(msgId);
+    if (!entry) return null;
+    clearTimeout(entry.timer);
+    this.pendingReplies.delete(msgId);
     return entry;
   }
 

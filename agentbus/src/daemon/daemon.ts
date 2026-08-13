@@ -233,6 +233,7 @@ export class Daemon {
       if (pending) {
         this.channels.updateRemoteSession(message!.from, message!.session);
         this.logger.info(`回复处理：更新 ${message!.from} 的 remoteSession=${message!.session}`);
+        pending.resolve(message!.text);
       } else {
         this.logger.info(`回复处理：未找到 pending reply for ${message!.reply_to}`);
       }
@@ -491,8 +492,6 @@ export class Daemon {
     // 携带本 daemon 的本地 session ID，让发送方学到
     const reply = makeReply(this.selfIdentity, original, output, channel.localSessionId);
     await this.publish(topic, reply);
-    // 跟踪待回复：发送方收到后会根据 reply_to 匹配
-    this.channels.trackPendingReply(original.id, channel.channelId, channel.localSessionId);
     this.logger.info(`代回已发送 → ${original.from}（原消息 ${original.id}，session=${channel.localSessionId}，${output.length} 字符）`);
   }
 
@@ -556,5 +555,98 @@ export class Daemon {
       connected: this.listener?.isConnected() ?? false,
       senderCount: 0, // 简化方案：不再维护本地发件人计数
     };
+  }
+
+  /** 出站消息：自动握手 + session 填充 */
+  async sendMessage(to: string, text: string, expectReply: boolean, timeoutMs = 30000): Promise<{ status: string; reply?: string }> {
+    const toIdentity = `${this.opts.config.ns}/${to}`;
+    const msgId = newMsgId();
+
+    // 1. 查找或创建通道
+    const [channel, isNew] = this.channels.getOrCreate(toIdentity, msgId);
+
+    // 2. 通道未建立：先发 hello，等待 hello_ack
+    if (channel.state !== "ESTABLISHED") {
+      const helloSent = await this.sendHello(channel);
+      if (!helloSent) {
+        return { status: "error", reply: `无法发送握手消息到 ${to}` };
+      }
+      // 等待 hello_ack（带超时）
+      await this.waitForHandshake(toIdentity, timeoutMs);
+    }
+
+    // 3. 通道已建立：发 text 消息，session 自动填充
+    const topic = senderTopic(toIdentity);
+    if (!topic) {
+      return { status: "error", reply: `无效的目标身份: ${to}` };
+    }
+
+    const msg: BusMessage = {
+      id: msgId,
+      from: this.selfIdentity,
+      redirect_client_id: this.selfIdentity,
+      to: toIdentity,
+      text,
+      type: "text",
+      reply_to: null,
+      hop: 0,
+      expect_reply: expectReply,
+      session: channel.remoteSessionId,
+      timestamp: new Date().toISOString(),
+    };
+
+    await this.publish(topic, msg);
+
+    // 4. 如果 expect_reply，注册 pendingReply 等待回复
+    if (expectReply) {
+      const reply = await this.waitForReply(msgId, timeoutMs);
+      return { status: "replied", reply };
+    }
+
+    return { status: "sent" };
+  }
+
+  private async sendHello(channel: Channel): Promise<boolean> {
+    const topic = senderTopic(channel.remote);
+    if (!topic) return false;
+    if (!this.listener || !this.listener.isConnected()) return false;
+
+    const hello: BusMessage = {
+      id: newMsgId(),
+      from: this.selfIdentity,
+      redirect_client_id: this.selfIdentity,
+      to: channel.remote,
+      text: "",
+      type: "hello",
+      reply_to: null,
+      hop: 0,
+      expect_reply: false,
+      session: channel.localSessionId,
+      timestamp: new Date().toISOString(),
+    };
+    await this.publish(topic, hello);
+    this.logger.info(`握手消息已发送 → ${channel.remote} session=${channel.localSessionId}`);
+    return true;
+  }
+
+  private waitForHandshake(remote: string, timeoutMs: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.channels.consumePendingHandshake(remote);
+        this.logger.warn(`握手超时：${remote}（${timeoutMs}ms）`);
+        resolve();
+      }, timeoutMs);
+      this.channels.trackPendingHandshake(remote, resolve, timer);
+    });
+  }
+
+  private waitForReply(msgId: string, timeoutMs: number): Promise<string> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.channels.consumePendingReply(msgId);
+        resolve("[提示] 对方未及时回复");
+      }, timeoutMs);
+      this.channels.trackPendingReply(msgId, "", resolve, timer);
+    });
   }
 }
