@@ -1,7 +1,7 @@
 /**
  * TASK-12: MCP 注册器（架构 6.3 scope 映射表 / 6.5-C 配置路径 / 6.5-D 七红线）
  *
- * 红线 1 Claude 与 Qoder 共用 .mcp.json —— 读→合并→写回，严禁整文件覆盖
+ * 红线 1 Claude 与 Qoder 项目级各自独立（claude 用 .mcp.json，qoder 用 .qoder/mcp.json）—— 不再共用
  * 红线 2 claude/qodercli -s 默认 local —— scope 必须显式落到明确文件路径，绝不允许隐式 local
  * 红线 3 kilo mcp add 实测写全局 —— Kilo 项目级必须直写 .kilo/kilo.json，不得使用 CLI
  * 红线 4 键名/传输字段差异 —— Claude/Qoder 用 mcpServers+"stdio"；Kilo/OpenCode 用 mcp+"stdio"
@@ -52,16 +52,30 @@ export function planMcpRegistration(
   const warnings: string[] = [];
 
   switch (tool) {
-    case "claude":
-    case "qoder": {
+    case "claude": {
       // 红线 2：project/global 都显式落到明确文件，绝不走 CLI 默认的 local scope
       const path =
         requestedScope === "project"
           ? join(projectRoot, ".mcp.json")
-          : tool === "claude"
-            ? join(homeDir, ".claude.json")
-            : join(homeDir, ".qoder", "mcp.json");
+          : join(homeDir, ".claude.json");
       // 红线 4：mcpServers + stdio
+      return {
+        tool,
+        requestedScope,
+        scope: requestedScope,
+        method: "file",
+        path,
+        sectionKey: "mcpServers",
+        entry: stdioEntry(),
+        warnings,
+      };
+    }
+    case "qoder": {
+      // qoder 项目级写到 <projectRoot>/.qoder/mcp.json（与 claude 的 .mcp.json 分开）
+      const path =
+        requestedScope === "project"
+          ? join(projectRoot, ".qoder", "mcp.json")
+          : join(homeDir, ".qoder", "mcp.json");
       return {
         tool,
         requestedScope,
@@ -244,7 +258,7 @@ export function planMcpUninstall(tool: string, projectRoot: string, homeDir: str
     case "qoder":
       return {
         files: [
-          { path: join(projectRoot, ".mcp.json"), sectionKey: "mcpServers" },
+          { path: join(projectRoot, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
           { path: join(homeDir, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
         ],
       };

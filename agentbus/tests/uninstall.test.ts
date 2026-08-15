@@ -70,14 +70,17 @@ describe("removeMcpJsonEntry", () => {
 // ---------- planMcpUninstall ----------
 
 describe("planMcpUninstall", () => {
-  it("claude/qoder：项目 .mcp.json + 全局文件，section 均 mcpServers", () => {
+  it("claude/qoder：项目 + 全局文件，section 均 mcpServers", () => {
     const c = planMcpUninstall("claude", root, home);
     expect(c.files).toEqual([
       { path: join(root, ".mcp.json"), sectionKey: "mcpServers" },
       { path: join(home, ".claude.json"), sectionKey: "mcpServers" },
     ]);
     const q = planMcpUninstall("qoder", root, home);
-    expect(q.files[1].path).toBe(join(home, ".qoder", "mcp.json"));
+    expect(q.files).toEqual([
+      { path: join(root, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
+      { path: join(home, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
+    ]);
   });
 
   it("kilo：项目直写文件 + CLI 全局兜底", () => {
@@ -125,9 +128,10 @@ function seedInitProject(daemonPid = process.pid) {
     "utf-8",
   );
   writeFileSync(join(root, ".agentbus", "daemon.pid"), String(daemonPid), "utf-8");
-  // MCP 注册（红线 1 场景：.mcp.json 有其他条目）
+  // MCP 注册：qoder 写到 .qoder/mcp.json（与 claude 的 .mcp.json 分开）
+  mkdirSync(join(root, ".qoder"), { recursive: true });
   writeFileSync(
-    join(root, ".mcp.json"),
+    join(root, ".qoder", "mcp.json"),
     JSON.stringify({ mcpServers: { agentbus: { type: "sse", url: "u" }, keepme: { type: "sse" } } }),
     "utf-8",
   );
@@ -166,9 +170,9 @@ describe("runUninstall", () => {
 
     expect(report.ok).toBe(true);
     expect(stopped).toEqual([process.pid]);
-    // 红线 1：只删 agentbus 键
-    const mcpDoc = JSON.parse(readFileSync(join(root, ".mcp.json"), "utf-8"));
-    expect(mcpDoc.mcpServers).toEqual({ keepme: { type: "sse" } });
+    // 红线 1：只删 agentbus 键（qoder 写到 .qoder/mcp.json）
+    const qoderMcpDoc = JSON.parse(readFileSync(join(root, ".qoder", "mcp.json"), "utf-8"));
+    expect(qoderMcpDoc.mcpServers).toEqual({ keepme: { type: "sse" } });
     // kilo.json section 删空后文件仅剩 {}（或整 section 移除）
     const kiloDoc = JSON.parse(readFileSync(join(root, ".kilo", "kilo.json"), "utf-8"));
     expect(kiloDoc.mcp).toBeUndefined();
@@ -216,9 +220,9 @@ describe("runUninstall", () => {
     expect(report.lines.join("\n")).toContain("⚠");
   });
 
-  it(".mcp.json 非法 JSON → 报失败且不覆盖文件", async () => {
+  it(".qoder/mcp.json 非法 JSON → 报失败且不覆盖文件", async () => {
     seedInitProject();
-    writeFileSync(join(root, ".mcp.json"), "{broken", "utf-8");
+    writeFileSync(join(root, ".qoder", "mcp.json"), "{broken", "utf-8");
     const report = await runUninstall({
       projectRoot: root,
       homeDir: home,
@@ -226,7 +230,7 @@ describe("runUninstall", () => {
       runner: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
     });
     expect(report.ok).toBe(false);
-    expect(readFileSync(join(root, ".mcp.json"), "utf-8")).toBe("{broken");
+    expect(readFileSync(join(root, ".qoder", "mcp.json"), "utf-8")).toBe("{broken");
     expect(report.lines.join("\n")).toContain("✗");
   });
 
