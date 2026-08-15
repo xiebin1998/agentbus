@@ -24,7 +24,7 @@ import { acquirePidLock, releasePidLock } from "./pid.js";
 import { Router, type RouterConfig } from "./router.js";
 import { ServeManager } from "./serve-manager.js";
 import { SessionLock } from "./session-lock.js";
-import { syncAgentsSnapshot, lookupAgentName, listAgentsFromSnapshot } from "./snapshot.js";
+import { syncAgentsSnapshot, lookupAgentName, listAgentsFromSnapshot, fetchAgentsFromHub } from "./snapshot.js";
 import { buildEnvelope, type EnvelopeContext } from "./envelope.js";
 import { ChannelManager, type Channel } from "./channel.js";
 import { IpcServer } from "./ipc-server.js";
@@ -765,8 +765,21 @@ export class Daemon {
     });
 
     this.ipcServer.registerTool("list_agents", async () => {
-      // 从 agents.json 快照读取全量 Agent 列表（hub 轮询同步）
-      const agents = listAgentsFromSnapshot(this.opts.workDir);
+      // 优先从云端 hub 实时查询，失败时降级到本地快照
+      const cfg = this.opts.config;
+      let agents: import("./snapshot.js").AgentSnapshotEntry[] = [];
+      if (cfg.sse_url) {
+        agents = await fetchAgentsFromHub({
+          sseUrl: cfg.sse_url,
+          ns: cfg.ns,
+          username: cfg.broker.username,
+          password: cfg.broker.password,
+        });
+      }
+      if (agents.length === 0) {
+        // 云端不可达或无数据时，降级读本地快照
+        agents = listAgentsFromSnapshot(this.opts.workDir);
+      }
       return { agents, status: "ok" };
     });
 
