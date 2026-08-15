@@ -52,14 +52,8 @@ export interface MetricSummary {
   totals: MetricTotals;
   total_senders: number;
 }
-export interface DaemonEntry {
-  metrics?: Partial<MetricTotals> & { senders?: number; uptime_s?: number };
-  report_count?: number;
-  last_seen?: string;
-}
 export interface MetricsPayload {
-  daemons: Record<string, DaemonEntry>;
-  overview: { online_agents: string[]; registered_agents: string[]; total_messages: number };
+  overview: { online_agents: string[]; registered_agents: string[] };
 }
 /** TASK-31：Agent 明细（注册信息 × 在线状态 × daemon 指标 三源合并） */
 export interface AgentEntry {
@@ -87,6 +81,22 @@ export interface AgentEntry {
 }
 export interface AgentsPayload {
   agents: AgentEntry[];
+}
+/** 沟通图谱节点（注册即显示） */
+export interface GraphNode {
+  id: string;
+  name: string;
+  online: boolean;
+}
+/** 沟通图谱边（有通信才出现） */
+export interface GraphEdge {
+  agents: [string, string];
+  counts: Record<string, number>;
+  last_ts: string;
+}
+export interface GraphPayload {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
 }
 
 export class ApiError extends Error {
@@ -179,6 +189,9 @@ export const api = {
 
   metrics: (ns: string) => http<MetricsPayload>(`/api/console/metrics?ns=${encodeURIComponent(ns)}`),
   agents: (ns: string) => http<AgentsPayload>(`/api/console/agents?ns=${encodeURIComponent(ns)}`),
+  /** 沟通图谱（节点=已注册 Agent，边=有通信） */
+  graph: (ns: string, windowHours = 1) =>
+    http<GraphPayload>(`/api/console/graph?ns=${encodeURIComponent(ns)}&window_hours=${windowHours}`),
   /** TASK-32：编辑 Agent 档案（name/description/capabilities 直写 DB） */
   updateAgent: (ns: string, cid: string, patch: { name?: string; description?: string; capabilities?: string[] }) =>
     http<{ status: string; client_id: string }>(

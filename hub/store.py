@@ -1,5 +1,4 @@
-"""SQLite 存储：users / namespaces / ns_members / sessions（sqlite3 标准库，零依赖）。
-agents 表已废弃：Agent 档案不再持久化，只存内存。"""
+"""SQLite 存储：users / namespaces / ns_members / sessions / agents（sqlite3 标准库，零依赖）。"""
 import json
 import sqlite3
 
@@ -19,6 +18,13 @@ CREATE TABLE IF NOT EXISTS ns_members(
 CREATE TABLE IF NOT EXISTS sessions(
   token TEXT PRIMARY KEY, username TEXT NOT NULL,
   created_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS agents(
+  ns TEXT NOT NULL, client_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  capabilities TEXT NOT NULL DEFAULT '[]',
+  registered_at TEXT,
+  PRIMARY KEY(ns, client_id));
 """
 
 
@@ -38,12 +44,23 @@ def init_schema(conn) -> None:
 
 
 def _migrate(conn) -> None:
-    """存量库补列（幂等）：namespaces.owner / users.display_name"""
+    """存量库补列（幂等）：namespaces.owner / users.display_name / agents 表重建"""
     cols = lambda table: {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
     if "owner" not in cols("namespaces"):
         conn.execute("ALTER TABLE namespaces ADD COLUMN owner TEXT")
     if "display_name" not in cols("users"):
         conn.execute("ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
+    # agents 表：旧版用 ns_id 列，新版用 ns 列；结构不兼容则重建
+    agent_cols = cols("agents") if "agents" in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")} else set()
+    if agent_cols and "ns" not in agent_cols:
+        conn.execute("DROP TABLE agents")
+        conn.execute("""CREATE TABLE agents(
+  ns TEXT NOT NULL, client_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  capabilities TEXT NOT NULL DEFAULT '[]',
+  registered_at TEXT,
+  PRIMARY KEY(ns, client_id))""")
 
 
 def create_user(conn, username, password_hash, role, display_name="") -> None:
@@ -153,4 +170,46 @@ def delete_session(conn, token) -> None:
     conn.commit()
 
 
-# agents 表已废弃：Agent 档案不再持久化，只存内存（_agent_info）
+# ─── Agent 档案持久化 ────────────────────────────────────────────────────────
+
+def upsert_agent(conn, ns, client_id, name="", description="", capabilities=None, registered_at=None) -> None:
+    """插入或更新 Agent 档案（UPSERT）"""
+    caps_json = json.dumps(capabilities or [], ensure_ascii=False)
+    conn.execute(
+        "INSERT INTO agents(ns,client_id,name,description,capabilities,registered_at) "
+        "VALUES(?,?,?,?,?,?) "
+        "ON CONFLICT(ns,client_id) DO UPDATE SET name=excluded.name, description=excluded.description, "
+        "capabilities=excluded.capabilities, registered_at=COALESCE(excluded.registered_at, agents.registered_at)",
+        (ns, client_id, name, description, caps_json, registered_at),
+    )
+    conn.commit()
+
+
+def get_agent(conn, ns, client_id) -> dict | None:
+    row = conn.execute(
+        "SELECT ns,client_id,name,description,capabilities,registered_at FROM agents WHERE ns=? AND client_id=?",
+        (ns, client_id),
+    ).fetchone()
+    if not row:
+        return None
+    return {"ns": row[0], "client_id": row[1], "name": row[2], "description": row[3],
+            "capabilities": json.loads(row[4]), "registered_at": row[5]}
+
+
+def list_agents(conn, ns=None) -> list[dict]:
+    if ns:
+        rows = conn.execute(
+            "SELECT ns,client_id,name,description,capabilities,registered_at FROM agents WHERE ns=? ORDER BY client_id",
+            (ns,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT ns,client_id,name,description,capabilities,registered_at FROM agents ORDER BY ns, client_id",
+        ).fetchall()
+    return [{"ns": r[0], "client_id": r[1], "name": r[2], "description": r[3],
+             "capabilities": json.loads(r[4]), "registered_at": r[5]} for r in rows]
+
+
+def delete_agent(conn, ns, client_id) -> None:
+    conn.execute("DELETE FROM agents WHERE ns=? AND client_id=?", (ns, client_id))
+    conn.commit()

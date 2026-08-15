@@ -6,20 +6,19 @@ import { useNs } from "@/context/NsContext";
 import { useTheme } from "@/context/ThemeContext";
 import { cn } from "@/lib/utils";
 
-export type Tab = "namespaces" | "accounts" | "metrics" | "connect" | "graph";
+export type Tab = "namespaces" | "accounts" | "metrics" | "connect";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "namespaces", label: "命名空间" },
   { id: "accounts", label: "账号" },
-  { id: "graph", label: "沟通图谱" },
   { id: "metrics", label: "指标" },
   { id: "connect", label: "接入命令" },
 ];
 
 /** Tab 可见性按角色收敛：普通用户仅指标/接入；ns_admin 无账号 Tab；超管全部 */
 export function tabsForRole(role?: string): Tab[] {
-  if (role === "user") return ["graph", "metrics", "connect"];
-  if (role === "ns_admin") return ["namespaces", "graph", "metrics", "connect"];
+  if (role === "user") return ["metrics", "connect"];
+  if (role === "ns_admin") return ["namespaces", "metrics", "connect"];
   return TABS.map((t) => t.id);
 }
 

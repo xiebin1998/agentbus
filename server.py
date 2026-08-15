@@ -131,37 +131,64 @@ def record_communication(from_agent: str, to_agents: List[str]) -> None:
             _comm_graph[key] = _comm_graph[key][-500:]
 
 
-def get_communication_graph(window_hours: int = 1) -> dict:
-    """获取通信图谱（最近 N 小时）"""
+def get_communication_graph(window_hours: int = 1, ns: Optional[str] = None) -> dict:
+    """获取通信图谱（最近 N 小时）。
+
+    节点来源：_agent_info 中所有已注册 Agent（注册即显示）；
+    边来源：_comm_graph 中有通信记录才出现连线。
+    ns 过滤：非 None 时只返回该 ns 下的节点和边。
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=window_hours)
-    nodes = set()
+    now = datetime.now(timezone.utc)
+    presence = _presence_store.snapshot()
+
+    # 节点：从 _agent_info 取所有已注册 Agent（注册即显示）
+    node_keys = set()
+    for key in _agent_info:
+        if ns is None or key.startswith(f"{ns}/"):
+            node_keys.add(key)
+    # 也包含有通信但不在 _agent_info 的（历史数据兼容）
+    for (from_a, to_a) in _comm_graph:
+        if ns is None or from_a.startswith(f"{ns}/"):
+            node_keys.add(from_a)
+        if ns is None or to_a.startswith(f"{ns}/"):
+            node_keys.add(to_a)
+
+    nodes = []
+    for key in sorted(node_keys):
+        info = _agent_info.get(key)
+        name = info.name if info else key.split("/")[-1]
+        nodes.append({
+            "id": key,
+            "name": name or key.split("/")[-1],
+            "online": agent_online(key, presence, now),
+        })
+
+    # 边：从 _comm_graph 提取有通信的
     edges = []
-    seen_edges = set()  # 去重
-    
+    seen_edges = set()
     for (from_a, to_a), timestamps in _comm_graph.items():
         recent = [ts for ts in timestamps if ts > cutoff]
-        if recent:
-            nodes.add(from_a)
-            nodes.add(to_a)
-            
-            # 统计双向
-            forward_count = len([ts for ts in _comm_graph.get((from_a, to_a), []) if ts > cutoff])
-            reverse_count = len([ts for ts in _comm_graph.get((to_a, from_a), []) if ts > cutoff])
-            
-            # 用排序后的元组作为去重 key
-            edge_key = tuple(sorted([from_a, to_a]))
-            if edge_key not in seen_edges:
-                seen_edges.add(edge_key)
-                edges.append({
-                    "agents": [from_a, to_a],
-                    "counts": {
-                        f"{from_a}→{to_a}": forward_count,
-                        f"{to_a}→{from_a}": reverse_count,
-                    },
-                    "last_ts": max(recent).isoformat()
-                })
-    
-    return {"nodes": list(nodes), "edges": edges}
+        if not recent:
+            continue
+        # 两端都须在节点集合中
+        if from_a not in node_keys or to_a not in node_keys:
+            continue
+        forward_count = len([ts for ts in _comm_graph.get((from_a, to_a), []) if ts > cutoff])
+        reverse_count = len([ts for ts in _comm_graph.get((to_a, from_a), []) if ts > cutoff])
+        edge_key = tuple(sorted([from_a, to_a]))
+        if edge_key not in seen_edges:
+            seen_edges.add(edge_key)
+            edges.append({
+                "agents": [from_a, to_a],
+                "counts": {
+                    f"{from_a}→{to_a}": forward_count,
+                    f"{to_a}→{from_a}": reverse_count,
+                },
+                "last_ts": max(recent).isoformat()
+            })
+
+    return {"nodes": nodes, "edges": edges}
 
 
 def build_sub_topic(client_id: str, ns: Optional[str] = None) -> str:
@@ -431,6 +458,68 @@ _sessions: Dict[str, "AgentSession"] = {}
 _servers: Dict[str, Server] = {}
 _agent_info: Dict[str, AgentInfo] = {}
 
+
+def _split_key(key: str) -> tuple:
+    """拆分 ns/client_id 键"""
+    if "/" in key:
+        ns, cid = key.split("/", 1)
+        return ns, cid
+    return "", key
+
+
+def _save_agent_db(key: str) -> None:
+    """将内存中的 AgentInfo 同步持久化到 SQLite"""
+    info = _agent_info.get(key)
+    if info is None:
+        return
+    ns, cid = _split_key(key)
+    if not ns:
+        return  # 无 ns 的旧格式不持久化
+    try:
+        hub_store.upsert_agent(
+            DB_CONN, ns, cid,
+            name=info.name or "",
+            description=info.description or "",
+            capabilities=info.capabilities,
+            registered_at=info.registered_at.isoformat() if info.registered_at else None,
+        )
+    except Exception as e:
+        logger.error(f"[agent-persist] save failed for {key}: {e}")
+
+
+def _delete_agent_db(key: str) -> None:
+    """从 SQLite 删除 Agent 档案"""
+    ns, cid = _split_key(key)
+    if not ns:
+        return
+    try:
+        hub_store.delete_agent(DB_CONN, ns, cid)
+    except Exception as e:
+        logger.error(f"[agent-persist] delete failed for {key}: {e}")
+
+
+def _load_agents_from_db() -> None:
+    """启动时从 SQLite 加载所有 Agent 档案到内存"""
+    try:
+        rows = hub_store.list_agents(DB_CONN)
+        for row in rows:
+            key = f"{row['ns']}/{row['client_id']}"
+            info = AgentInfo(row["client_id"])
+            info.name = row["name"] or None
+            info.description = row["description"] or None
+            info.capabilities = row.get("capabilities") or []
+            info.registered = True
+            if row.get("registered_at"):
+                try:
+                    info.registered_at = datetime.fromisoformat(row["registered_at"])
+                except Exception:
+                    pass
+            _agent_info[key] = info
+        if rows:
+            logger.info(f"[agent-persist] loaded {len(rows)} agents from DB")
+    except Exception as e:
+        logger.error(f"[agent-persist] load failed: {e}")
+
 # LWT 在线态（TASK-33）：status topic 事件流维护，send_message/明细页/list_agents 统一口径
 _presence_store = PresenceStore()
 
@@ -622,6 +711,7 @@ class AgentSession:
     
     def register(self, name: str, description: str, capabilities: List[str], metadata: Dict = None) -> dict:
         self.info.register(name, description, capabilities, metadata)
+        _save_agent_db(self.key)
         logger.info(f"[{self.client_id}] Agent registered: {name}")
         return {
             "status": "registered",
@@ -876,7 +966,7 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
                 session.info.name = new_name.strip()
             if isinstance(new_desc, str):
                 session.info.description = new_desc.strip()
-            # Agent 档案只存内存，不写 DB
+            _save_agent_db(session.key)
             return [TextContent(type="text", text=json.dumps({"status": "updated", "client_id": client_id}, indent=2))]
         
         elif name == "send_message":
@@ -1050,7 +1140,8 @@ def init_hub_state() -> None:
     if not hub_store.list_users(DB_CONN) and admin_user:
         hub_store.create_user(DB_CONN, admin_user, hub_auth.hash_password(admin_password), "super_admin")
 
-    # Agent 档案不持久化，不恢复
+    # Agent 档案从 DB 恢复
+    _load_agents_from_db()
 
     def _resolve(token):
         username = hub_store.get_session_user(DB_CONN, token)
@@ -1370,13 +1461,8 @@ async def api_connect_command(request: Request):
     })
 
 
-def _filtered_snapshot(ns: str) -> Dict[str, dict]:
-    """已废弃：metrics 已移除，返回空字典"""
-    return {}
-
-
 async def api_metrics(request: Request):
-    """指标页：该 ns 下各 daemon 最新指标 + ns 内概览（?ns= 必填，未授权 403）"""
+    """指标页：该 ns 下 Agent 在线概览（?ns= 必填，未授权 403）"""
     user = hub_auth.current_user(request)
     ns = (request.query_params.get("ns") or "").strip()
     if not ns:
@@ -1387,7 +1473,6 @@ async def api_metrics(request: Request):
     presence = _presence_store.snapshot()
     now = datetime.now(timezone.utc)
     return JSONResponse({
-        "daemons": _filtered_snapshot(ns),
         "overview": {
             # TASK-33 DoD-4：统计卡与行内 Badge 同口径（agent_online，非 SSE 会话表）
             "online_agents": [k for k in presence if k.startswith(prefix) and agent_online(k, presence, now)],
@@ -1506,6 +1591,7 @@ async def api_console_agent_patch(request: Request):
         info.capabilities = [str(x).strip() for x in caps if str(x).strip()]
     
     logger.info(f"[agent-profile] console patched {ns}/{cid} by {user['username']}")
+    _save_agent_db(key)
     return JSONResponse({"status": "updated", "client_id": cid})
 
 
@@ -1522,8 +1608,9 @@ async def api_console_agent_delete(request: Request):
         return _json_error("缺少 ns/client_id")
     if not _can_manage_ns(user, ns):
         return _json_error("forbidden", 403)
-    # Agent 档案只存内存，不写 DB
     key = session_key(cid, ns)
+    # 持久化删除
+    _delete_agent_db(key)
     _agent_info.pop(key, None)
     _presence_store.remove(key)
     session = _sessions.get(key)
@@ -1534,53 +1621,22 @@ async def api_console_agent_delete(request: Request):
 
 
 async def api_console_graph(request: Request):
-    """Agent 沟通图谱：返回节点和边数据（?window_hours=1，默认最近 1 小时）"""
+    """Agent 沟通图谱：返回节点和边数据（?ns= 必填，?window_hours=1）"""
     user = hub_auth.current_user(request)
-    # 获取 window_hours 参数
+    ns = (request.query_params.get("ns") or "").strip()
+    if not ns:
+        return _json_error("缺少 ns 参数")
+    if not _ns_visible(user, ns):
+        return _json_error("forbidden", 403)
     try:
         window_hours = int(request.query_params.get("window_hours", "1"))
         if window_hours < 1:
             window_hours = 1
         elif window_hours > 24:
-            window_hours = 24  # 最大 24 小时
+            window_hours = 24
     except ValueError:
         window_hours = 1
-    
-    graph = get_communication_graph(window_hours)
-    
-    # 过滤用户有权限查看的 namespace
-    visible_ns = set()
-    if user["role"] == "super_admin":
-        # 超管可见所有
-        visible_ns = None  # None 表示不过滤
-    else:
-        # 普通 admin/user 只能看自己所属的 namespace
-        for ns in hub_store.list_user_namespaces(DB_CONN, user["username"]):
-            visible_ns.add(ns)
-        # 管理的 namespace
-        for ns in hub_store.list_namespaces(DB_CONN):
-            if ns.get("owner") == user["username"]:
-                visible_ns.add(ns["id"])
-    
-    # 过滤节点和边
-    if visible_ns is not None:
-        filtered_nodes = []
-        for node in graph["nodes"]:
-            # node 格式为 "ns/client_id"
-            if "/" in node:
-                ns = node.split("/")[0]
-                if ns in visible_ns:
-                    filtered_nodes.append(node)
-        graph["nodes"] = filtered_nodes
-        
-        filtered_edges = []
-        for edge in graph["edges"]:
-            agents = edge["agents"]
-            # 两端节点都在可见范围内才显示
-            if all(a in filtered_nodes for a in agents):
-                filtered_edges.append(edge)
-        graph["edges"] = filtered_edges
-    
+    graph = get_communication_graph(window_hours, ns=ns)
     return JSONResponse(graph)
 
 
@@ -1631,8 +1687,17 @@ async def api_agent_register(request: Request):
     def _strlist(v):
         return [str(x).strip() for x in v if str(x).strip()] if isinstance(v, list) else []
 
-    # Agent 档案只存内存，不写 DB（注册信息已通过 update_agent MCP 工具更新到 session.info）
-    logger.info(f"[agent-profile] registered {ns}/{cid} owner={owner or '(token)'}")
+    # Agent 档案存内存（_agent_info），Web 控制台 build_agent_detail 由此读取
+    key = session_key(cid, ns)
+    info = _agent_info.get(key)
+    if info is None:
+        info = AgentInfo(cid)
+        _agent_info[key] = info
+    description = str(body.get("description") or "").strip()
+    capabilities = _strlist(body.get("capabilities"))
+    info.register(name, description, capabilities)
+    _save_agent_db(key)
+    logger.info(f"[agent-profile] registered {ns}/{cid} name={name!r} owner={owner or '(token)'}")
     return JSONResponse({"status": "registered", "client_id": cid})
 
 
