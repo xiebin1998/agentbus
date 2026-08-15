@@ -121,22 +121,22 @@ curl http://localhost:8000/health   # 健康检查 + 在线 Agent 列表
 | 项目 | 说明 |
 |---|---|
 | broker 地址/端口 | 如 `hub.example.com:8883`（TLS）或 `:18830`（明文） |
-| 团队账号 | `team-<团队名>` + 密码（`sync-broker-acl.ps1` 输出） |
+| 接入账号 | 控制台 → 账号 → 创建（或命名空间页自动创建的 ns 管理员） + 密码 |
 | CA 证书 | `ca.crt` 文件（仅 TLS；**是文件不是变量**，放入本机任意路径） |
 | 命名空间 | 如 `iot` |
 
 ### 方式一：一键安装脚本（推荐，干净机器一条命令）
 
 ```powershell
-# Windows
-iwr https://<hub地址>:8000/install.ps1 | iex
+# Windows（推荐：下载到临时文件再执行，避免 PS 5.1 中文乱码）
+$env:AGENTBUS_INSTALL="$env:TEMP\agentbus-install.ps1";iwr https://<hub地址>:8000/install.ps1 -OutFile $env:AGENTBUS_INSTALL;iex $env:AGENTBUS_INSTALL
 ```
 ```bash
 # macOS / Linux
 curl -fsSL https://<hub地址>:8000/install.sh | bash
 ```
 
-可选环境变量：`AGENTBUS_PACKAGE`（npm 包来源，可指本地 tarball 离线安装）、`AGENTBUS_BROKER`（broker host:port）、`AGENTBUS_NS`（命名空间）。
+可选环境变量：`AGENTBUS_PACKAGE`（npm 包来源，可指本地 tarball 离线安装）、`AGENTBUS_BROKER`（broker host:port）、`AGENTBUS_USER`（broker 用户名）、`AGENTBUS_PASSWORD`（broker 密码）、`AGENTBUS_NS`（命名空间）、`AGENTBUS_TOOLS`（要接入的工具，逗号分隔）。
 脚本流程：Node>=18 检查 → npm 全局装 CLI → `agentbus init --yes`（自动探测已装 AI CLI）→ `agentbus doctor` 体检，任一步失败即停并给提示。
 
 ### 方式二：npm 手动安装
@@ -175,19 +175,19 @@ agentbus doctor        # 更新后体检确认
 ```
 
 > ⚠️ **不要重跑 `iwr …/install.ps1 | iex` 来更新**：安装脚本内的 `init --yes` 会用默认值覆盖既有
-> `.agentbus/config.json`（broker 地址/团队凭证/命名空间）。update 只动 npm 包与 daemon 进程，
+> `.agentbus/config.json`（broker 地址/接入凭证/命名空间）。update 只动 npm 包与 daemon 进程，
 > 配置、MCP 注册、skill 均不受影响；离线环境同样支持 `AGENTBUS_PACKAGE` 指本地包。
 
 ### CLI 命令参考
 
 | 命令 | 说明 |
 |---|---|
-| `agentbus init [--yes] [--tools …] [--ns …] [--broker host:port] [--user …] [--password …]` | 初始化接入（写配置、注册 MCP、装 skill、拉起 daemon；四期起 broker 强制认证，凭证由控制台“接入命令”页一键复制） |
+| `agentbus init [--yes] [--tools …] [--ns …] [--broker host:port] [--user …] [--password …] [--client-id <id>] [--scope project\|global]` | 初始化接入（写配置、注册 MCP、装 skill、拉起 daemon；四期起 broker 强制认证，凭证由控制台"接入命令"页一键复制） |
 | `agentbus update` | 一键更新（npm 升级 → 停旧 daemon；配置/MCP/skill 不动） |
 | `agentbus doctor` | 环境体检（配置/broker/SSE/CLI/MCP/daemon/隔离） |
 | `agentbus status` | daemon 状态与会话摘要 |
 | `agentbus uninstall [--yes]` | 完整卸载（停 daemon、移除注册/skill/配置，零残留） |
-| `agentbus daemon start\|stop\|status` | daemon 生命周期（start 为前台运行） |
+| `agentbus daemon start\|stop\|status` | daemon 生命周期（start 默认后台运行；`--foreground` 前台调试） |
 | `agentbus autostart install\|uninstall\|status` | 开机自启（Windows HKCU Run / Linux systemd --user，幂等） |
 | `agentbus isolate apply\|remove\|status` | 工作目录 OS 级只读隔离（手动锁/解锁；daemon 残留时的恢复出口） |
 
@@ -198,7 +198,7 @@ agentbus doctor        # 更新后体检确认
 | `client_id` | 本机总线身份（默认取目录名） |
 | `ns` | 命名空间（缺省 `default`） |
 | `broker.host` / `broker.port` | broker 地址与端口 |
-| `broker.username` / `broker.password` | 团队账号凭证 |
+| `broker.username` / `broker.password` | 接入账号凭证（控制台发放） |
 | `broker.tls` / `broker.ca` | TLS 开关与自签 CA 证书路径（支持 `${ENV}` 引用） |
 | `sse_url` | hub SSE 地址（doctor 检查项） |
 | `default_tool` | 入站默认承接工具 |
@@ -259,7 +259,7 @@ agentbus doctor        # 更新后体检确认
 | `/api/console/identities` | GET | 身份检索 |
 | `/api/console/permissions[/{identity}]` | GET/PUT | 权限查看/编辑下发 |
 | `/api/console/metrics[/summary]` | GET | 指标/汇总 |
-| `/api/console/teams` | GET/POST/DELETE | 团队管理 |
+| `/api/console/accounts` | GET/POST/DELETE | 账号管理（多对多绑定命名空间） |
 | `/install.ps1`、`/install.sh` | GET | 客户端一键安装脚本托管 |
 
 ---
@@ -284,7 +284,7 @@ agentbus/
 ├── mosquitto/
 │   ├── config/            # mosquitto.conf + passwd/acl（脚本生成）
 │   └── certs/             # 自签 CA 与服务端证书（脚本生成）
-├── scripts/               # setup-broker-security / sync-broker-acl / install / loadtest …
+├── scripts/               # setup-broker-security / install / publish / loadtest …
 ├── tests/                 # hub pytest 单测
 ├── agentbus/              # Node CLI + daemon + 适配器（客户端，npm 包）
 │   ├── src/               # cli/config/protocol/daemon/adapters/init/doctor/isolate…

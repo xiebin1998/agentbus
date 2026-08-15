@@ -1,7 +1,7 @@
 /**
  * TASK-12: MCP 注册器（架构 6.3 / 6.5-C/D 七红线）
  *
- * 红线 1 Claude 与 Qoder 项目级各自独立（claude 用 .mcp.json，qoder 用 .qoder/mcp.json）
+ * 红线 1 Claude 与 Qoder 共用 .mcp.json —— 必须合并，严禁整文件覆盖
  * 红线 2 claude/qodercli -s 默认 local —— project/global 必须落到明确的文件路径
  * 红线 3 kilo mcp add 实测写全局 —— Kilo 项目级必须直写 .kilo/kilo.json，不用 CLI
  * 红线 4 键名/传输字段差异 —— 统一 stdio 格式，所有工具均用 { type:"stdio", command:"agentbus", args:["mcp","--stdio"] }
@@ -52,17 +52,17 @@ describe("planMcpRegistration scope 映射（红线 2/3/4/6）", () => {
     expect(cg.path).toBe(join(home, ".claude.json"));
     expect(cp.path).not.toBe(cg.path);
 
-    // qoder project → <projectRoot>/.qoder/mcp.json（与 claude 的 .mcp.json 分开）
+    // qoder project → <projectRoot>/.qoder/settings.json（与 claude 的 .mcp.json 分开）
     const qp = planMcpRegistration("qoder", "project", SSE_URL, root, home);
-    expect(qp.path).toBe(join(root, ".qoder", "mcp.json"));
+    expect(qp.path).toBe(join(root, ".qoder", "settings.json"));
     const qg = planMcpRegistration("qoder", "global", SSE_URL, root, home);
-    expect(qg.path).toBe(join(home, ".qoder", "mcp.json"));
+    expect(qg.path).toBe(join(home, ".qoder", "settings.json"));
   });
 
-  it("红线 3：kilo project 必须直写 .kilo/kilo.json，method 为 file（不用 CLI）", () => {
+  it("红线 3：kilo project 必须直写 .kilo/kilo.jsonc，method 为 file（不用 CLI）", () => {
     const plan = planMcpRegistration("kilo", "project", SSE_URL, root, home);
     expect(plan.method).toBe("file");
-    expect(plan.path).toBe(join(root, ".kilo", "kilo.json"));
+    expect(plan.path).toBe(join(root, ".kilo", "kilo.jsonc"));
   });
 
   it("kilo global 走 CLI（实测 CLI 写全局 ~/.config/kilo/kilo.jsonc）", () => {

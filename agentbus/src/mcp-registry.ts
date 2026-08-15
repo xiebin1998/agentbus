@@ -1,7 +1,7 @@
 /**
  * TASK-12: MCP 注册器（架构 6.3 scope 映射表 / 6.5-C 配置路径 / 6.5-D 七红线）
  *
- * 红线 1 Claude 与 Qoder 项目级各自独立（claude 用 .mcp.json，qoder 用 .qoder/mcp.json）—— 不再共用
+ * 红线 1 Claude 与 Qoder 共用 .mcp.json —— 读→合并→写回，严禁整文件覆盖
  * 红线 2 claude/qodercli -s 默认 local —— scope 必须显式落到明确文件路径，绝不允许隐式 local
  * 红线 3 kilo mcp add 实测写全局 —— Kilo 项目级必须直写 .kilo/kilo.json，不得使用 CLI
  * 红线 4 键名/传输字段差异 —— Claude/Qoder 用 mcpServers+"stdio"；Kilo/OpenCode 用 mcp+"stdio"
@@ -71,11 +71,13 @@ export function planMcpRegistration(
       };
     }
     case "qoder": {
-      // qoder 项目级写到 <projectRoot>/.qoder/mcp.json（与 claude 的 .mcp.json 分开）
+      // qoder MCP 配置写到 settings.json（不是 mcp.json）
+      // 项目级: <projectRoot>/.qoder/settings.json
+      // 全局级: ~/.qoder/settings.json
       const path =
         requestedScope === "project"
-          ? join(projectRoot, ".qoder", "mcp.json")
-          : join(homeDir, ".qoder", "mcp.json");
+          ? join(projectRoot, ".qoder", "settings.json")
+          : join(homeDir, ".qoder", "settings.json");
       return {
         tool,
         requestedScope,
@@ -90,12 +92,13 @@ export function planMcpRegistration(
     case "kilo": {
       if (requestedScope === "project") {
         // 红线 3：kilo CLI 无 project scope（实测 --url 写全局），项目级必须直写文件
+        // kilo 配置文件扩展名为 .jsonc（JSON with Comments）
         return {
           tool,
           requestedScope,
           scope: "project",
           method: "file",
-          path: join(projectRoot, ".kilo", "kilo.json"),
+          path: join(projectRoot, ".kilo", "kilo.jsonc"),
           sectionKey: "mcp",
           entry: stdioEntry(),
           warnings,
@@ -258,14 +261,14 @@ export function planMcpUninstall(tool: string, projectRoot: string, homeDir: str
     case "qoder":
       return {
         files: [
-          { path: join(projectRoot, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
-          { path: join(homeDir, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
+          { path: join(projectRoot, ".qoder", "settings.json"), sectionKey: "mcpServers" },
+          { path: join(homeDir, ".qoder", "settings.json"), sectionKey: "mcpServers" },
         ],
       };
     case "kilo":
       // 项目级直写文件 + 全局 CLI 兜底（init 时 global 走 kilo mcp add）
       return {
-        files: [{ path: join(projectRoot, ".kilo", "kilo.json"), sectionKey: "mcp" }],
+        files: [{ path: join(projectRoot, ".kilo", "kilo.jsonc"), sectionKey: "mcp" }],
         cliBinary: "kilo",
       };
     case "opencode":

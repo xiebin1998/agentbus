@@ -78,14 +78,14 @@ describe("planMcpUninstall", () => {
     ]);
     const q = planMcpUninstall("qoder", root, home);
     expect(q.files).toEqual([
-      { path: join(root, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
-      { path: join(home, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
+      { path: join(root, ".qoder", "settings.json"), sectionKey: "mcpServers" },
+      { path: join(home, ".qoder", "settings.json"), sectionKey: "mcpServers" },
     ]);
   });
 
   it("kilo：项目直写文件 + CLI 全局兜底", () => {
     const k = planMcpUninstall("kilo", root, home);
-    expect(k.files).toEqual([{ path: join(root, ".kilo", "kilo.json"), sectionKey: "mcp" }]);
+    expect(k.files).toEqual([{ path: join(root, ".kilo", "kilo.jsonc"), sectionKey: "mcp" }]);
     expect(k.cliBinary).toBe("kilo");
   });
 
@@ -128,20 +128,20 @@ function seedInitProject(daemonPid = process.pid) {
     "utf-8",
   );
   writeFileSync(join(root, ".agentbus", "daemon.pid"), String(daemonPid), "utf-8");
-  // MCP 注册：qoder 写到 .qoder/mcp.json（与 claude 的 .mcp.json 分开）
+  // MCP 注册：qoder 写到 .qoder/settings.json（与 claude 的 .mcp.json 分开）
   mkdirSync(join(root, ".qoder"), { recursive: true });
   writeFileSync(
-    join(root, ".qoder", "mcp.json"),
+    join(root, ".qoder", "settings.json"),
     JSON.stringify({ mcpServers: { agentbus: { type: "sse", url: "u" }, keepme: { type: "sse" } } }),
     "utf-8",
   );
   mkdirSync(join(root, ".kilo"), { recursive: true });
-  writeFileSync(join(root, ".kilo", "kilo.json"), JSON.stringify({ mcp: { agentbus: { type: "remote" } } }), "utf-8");
+  writeFileSync(join(root, ".kilo", "kilo.jsonc"), JSON.stringify({ mcp: { agentbus: { type: "remote" } } }), "utf-8");
   // skill
   mkdirSync(join(root, ".qoder", "skills", "agentbus"), { recursive: true });
   writeFileSync(join(root, ".qoder", "skills", "agentbus", "SKILL.md"), loadSkillTemplate(), "utf-8");
-  mkdirSync(join(root, ".kilocode", "skills", "agentbus"), { recursive: true });
-  writeFileSync(join(root, ".kilocode", "skills", "agentbus", "SKILL.md"), loadSkillTemplate(), "utf-8");
+  mkdirSync(join(root, ".kilo", "skills", "agentbus"), { recursive: true });
+  writeFileSync(join(root, ".kilo", "skills", "agentbus", "SKILL.md"), loadSkillTemplate(), "utf-8");
   // AGENTS.md：托管块 + 用户内容
   writeFileSync(
     join(root, "AGENTS.md"),
@@ -170,11 +170,11 @@ describe("runUninstall", () => {
 
     expect(report.ok).toBe(true);
     expect(stopped).toEqual([process.pid]);
-    // 红线 1：只删 agentbus 键（qoder 写到 .qoder/mcp.json）
-    const qoderMcpDoc = JSON.parse(readFileSync(join(root, ".qoder", "mcp.json"), "utf-8"));
+    // 红线 1：只删 agentbus 键（qoder 写到 .qoder/settings.json）
+    const qoderMcpDoc = JSON.parse(readFileSync(join(root, ".qoder", "settings.json"), "utf-8"));
     expect(qoderMcpDoc.mcpServers).toEqual({ keepme: { type: "sse" } });
-    // kilo.json section 删空后文件仅剩 {}（或整 section 移除）
-    const kiloDoc = JSON.parse(readFileSync(join(root, ".kilo", "kilo.json"), "utf-8"));
+    // kilo.jsonc section 删空后文件仅剩 {}（或整 section 移除）
+    const kiloDoc = JSON.parse(readFileSync(join(root, ".kilo", "kilo.jsonc"), "utf-8"));
     expect(kiloDoc.mcp).toBeUndefined();
     // kilo 全局兜底走 CLI remove
     expect(calls.some((c) => c.bin === "kilo" && c.args.join(" ") === "mcp remove agentbus")).toBe(true);
@@ -220,9 +220,9 @@ describe("runUninstall", () => {
     expect(report.lines.join("\n")).toContain("⚠");
   });
 
-  it(".qoder/mcp.json 非法 JSON → 报失败且不覆盖文件", async () => {
+  it(".qoder/settings.json 非法 JSON → 报失败且不覆盖文件", async () => {
     seedInitProject();
-    writeFileSync(join(root, ".qoder", "mcp.json"), "{broken", "utf-8");
+    writeFileSync(join(root, ".qoder", "settings.json"), "{broken", "utf-8");
     const report = await runUninstall({
       projectRoot: root,
       homeDir: home,
@@ -230,7 +230,7 @@ describe("runUninstall", () => {
       runner: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
     });
     expect(report.ok).toBe(false);
-    expect(readFileSync(join(root, ".qoder", "mcp.json"), "utf-8")).toBe("{broken");
+    expect(readFileSync(join(root, ".qoder", "settings.json"), "utf-8")).toBe("{broken");
     expect(report.lines.join("\n")).toContain("✗");
   });
 

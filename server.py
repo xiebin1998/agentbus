@@ -1452,11 +1452,12 @@ async def api_connect_command(request: Request):
         "ns": ns,
         "tools": tools,
         "tools_options": tools_options,
-        "template": f"agentbus init --broker {broker} --user {user['username']} --password <密码> --ns {ns}{tools_flag}",
-        "install_ps1": f"$env:AGENTBUS_INSTALL=\"$env:TEMP\\agentbus-install.ps1\";{ps_exec}",
+        "template": f"agentbus init --yes --broker {broker} --user {user['username']} --password <密码> --ns {ns}{tools_flag}",
+        "install_ps1": ps_exec,
         "install_sh": f"curl -fsSL {origin}/install.sh | bash",
+        # sh 管道：env 前缀必须在 bash 前（而非 curl 前），否则管道中 bash 子进程收不到凭证
         "install_cmd_ps1": f"{env_ps1}{ps_exec}",
-        "install_cmd_sh": f"{env_sh}curl -fsSL {origin}/install.sh | bash",
+        "install_cmd_sh": f"curl -fsSL {origin}/install.sh | {env_sh}bash",
         "note": "命令含密码，注意 shell 历史",
     })
 

@@ -139,14 +139,14 @@ describe("runInit --yes 全链路（非交互）", () => {
   it("步骤 3：为每个支持 skill 的工具安装 SKILL.md", async () => {
     await init();
     expect(readFileSync(join(root, ".qoder", "skills", "agentbus", "SKILL.md"), "utf-8")).toBe(loadSkillTemplate());
-    expect(readFileSync(join(root, ".kilocode", "skills", "agentbus", "SKILL.md"), "utf-8")).toBe(loadSkillTemplate());
+    expect(readFileSync(join(root, ".kilo", "skills", "agentbus", "SKILL.md"), "utf-8")).toBe(loadSkillTemplate());
   });
 
-  it("步骤 4：project scope 注册写入 .qoder/mcp.json 与 .kilo/kilo.json", async () => {
+  it("步骤 4：project scope 注册写入 .qoder/settings.json 与 .kilo/kilo.jsonc", async () => {
     await init();
-    const qoderMcp = JSON.parse(readFileSync(join(root, ".qoder", "mcp.json"), "utf-8"));
+    const qoderMcp = JSON.parse(readFileSync(join(root, ".qoder", "settings.json"), "utf-8"));
     expect(qoderMcp.mcpServers.agentbus.type).toBe("stdio");
-    const kiloJson = JSON.parse(readFileSync(join(root, ".kilo", "kilo.json"), "utf-8"));
+    const kiloJson = JSON.parse(readFileSync(join(root, ".kilo", "kilo.jsonc"), "utf-8"));
     expect(kiloJson.mcp.agentbus.type).toBe("stdio");
   });
 
@@ -221,11 +221,11 @@ describe("runInit --yes 全链路（非交互）", () => {
     expect(md).toContain(AGENTBUS_BEGIN);
   });
 
-  it("重复 init 幂等：config 已存在时覆盖更新且不破坏 .qoder/mcp.json 其他键", async () => {
+  it("重复 init 幂等：config 已存在时覆盖更新且不破坏 .qoder/settings.json 其他键", async () => {
     await init();
-    writeFileSync(join(root, ".qoder", "mcp.json"), JSON.stringify({ mcpServers: { keep: { type: "stdio" } } }));
+    writeFileSync(join(root, ".qoder", "settings.json"), JSON.stringify({ mcpServers: { keep: { type: "stdio" } } }));
     await init();
-    const parsed = JSON.parse(readFileSync(join(root, ".qoder", "mcp.json"), "utf-8"));
+    const parsed = JSON.parse(readFileSync(join(root, ".qoder", "settings.json"), "utf-8"));
     expect(parsed.mcpServers.keep).toBeDefined();
     expect(parsed.mcpServers.agentbus).toBeDefined();
   });

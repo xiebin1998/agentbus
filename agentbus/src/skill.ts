@@ -5,6 +5,13 @@
  * - skill 正文不硬编码身份（运行时读 .agentbus/config.json）→ 模板可原样分发
  * - 幂等安装/卸载；目录含用户文件时只动 SKILL.md
  * - TASK-32 拍板⑩：模板真源外置到包内 skills/ 目录（src 与 dist 均在包根下一层）
+ *
+ * 路径核对（2026-08-15 联网验证）：
+ * - claude: 项目 .claude/skills/ | 全局 ~/.claude/skills/
+ * - qoder:  项目 .qoder/skills/  | 全局 ~/.qoder/skills/
+ * - kilo:   项目 .kilo/skills/   | 全局 ~/.kilo/skills/
+ * - opencode: 项目 .opencode/skills/ | 全局 ~/.config/opencode/skills/
+ * - codex:  项目 .agents/skills/ | 全局 ~/.agents/skills/（Agent Skills 标准）
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -13,9 +20,18 @@ import { fileURLToPath } from "node:url";
 /** 项目级 skill 目录映射（架构 5.6 支持矩阵；hermes 无 skill 走 AGENTS.md 兜底） */
 export const SKILL_DIRS: Record<string, string> = {
   claude: ".claude/skills/agentbus",
-  codex: ".codex/skills/agentbus",
+  codex: ".agents/skills/agentbus",
   opencode: ".opencode/skills/agentbus",
-  kilo: ".kilocode/skills/agentbus",
+  kilo: ".kilo/skills/agentbus",
+  qoder: ".qoder/skills/agentbus",
+};
+
+/** 全局级 skill 目录映射（homeDir 为基准） */
+export const SKILL_GLOBAL_DIRS: Record<string, string> = {
+  claude: ".claude/skills/agentbus",
+  codex: ".agents/skills/agentbus",
+  opencode: ".config/opencode/skills/agentbus",
+  kilo: ".kilo/skills/agentbus",
   qoder: ".qoder/skills/agentbus",
 };
 
@@ -45,6 +61,7 @@ export function loadAgentsBlock(path = agentsBlockPath()): string {
   return readFileSync(path, "utf-8").replace(/\r\n/g, "\n").trim();
 }
 
+/** 项目级 skill 文件路径 */
 export function skillPath(projectDir: string, tool: string): string {
   const rel = SKILL_DIRS[tool];
   if (!rel) {
@@ -53,7 +70,16 @@ export function skillPath(projectDir: string, tool: string): string {
   return join(projectDir, rel, "SKILL.md");
 }
 
-/** 幂等安装：内容一致则不写盘 */
+/** 全局级 skill 文件路径 */
+export function skillGlobalPath(homeDir: string, tool: string): string {
+  const rel = SKILL_GLOBAL_DIRS[tool];
+  if (!rel) {
+    throw new Error(`工具 ${tool} 不支持全局 skill 安装（可选：${Object.keys(SKILL_GLOBAL_DIRS).join(", ")}）`);
+  }
+  return join(homeDir, rel, "SKILL.md");
+}
+
+/** 幂等安装（项目级）：内容一致则不写盘 */
 export function installSkill(projectDir: string, tool: string): { changed: boolean; path: string } {
   const path = skillPath(projectDir, tool);
   const template = loadSkillTemplate();
@@ -65,7 +91,19 @@ export function installSkill(projectDir: string, tool: string): { changed: boole
   return { changed: true, path };
 }
 
-/** 幂等卸载：只删 SKILL.md；目录非空（用户文件）时保留目录；
+/** 幂等安装（全局级）：内容一致则不写盘 */
+export function installSkillGlobal(homeDir: string, tool: string): { changed: boolean; path: string } {
+  const path = skillGlobalPath(homeDir, tool);
+  const template = loadSkillTemplate();
+  if (existsSync(path) && readFileSync(path, "utf-8") === template) {
+    return { changed: false, path };
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, template, "utf-8");
+  return { changed: true, path };
+}
+
+/** 幂等卸载（项目级）：只删 SKILL.md；目录非空（用户文件）时保留目录；
  * 随后顺清空父目录链（TASK-14 零残留），遇非空目录即止，绝不出 projectDir */
 export function uninstallSkill(projectDir: string, tool: string): { changed: boolean } {
   const path = skillPath(projectDir, tool);
@@ -78,6 +116,23 @@ export function uninstallSkill(projectDir: string, tool: string): { changed: boo
     const parent = dirname(dir);
     // 到项目根即止，不得向上越界
     if (parent === dir || parent === projectDir) break;
+    dir = parent;
+  }
+  return { changed: true };
+}
+
+/** 幂等卸载（全局级）：只删 SKILL.md；目录非空时保留；遇非空目录即止，绝不出 homeDir */
+export function uninstallSkillGlobal(homeDir: string, tool: string): { changed: boolean } {
+  const path = skillGlobalPath(homeDir, tool);
+  if (!existsSync(path)) return { changed: false };
+  unlinkSync(path);
+  let dir = dirname(path);
+  while (existsSync(dir)) {
+    if (readdirSync(dir).length > 0) break;
+    rmSync(dir, { recursive: true, force: true });
+    const parent = dirname(dir);
+    // 到 homeDir 即止，不得向上越界
+    if (parent === dir || parent === homeDir) break;
     dir = parent;
   }
   return { changed: true };
