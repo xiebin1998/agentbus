@@ -39,7 +39,7 @@ const stdioEntry = () => ({
   command: "agentbus",
   args: ["mcp", "--stdio"],
 });
-const cliAddArgs = () => ["mcp", "add", MCP_NAME, "--stdio"];
+const cliAddArgs = () => ["mcp", "add", MCP_NAME, "--", "agentbus", "mcp", "--stdio"];
 
 /** 按工具与 scope 生成注册计划（纯函数，不做任何磁盘/进程操作） */
 export function planMcpRegistration(

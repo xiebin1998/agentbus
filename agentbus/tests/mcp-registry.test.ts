@@ -69,7 +69,7 @@ describe("planMcpRegistration scope 映射（红线 2/3/4/6）", () => {
     const plan = planMcpRegistration("kilo", "global", SSE_URL, root, home);
     expect(plan.method).toBe("cli");
     expect(plan.binary).toBe("kilo");
-    expect(plan.cliArgs).toEqual(["mcp", "add", MCP_NAME, "--stdio"]);
+    expect(plan.cliArgs).toEqual(["mcp", "add", MCP_NAME, "--", "agentbus", "mcp", "--stdio"]);
   });
 
   it("红线 4：opencode 用 mcp 键 + type=stdio，与 claude/qoder 统一 stdio 格式", () => {
@@ -88,7 +88,7 @@ describe("planMcpRegistration scope 映射（红线 2/3/4/6）", () => {
     expect(plan.method).toBe("cli");
     expect(plan.scope).toBe("global");
     expect(plan.binary).toBe("codex");
-    expect(plan.cliArgs).toEqual(["mcp", "add", MCP_NAME, "--stdio"]);
+    expect(plan.cliArgs).toEqual(["mcp", "add", MCP_NAME, "--", "agentbus", "mcp", "--stdio"]);
     expect(plan.warnings.join(" ")).toContain("全局");
   });
 
