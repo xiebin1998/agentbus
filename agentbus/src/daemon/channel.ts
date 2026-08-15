@@ -39,6 +39,8 @@ export interface Channel {
   localSessionId: string;
   /** 对应方 daemon 的会话 ID（从回复消息的 session 字段提取，供未来使用） */
   remoteSessionId: string | null;
+  /** 是否已为通道创建了 AI 工具会话（createSession 已调用） */
+  sessionCreated: boolean;
   lastMessageId: string | null;
   createdAt: string;
   updatedAt: string;
@@ -66,6 +68,7 @@ export class ChannelManager {
       state: "SYN_SENT",
       localSessionId: randomUUID(),
       remoteSessionId: null,
+      sessionCreated: false,
       lastMessageId: messageId,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

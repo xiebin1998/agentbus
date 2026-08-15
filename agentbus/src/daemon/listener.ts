@@ -96,10 +96,41 @@ export function createListener(opts: ListenerOptions): Listener {
   let stopping = false;
   let conflicted = false;
   const disconnectStamps: number[] = [];
+  // presence 心跳定时器（25s 刷新在线态，压在 hub 60s 兜底线内）
+  let presenceTimer: ReturnType<typeof setInterval> | null = null;
 
   const buildUrl = (): string => {
     const proto = opts.broker.tls ? "mqtts" : "mqtt";
     return `${proto}://${opts.broker.host}:${opts.broker.port}`;
+  };
+
+  /** 清除 presence 心跳定时器 */
+  const clearPresenceTimer = () => {
+    if (presenceTimer !== null) {
+      clearInterval(presenceTimer);
+      presenceTimer = null;
+    }
+  };
+
+  /** 发布在线 presence 并启动心跳定时器 */
+  const publishPresenceOnline = () => {
+    if (!opts.presence || !client) return;
+    client.publish(
+      opts.presence.topic,
+      JSON.stringify({ type: "presence", state: "online", identity: opts.presence.identity, ts: new Date().toISOString() }),
+      { qos: 1, retain: true },
+    );
+    // 启动心跳：每 25s 刷新 ts，确保 hub 60s 窗口不超时
+    clearPresenceTimer();
+    presenceTimer = setInterval(() => {
+      if (!client?.connected) return;
+      client.publish(
+        opts.presence!.topic,
+        JSON.stringify({ type: "presence", state: "online", identity: opts.presence!.identity, ts: new Date().toISOString() }),
+        { qos: 1, retain: true },
+      );
+    }, 25_000);
+    presenceTimer.unref?.(); // 不阻止进程退出
   };
 
   return {
@@ -121,13 +152,7 @@ export function createListener(opts: ListenerOptions): Listener {
               opts.onStatus?.("error", `订阅失败: ${err.message}`);
             } else {
               subscribed = true;
-              if (opts.presence) {
-                client!.publish(
-                  opts.presence.topic,
-                  JSON.stringify({ type: "presence", state: "online", identity: opts.presence.identity, ts: new Date().toISOString() }),
-                  { qos: 1, retain: true },
-                );
-              }
+              publishPresenceOnline();
               opts.onStatus?.("connected");
               opts.onConnect?.();
             }
@@ -138,10 +163,14 @@ export function createListener(opts: ListenerOptions): Listener {
             }
           });
         });
-        client.on("reconnect", () => opts.onStatus?.("reconnecting"));
+        client.on("reconnect", () => {
+          clearPresenceTimer(); // 重连期间停心跳，等 connect 事件重新启动
+          opts.onStatus?.("reconnecting");
+        });
         client.on("offline", () => opts.onStatus?.("offline"));
         // TASK-32：非主动断连指纹；达阈即停重连并报 identity_conflict（daemon 收到后退出码 2）
         client.on("close", () => {
+          clearPresenceTimer(); // 断连即停心跳
           if (stopping || conflicted) return;
           const now = Date.now();
           disconnectStamps.push(now);
@@ -178,6 +207,7 @@ export function createListener(opts: ListenerOptions): Listener {
       return new Promise<void>((resolve) => {
         subscribed = false;
         stopping = true; // 主动停止不计入断连指纹
+        clearPresenceTimer(); // 停止心跳
         if (!client) return resolve();
         const c = client;
         client = null;
@@ -206,7 +236,7 @@ export function createListener(opts: ListenerOptions): Listener {
         if (!client || !client.connected) {
           return reject(new Error("MQTT 未连接，无法 publish"));
         }
-        client.publish(topic, payloadJson, { qos: 2 }, (err) => (err ? reject(err) : resolve()));
+        client.publish(topic, payloadJson, { qos: 1 }, (err) => (err ? reject(err) : resolve()));
       });
     },
 

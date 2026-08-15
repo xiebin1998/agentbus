@@ -7,11 +7,29 @@
  * - `--auto` 全自动批准（本工具无只读权限档 → 入站只读靠信封约束 + 隔离层兜底，4.7）
  * - 新会话 id 不由 daemon 预生成，从事件流 session 事件中提取
  *
- * TASK-27 进阶通道（架构 5.4）实测 opencode（2026-08-10）：
+ * TASK-27 进阶通道（架构 5.4）实测 opencode/kilo（2026-08-15）：
  * - `serve --port <n> --hostname <h>` 起无头服务器；`run --attach <url>` 免冷启动注入
- * - kilo 无 serve 子命令 → supportsServe 仅 opencode 族为真
+ * - kilo 与 opencode 均支持 serve + attach（同族同 API）→ supportsServe 两者皆真
  */
 import { runCommand, type RunnerResult, type SpawnSpec } from "./base.js";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { existsSync } from "node:fs";
+
+/**
+ * 解析 opencode/kilo 的实际可执行文件路径
+ * npm 全局安装的 .cmd 走 cmd.exe 套壳会导致 stdout 重定向失效
+ * 直接使用 node_modules 下的 .exe 绕过 cmd.exe
+ */
+function resolveExePath(binary: string): string {
+  if (binary === "opencode") {
+    // opencode 实际 exe 路径
+    const exePath = join(homedir(), "AppData", "Roaming", "npm", "node_modules", "opencode-ai", "bin", "opencode.exe");
+    if (existsSync(exePath)) return exePath;
+  }
+  // kilo 或其他情况返回裸名，走默认解析
+  return binary;
+}
 
 export interface KiloTurn {
   /** createSession 从事件流提取；提取失败为 null（调用方记告警） */
@@ -46,19 +64,21 @@ export class OpenCodeKiloAdapter {
     return this.turnArgs(message, sessionName);
   }
 
-  /** 续接参数 */
+  /** 续接参数：--auto 全自动批准（与 createSession 一致，避免 kilo 调用工具时权限被拒） */
   injectArgs(message: string, sessionId: string): string[] {
-    return this.baseArgs(message, ["-s", sessionId]);
+    return this.baseArgs(message, ["-s", sessionId, "--auto"]);
   }
 
   /** 回合参数：--auto 全自动批准（无只读权限档 → 靠信封约束 + 隔离层兜底，架构 4.7） */
   turnArgs(message: string, sessionName: string): string[] {
-    return this.baseArgs(message, ["--title", sessionName, "--auto"]);
+    // opencode 的 --title 在非 TTY 环境下会挂起，仅 kilo 使用
+    const trailing = this.binary === "kilo" ? ["--title", sessionName, "--auto"] : ["--auto"];
+    return this.baseArgs(message, trailing);
   }
 
-  /** 是否支持 serve 模式（TASK-27 实测：opencode 有 serve 子命令，kilo 无） */
+  /** 是否支持 serve 模式（仅 kilo 支持；opencode attach/cold-start 检测 stdout TTY，pipe 挂起，需用 stdoutFile 冷启动） */
   supportsServe(): boolean {
-    return this.binary === "opencode";
+    return this.binary === "kilo";
   }
 
   /** serve 无头服务器参数；port 缺省 0 = 随机端口（stdout 打印实际地址） */
@@ -71,18 +91,21 @@ export class OpenCodeKiloAdapter {
     return this.attachBaseArgs(serverUrl, message, ["--title", sessionName, "--auto"]);
   }
 
-  /** attach 续接参数：连已就绪 serve + -s 会话续接 */
+  /** attach 续接参数：连已就绪 serve + -s 会话续接 + --auto 全自动批准 */
   attachInjectArgs(serverUrl: string, message: string, sessionId: string): string[] {
-    return this.attachBaseArgs(serverUrl, message, ["-s", sessionId]);
+    return this.attachBaseArgs(serverUrl, message, ["-s", sessionId, "--auto"]);
   }
 
   private attachBaseArgs(serverUrl: string, message: string, trailing: string[]): string[] {
-    return ["run", "--attach", serverUrl, "--format", "json", "--dir", this.cfg.workspace, ...trailing, message];
+    // --pure 禁用外部 MCP 插件（实测 opencode attach 不带 --pure 时只输出 step_start 就退出）
+    // 不传 --dir：serve 已绑定 workspace（spawn cwd），attach 传不同 --dir 会导致只输出 step_start 就退出
+    return ["run", "--attach", serverUrl, "--format", "json", "--pure", ...trailing, message];
   }
 
   /** 选项一律置于位置参数消息之前（yargs array 位置参数会吞后续 token） */
   private baseArgs(message: string, trailing: string[] = []): string[] {
-    return ["run", "--format", "json", "--dir", this.cfg.workspace, ...trailing, message];
+    // --pure 禁用外部 MCP 插件（daemon 调用时无 MCP 桥，避免 kilo 尝试连接导致权限拒绝）
+    return ["run", "--format", "json", "--pure", "--dir", this.cfg.workspace, ...trailing, message];
   }
 
   async createSession(message: string, sessionName: string): Promise<KiloTurn> {
@@ -104,11 +127,15 @@ export class OpenCodeKiloAdapter {
   }
 
   private async runTurn(args: string[]): Promise<KiloTurn> {
+    // opencode 直接使用 .exe 路径，避免 .cmd 走 cmd.exe 套壳导致 stdout 重定向失效
+    const cmdPath = resolveExePath(this.binary);
     const result = await this.run({
-      cmd: this.binary,
+      cmd: cmdPath,
       args,
       cwd: this.cfg.workspace,
       timeoutMs: this.timeoutMs,
+      // opencode 检测 stdout TTY：pipe 挂起，需重定向到临时文件
+      stdoutFile: this.binary === "opencode",
     });
     const output = this.extractText(result.stdout);
     let error = result.error;

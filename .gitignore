@@ -77,3 +77,19 @@ docs
 TASKS.md
 ARCHITECTURE.md
 PLAN.md
+
+# 临时脚本/调试产物（cross-test.mjs 保留）
+.tmp-review-diff.txt
+agentbus/scripts/concurrent-cross.mjs
+agentbus/scripts/e2e-*.mjs
+agentbus/scripts/ipc-test.mjs
+agentbus/scripts/m3-*.mjs
+agentbus/scripts/t3m3-*.mjs
+agentbus/scripts/test-kilo-only.mjs
+agentbus/scripts/test-qoder-only.mjs
+agentbus/test-mqtt-publish.mjs
+
+# 临时日志
+.tmp-*.log
+.tmp-*.txt
+soak.log

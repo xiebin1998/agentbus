@@ -17,6 +17,7 @@ import { QoderAdapter } from "../adapters/qoder.js";
 import { ClaudeAdapter } from "../adapters/claude.js";
 import { HermesAdapter, type HermesRemoteConfig } from "../adapters/hermes.js";
 import { CodexAdapter } from "../adapters/codex.js";
+import { acquireAdapterLock, tryAcquireAdapterLock, releaseAdapterLock } from "./adapter-lock.js";
 import { createListener, type Listener, type ListenerOptions, presenceTopic } from "./listener.js";
 import { RotatingLogger } from "./logger.js";
 import { acquirePidLock, releasePidLock } from "./pid.js";
@@ -103,6 +104,8 @@ export class Daemon {
   private ipcFile: string;
   private ipcServer: IpcServer | null = null;
   private started = false;
+  /** 当前实例启动时间戳（ISO）：用于过滤 broker 缓存的过期消息（cleanSession:false 场景） */
+  private startedAt = "";
   /** 通道管理器：维护与所有对应方的通信通道 */
   private channels = new ChannelManager();
 
@@ -191,6 +194,7 @@ export class Daemon {
 
     // 6. 启动就绪
     this.started = true;
+    this.startedAt = new Date().toISOString();
     void this.syncSnapshot();
 
     this.logger.info(`daemon started: ${this.selfIdentity} 订阅 ${topic}，IPC: ${this.ipcServer.address}`);
@@ -239,6 +243,27 @@ export class Daemon {
       return;
     }
 
+    // 过期消息过滤：cleanSession:false 场景下 broker 可能投递上次连接的缓存消息
+    // 时间戳早于当前 daemon 启动时间的消息视为过期，丢弃（hello/hello_ack 已在上层处理，不受影响）
+    if (message?.timestamp && this.startedAt && message.timestamp < this.startedAt) {
+      this.logger.info(`丢弃过期消息：id=${message.id} ts=${message.timestamp} startedAt=${this.startedAt}`);
+      return;
+    }
+
+    // 回复匹配优先：收到回复时（reply_to 有值 + expect_reply=false + session）：提取 session 字段更新通道并 resolve pendingReply
+    // 必须在 router switch 之前，否则 control 类型的失败通知会被 drop 而无法 resolve
+    if (message!.reply_to && !message!.expect_reply && message!.session) {
+      const pending = this.channels.consumePendingReply(message!.reply_to);
+      if (pending) {
+        this.channels.updateRemoteSession(message!.from, message!.session);
+        this.logger.info(`回复处理：更新 ${message!.from} 的 remoteSession=${message!.session}`);
+        pending.resolve(message!.text);
+      } else {
+        this.logger.info(`回复处理：未找到 pending reply for ${message!.reply_to}`);
+      }
+      return;
+    }
+
     switch (decision.action) {
       case "drop":
         // 指标分类（TASK-19）：去重命中与其余丢弃分开计数
@@ -261,28 +286,16 @@ export class Daemon {
       void this.publishAck(ack).catch((e: Error) => this.logger.warn(`ack 发送失败: ${e.message}`));
     }
 
-    // 通道方案：daemon 维护与每个对应方的通道
-    // 收到回复时（reply_to 有值 + expect_reply=false）：提取 session 字段更新通道
-    if (message!.reply_to && !message!.expect_reply && message!.session) {
-      const pending = this.channels.consumePendingReply(message!.reply_to);
-      if (pending) {
-        this.channels.updateRemoteSession(message!.from, message!.session);
-        this.logger.info(`回复处理：更新 ${message!.from} 的 remoteSession=${message!.session}`);
-        pending.resolve(message!.text);
-      } else {
-        this.logger.info(`回复处理：未找到 pending reply for ${message!.reply_to}`);
-      }
-      return;
-    }
-
     // 入站消息：查找或创建通道
-    const [channel, isNew] = this.channels.getOrCreate(message!.from, message!.id);
+    const [channel, isNewChannel] = this.channels.getOrCreate(message!.from, message!.id);
     const sessionId = channel.localSessionId;
+    // AI 工具会话是否已创建（通道可能在握手时已创建，但 AI 工具会话还未创建）
+    const needsSession = !channel.sessionCreated;
 
-    if (isNew) {
+    if (isNewChannel) {
       this.logger.info(`新发件人 ${message!.from}，创建通道 ${channel.channelId.slice(0, 8)}，本地 session=${sessionId}`);
     } else {
-      this.logger.info(`发件人 ${message!.from} 通道已存在，续接 session=${sessionId}`);
+      this.logger.info(`发件人 ${message!.from} 通道已存在，续接 session=${sessionId}${needsSession ? "（AI 会话待创建）" : ""}`);
     }
 
     if (decision.queued) {
@@ -290,7 +303,7 @@ export class Daemon {
       return;
     }
 
-    void this.runLocked(decision.tool, sessionId, message!, isNew, channel);
+    void this.runLocked(decision.tool, sessionId, message!, needsSession, channel);
   }
 
   /** 按 工具|发件人 串行排队（同源同会话回合不重叠）；限速队列续排也走同一入口 */
@@ -301,28 +314,30 @@ export class Daemon {
       .catch((e: Error) => this.logger.error(`回合链异常: ${e.message}`));
   }
 
-  private async injectAndDrain(tool: string, sessionId: string, msg: BusMessage, isNew: boolean, channel: Channel): Promise<void> {
+  private async injectAndDrain(tool: string, initialSessionId: string, msg: BusMessage, isNew: boolean, channel: Channel): Promise<void> {
     const cfg = this.opts.config;
     // 信封（4.6/4.7）：沟通定位入站恒只读，参数层与提示层一致
-    // Plan 3 问题 1：会话标题优先用快照里的 Agent 名称（如"心语大师"），未命中回退 client_id
+    // Plan 3 问题 1：会话标题优先用快照里的 Agent 名称（如“心语大师”），未命中回退 client_id
     const senderClientId = msg.from.includes("/") ? msg.from.slice(msg.from.indexOf("/") + 1) : msg.from;
     const senderName = lookupAgentName(this.opts.workDir, senderClientId) ?? senderClientId;
-
+  
     // TASK-30 隔离层（可选）：入站回合在 OS 层物理禁写，参数层被绕过时仍安全（无豁免）
     let isolated = false;
     if (cfg.isolation) {
       isolated = await this.isolateAcquire(this.resolveWorkspace(tool));
     }
-
+  
     let output = "";
     let failed = false;
     let failReason = "";
+    // 使用可变 sessionId，重试时可更新
+    let sessionId = initialSessionId;
     try {
       const handler = this.opts.inject ?? this.defaultInject();
       // 续接会话时允许重试（kilo 那边会话可能已丢失）
       const attempts = isNew ? 1 : 2;
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
-        // 信封携带通道上下文
+        // 信封携带通道上下文（使用当前 sessionId）
         const envCtx: EnvelopeContext = {
           sessionId,
           channelId: channel.channelId,
@@ -335,18 +350,25 @@ export class Daemon {
           // kilo 族会话 id 由 CLI 侧生成：更新通道本地 session
           if (turn.sessionId && turn.sessionId !== sessionId) {
             channel.localSessionId = turn.sessionId;
-            this.logger.info(`kilo 创建新会话 ${turn.sessionId}，通道 ${channel.channelId.slice(0, 8)} 已更新`);
+            sessionId = turn.sessionId; // 同步更新本地变量
+            this.logger.info(`${tool} 创建新会话 ${turn.sessionId}，通道 ${channel.channelId.slice(0, 8)} 已更新`);
           }
+          // 标记 AI 工具会话已创建
+          channel.sessionCreated = true;
           break;
         } catch (e) {
           const errMsg = (e as Error).message;
-          // 检测 "Session not found" 类错误：回退新建会话
-          const isSessionLost = errMsg.includes("Session not found") || errMsg.includes("session") && errMsg.includes("not");
+          // 检测会话类错误：Session not found / Session ID already in use → 回退新建会话
+          const isSessionLost = errMsg.includes("Session not found") ||
+            (errMsg.includes("session") && errMsg.includes("not")) ||
+            errMsg.includes("already in use");
           if (attempt >= attempts || !isSessionLost) throw e;
-          // 原会话已丢失：回退新建会话重试一次
+          // 原会话已丢失/被锁定：回退新建会话重试一次
           const freshId = randomUUID();
           channel.localSessionId = freshId;
-          this.logger.warn(`注回原会话失败（${errMsg}），回退新建会话 ${freshId}`);
+          sessionId = freshId; // 同步更新本地变量
+          channel.sessionCreated = false; // 重置标记，下次尝试会重新创建
+          this.logger.warn(`注入原会话失败（${errMsg}），回退新建会话 ${freshId}`);
           isNew = true;
         }
       }
@@ -362,7 +384,7 @@ export class Daemon {
     // 代回时携带本 daemon 的本地 session ID，让发送方学到并存储到通道
     if (msg.expect_reply) {
       if (failed) {
-        void this.publishFailure(msg, failReason).catch((e: Error) =>
+        void this.publishFailure(msg, failReason, channel.localSessionId).catch((e: Error) =>
           this.logger.warn(`失败通知发送失败: ${e.message}`),
         );
       } else if (output.trim()) {
@@ -425,6 +447,12 @@ export class Daemon {
       if (KILO_FAMILY.has(ctx.tool)) {
         const binary = typeof toolCfg.binary === "string" ? toolCfg.binary : ctx.tool;
         const adapter = new OpenCodeKiloAdapter({ binary, workspace });
+        // 跨进程文件锁：非阻塞尝试，锁被占用时直接返回"正忙"（不排队等超时）
+        const acquired = await tryAcquireAdapterLock();
+        if (!acquired) {
+          throw new Error("对方 Agent 正忙，正在处理其他请求，请稍后再试");
+        }
+        try {
         // TASK-27 进阶通道：serve=true 且工具支持 → attach 免冷启动；任何环节失败回退冷启动（可用性优先）
         if (toolCfg.serve === true && adapter.supportsServe()) {
           try {
@@ -454,6 +482,9 @@ export class Daemon {
           : await adapter.inject(ctx.envelope, ctx.sessionId);
         if (turn.error) throw new Error(turn.error);
         return { output: turn.output, sessionId: turn.sessionId ?? undefined };
+        } finally {
+          await releaseAdapterLock();
+        }
       }
       // claude：create（--session-id）与 inject（-r）不同命令形态，readonly 走 plan 实测档（TASK-15）
       if (ctx.tool === "claude") {
@@ -493,13 +524,15 @@ export class Daemon {
         if (turn.error) throw new Error(turn.error);
         return { output: turn.output };
       }
-      // qoder 族（--session-id UUID 幂等语义）
+      // qoder 族（--session-id UUID 幂等语义；但首次用 createSession 更可靠）
       const adapter = new QoderAdapter({
         binary: typeof toolCfg.binary === "string" ? toolCfg.binary : ctx.tool === "qoder" ? "qodercli" : ctx.tool,
         workspace,
         sessionName: ctx.senderName,
       });
-      const turn = await adapter.injectWith(ctx.envelope, ctx.sessionId);
+      const turn = ctx.isNew
+        ? await adapter.createSession(ctx.envelope, ctx.sessionId)
+        : await adapter.injectWith(ctx.envelope, ctx.sessionId);
       if (turn.error) throw new Error(turn.error);
       return { output: turn.output };
     };
@@ -531,8 +564,8 @@ export class Daemon {
     this.logger.info(`代回已发送 → ${original.from}（原消息 ${original.id}，session=${channel.localSessionId}，${output.length} 字符）`);
   }
 
-  /** 注入失败通知（4.6 兜底）：control 类型不触发对方回合 */
-  private async publishFailure(original: BusMessage, reason: string): Promise<void> {
+  /** 注入失败通知：携带 session 让发送方能匹配到 pendingReply */
+  private async publishFailure(original: BusMessage, reason: string, sessionId: string | null): Promise<void> {
     const topic = senderTopic(original.from);
     if (!topic) {
       this.logger.warn(`失败通知丢弃：发件人 ${original.from} 非 ns 形态身份（flat 兼容已删除）`);
@@ -548,7 +581,7 @@ export class Daemon {
       reply_to: original.id,
       hop: original.hop + 1,
       expect_reply: false,
-      session: null,
+      session: sessionId,
       timestamp: new Date().toISOString(),
     };
     await this.publish(topic, notice);
@@ -727,7 +760,7 @@ export class Daemon {
       const text = args.text as string;
       const waitReply = args.wait_reply as boolean | undefined;
       // IPC 调用超时 5 分钟（AI 推理可能耗时较长）
-      const result = await this.sendMessage(to, text, !!waitReply, 300_000);
+      const result = await this.sendMessage(to, text, !!waitReply, 600_000);
       return result;
     });
 
@@ -738,6 +771,14 @@ export class Daemon {
 
     this.ipcServer.registerTool("get_status", async () => {
       return this.status();
+    });
+
+    this.ipcServer.registerTool("stop_daemon", async () => {
+      // 先返回响应，再异步执行停止（MQTT 优雅断开 → broker 清除会话）
+      setTimeout(() => {
+        void this.stop().finally(() => process.exit(0));
+      }, 50);
+      return { status: "stopping" };
     });
   }
 }

@@ -6,6 +6,9 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { extname } from "node:path";
+import { openSync, readFileSync, closeSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 export interface SpawnSpec {
   cmd: string;
@@ -13,6 +16,12 @@ export interface SpawnSpec {
   cwd?: string;
   env?: Record<string, string>;
   timeoutMs: number;
+  /**
+   * 实测 opencode run --attach / cold-start 检测 stdout 是否 TTY：
+   * pipe → 挂起或只输出 step_start；file fd → 完整输出。
+   * 开启后 stdout 重定向到临时文件，进程退出后读回（牺牲实时流换取可靠性）。
+   */
+  stdoutFile?: boolean;
 }
 
 export interface RunnerResult {
@@ -35,7 +44,9 @@ function resolveWindowsCmd(cmd: string, env: Record<string, string | undefined>)
     const found = spawnSync("where.exe", [cmd], { encoding: "utf-8", windowsHide: true, env });
     const lines = (found.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
     // 实测：npm 全局目录同名存在无扩展 sh 脚本与 .cmd，spawn 无扩展文件 ENOENT——优先取带可执行扩展名的候选
-    const preferred = lines.find((l) => /\.(cmd|bat|exe|com)$/i.test(l));
+    // opencode TTY 检测：stdout 重定向到文件时，cmd.exe 套壳会导致重定向失效，必须直接用 .exe
+    const exe = lines.find((l) => /\.exe$/i.test(l));
+    const preferred = exe ?? lines.find((l) => /\.(cmd|bat|com)$/i.test(l));
     const first = preferred ?? lines[0];
     if (first) resolved = first;
   }
@@ -82,28 +93,49 @@ export function runCommand(spec: SpawnSpec): Promise<RunnerResult> {
     let stderr = "";
     let settled = false;
     let timer: NodeJS.Timeout | null = null;
+    let tmpFile: string | null = null;
+    let outFd: number | null = null;
 
     const env = spec.env ? { ...process.env, ...spec.env } : process.env;
     const { cmd, prefix, verbatim } = resolveSpawnTarget(spec.cmd, process.platform, env);
     // cmd.exe 路径下参数已自行引号转义；非 cmd 路径仍由 libuv 默认加引号
     const args = verbatim ? spec.args.map(escapeCmdArg) : spec.args;
 
+    // stdoutFile：重定向 stdout 到临时文件（绕过 opencode TTY 检测）
+    let stdioCfg: Array<"ignore" | "pipe" | number> | undefined;
+    if (spec.stdoutFile) {
+      tmpFile = join(tmpdir(), `agentbus-stdout-${Date.now()}-${Math.random().toString(36).slice(2)}.ndjson`);
+      outFd = openSync(tmpFile, "w");
+      stdioCfg = ["ignore", outFd, "pipe"];
+    }
+
     const child = spawn(cmd, [...prefix, ...args], {
       cwd: spec.cwd,
       env,
       windowsHide: true,
       windowsVerbatimArguments: verbatim,
+      ...(stdioCfg ? { stdio: stdioCfg } : {}),
     });
 
     const finish = (result: RunnerResult) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
+      // 关闭 fd 并读回临时文件
+      if (outFd !== null) {
+        try { closeSync(outFd); } catch { /* already closed */ }
+        if (tmpFile) {
+          try { result.stdout = readFileSync(tmpFile, "utf-8"); } catch { /* empty */ }
+          try { unlinkSync(tmpFile); } catch { /* best effort */ }
+        }
+      }
       resolve(result);
     };
 
-    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf-8")));
-    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf-8")));
+    if (!spec.stdoutFile) {
+      child.stdout?.on("data", (chunk: Buffer) => (stdout += chunk.toString("utf-8")));
+    }
+    child.stderr?.on("data", (chunk: Buffer) => (stderr += chunk.toString("utf-8")));
     // TASK-16 实测：codex 在 stdin 为未关闭管道时阻塞等 EOF——注入回合无 stdin 输入，立即关闭
     child.stdin?.end();
 

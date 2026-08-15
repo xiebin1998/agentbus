@@ -102,7 +102,7 @@ export class ServeManager {
     try {
       handle = await this.spawnFn({
         cmd: spec.binary,
-        args: ["serve", "--port", String(spec.port), "--hostname", "127.0.0.1"],
+        args: ["serve", "--port", String(spec.port), "--hostname", "127.0.0.1", "--pure"],
         cwd: spec.workspace,
       });
     } catch (e) {

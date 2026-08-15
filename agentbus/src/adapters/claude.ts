@@ -109,7 +109,7 @@ export class ClaudeAdapter {
     return undefined;
   }
 
-  /** 结构化提取：result → message → text → content；非法 JSON 回退裸文本 */
+  /** 结构化提取：result → message → text → content；JSON 字段全空或非法 JSON 回退裸文本 */
   extractText(stdout: string): string {
     const trimmed = stdout.trim();
     if (!trimmed) return "";
@@ -120,6 +120,7 @@ export class ClaudeAdapter {
         if (typeof v === "string" && v.trim()) return v;
         if (v && typeof v === "object") return JSON.stringify(v);
       }
+      // JSON 解析成功但所有已知字段均为空 → 回退原始文本
       return trimmed;
     } catch {
       return trimmed;

@@ -56,7 +56,8 @@ export class CodexAdapter {
 
   /** 续接参数（exec resume <id>；UUID 或 thread name） */
   resumeArgs(text: string, sessionId: string, outFile: string): string[] {
-    return ["exec", "resume", sessionId, ...this.commonArgs(outFile), text];
+    // exec resume 不支持 -s (sandbox) 和 -C (cwd) 选项
+    return ["exec", "resume", sessionId, "--json", "--skip-git-repo-check", "-o", outFile, text];
   }
 
   private commonArgs(outFile: string): string[] {
