@@ -79,3 +79,47 @@ export function lookupAgentName(workDir: string, clientId: string): string | nul
     return null;
   }
 }
+
+/** Agent 快照条目（list_agents 返回用） */
+export interface AgentSnapshotEntry {
+  client_id: string;
+  name?: string;
+  description?: string;
+  online: boolean;
+  tools?: string[];
+}
+
+/**
+ * 从 agents.json 快照读取全量 Agent 列表（list_agents IPC 工具用）。
+ * 快照是缓存：文件缺失/损坏返回空数组。
+ */
+export function listAgentsFromSnapshot(workDir: string): AgentSnapshotEntry[] {
+  try {
+    const raw = readFileSync(join(workDir, "agents.json"), "utf-8");
+    const parsed: unknown = JSON.parse(raw);
+    const agents = (parsed as { agents?: unknown }).agents;
+    if (!Array.isArray(agents)) return [];
+    const result: AgentSnapshotEntry[] = [];
+    for (const entry of agents) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const e = entry as {
+        client_id?: unknown;
+        name?: unknown;
+        description?: unknown;
+        online?: unknown;
+        tools?: unknown;
+      };
+      if (typeof e.client_id !== "string" || !e.client_id.trim()) continue;
+      result.push({
+        client_id: e.client_id.trim(),
+        ...(typeof e.name === "string" ? { name: e.name.trim() } : {}),
+        ...(typeof e.description === "string" ? { description: e.description.trim() } : {}),
+        online: e.online === true,
+        ...(Array.isArray(e.tools) ? { tools: e.tools.filter((t): t is string => typeof t === "string") } : {}),
+      });
+    }
+    return result;
+  } catch {
+    return [];
+  }
+}

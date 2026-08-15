@@ -1714,17 +1714,18 @@ async def api_agent_snapshot(request: Request):
     if not ns:
         return _json_error("缺少 ns 参数")
     # 从内存读取 Agent 列表（不读 DB）
+    # TASK-33：遍历 _agent_info（所有已注册 Agent），而非 _sessions（仅 SSE 连接）
     presence = _presence_store.snapshot()
     now = datetime.now(timezone.utc)
     agents = []
-    for key, session in list(_sessions.items()):
+    for key, info in list(_agent_info.items()):
         if not key.startswith(f"{ns}/"):
             continue
         agents.append({
-            "client_id": session.client_id,
-            "name": session.info.name,
-            "description": session.info.description,
-            "capabilities": session.info.capabilities or [],
+            "client_id": info.client_id,
+            "name": info.name,
+            "description": info.description,
+            "capabilities": info.capabilities or [],
             "online": agent_online(key, presence, now),
         })
     return JSONResponse({"generated_at": now.isoformat(), "agents": agents})

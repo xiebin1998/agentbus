@@ -24,7 +24,7 @@ import { acquirePidLock, releasePidLock } from "./pid.js";
 import { Router, type RouterConfig } from "./router.js";
 import { ServeManager } from "./serve-manager.js";
 import { SessionLock } from "./session-lock.js";
-import { syncAgentsSnapshot, lookupAgentName } from "./snapshot.js";
+import { syncAgentsSnapshot, lookupAgentName, listAgentsFromSnapshot } from "./snapshot.js";
 import { buildEnvelope, type EnvelopeContext } from "./envelope.js";
 import { ChannelManager, type Channel } from "./channel.js";
 import { IpcServer } from "./ipc-server.js";
@@ -765,8 +765,9 @@ export class Daemon {
     });
 
     this.ipcServer.registerTool("list_agents", async () => {
-      // 返回在线代理列表（从 presence 系统获取）
-      return { agents: [], status: "ok" };
+      // 从 agents.json 快照读取全量 Agent 列表（hub 轮询同步）
+      const agents = listAgentsFromSnapshot(this.opts.workDir);
+      return { agents, status: "ok" };
     });
 
     this.ipcServer.registerTool("get_status", async () => {
