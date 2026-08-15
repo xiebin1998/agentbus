@@ -71,13 +71,14 @@ export function planMcpRegistration(
       };
     }
     case "qoder": {
-      // qoder MCP 配置写到 settings.json（不是 mcp.json）
-      // 项目级: <projectRoot>/.qoder/settings.json
-      // 全局级: ~/.qoder/settings.json
+      // 红线 1：Claude 与 Qoder 共用 .mcp.json —— 读→合并→写回，严禁整文件覆盖
+      // Qoder IDE 官方文档确认：
+      //   project → ${project}/.qoder/mcp.json
+      //   user/global → ~/.qoder/mcp.json
       const path =
         requestedScope === "project"
-          ? join(projectRoot, ".qoder", "settings.json")
-          : join(homeDir, ".qoder", "settings.json");
+          ? join(projectRoot, ".qoder", "mcp.json")
+          : join(homeDir, ".qoder", "mcp.json");
       return {
         tool,
         requestedScope,
@@ -259,10 +260,11 @@ export function planMcpUninstall(tool: string, projectRoot: string, homeDir: str
         ],
       };
     case "qoder":
+      // Qoder IDE 文档：project → .qoder/mcp.json，global → ~/.qoder/mcp.json
       return {
         files: [
-          { path: join(projectRoot, ".qoder", "settings.json"), sectionKey: "mcpServers" },
-          { path: join(homeDir, ".qoder", "settings.json"), sectionKey: "mcpServers" },
+          { path: join(projectRoot, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
+          { path: join(homeDir, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
         ],
       };
     case "kilo":

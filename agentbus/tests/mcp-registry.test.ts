@@ -52,11 +52,11 @@ describe("planMcpRegistration scope 映射（红线 2/3/4/6）", () => {
     expect(cg.path).toBe(join(home, ".claude.json"));
     expect(cp.path).not.toBe(cg.path);
 
-    // qoder project → <projectRoot>/.qoder/settings.json（与 claude 的 .mcp.json 分开）
+    // qoder project → <projectRoot>/.qoder/mcp.json（Qoder IDE 标准路径）
     const qp = planMcpRegistration("qoder", "project", SSE_URL, root, home);
-    expect(qp.path).toBe(join(root, ".qoder", "settings.json"));
+    expect(qp.path).toBe(join(root, ".qoder", "mcp.json"));
     const qg = planMcpRegistration("qoder", "global", SSE_URL, root, home);
-    expect(qg.path).toBe(join(home, ".qoder", "settings.json"));
+    expect(qg.path).toBe(join(home, ".qoder", "mcp.json"));
   });
 
   it("红线 3：kilo project 必须直写 .kilo/kilo.jsonc，method 为 file（不用 CLI）", () => {

@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "agentbus": {
+      "type": "stdio",
+      "command": "agentbus",
+      "args": ["mcp", "--stdio"]
+    }
+  }
+}
