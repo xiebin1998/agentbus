@@ -34,6 +34,8 @@ export interface InitCliOptions {
   agentName?: string;
   /** TASK-32：档案描述（可选） */
   agentDescription?: string;
+  /** TASK-32：能力列表（可选） */
+  capabilities?: string[];
   /** TASK-32：源 config.json 路径——继承 broker/ns/凭证/tools，client_id 重随机 */
   from?: string;
 }
@@ -279,6 +281,7 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
     ...raw,
     ...(agentName ? { agent_name: agentName } : {}),
     ...(agentDescription ? { agent_description: agentDescription } : {}),
+    ...(opts.capabilities && opts.capabilities.length > 0 ? { capabilities: opts.capabilities } : {}),
   };
   writeFileSync(configPath, `${JSON.stringify(configWithAgent, null, 2)}\n`, "utf-8");
   lines.push(`✓ 已写入 .agentbus/config.json（身份 ${raw.ns}/${raw.client_id}）`);

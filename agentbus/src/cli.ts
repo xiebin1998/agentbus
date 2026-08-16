@@ -162,8 +162,9 @@ export function buildProgram(): Command {
     .option("--sse-url <url>", "MCP Server SSE URL（默认按 broker host 派生）")
     .option("--agent-name <name>", "Agent 档案名称（≤50，注册上报用；默认取目录名）")
     .option("--agent-description <desc>", "Agent 档案描述（可选，注册上报用）")
+    .option("--capabilities <caps...>", "Agent 能力列表（可选，逗号分隔）")
     .option("--from <path>", "源 config.json 路径：继承 broker/ns/凭证/tools，client_id 重新随机")
-    .action(async (opts: { yes?: boolean; clientId?: string; tools?: string[]; scope?: string; ns?: string; broker?: string; user?: string; password?: string; sseUrl?: string; agentName?: string; agentDescription?: string; from?: string }) => {
+    .action(async (opts: { yes?: boolean; clientId?: string; tools?: string[]; scope?: string; ns?: string; broker?: string; user?: string; password?: string; sseUrl?: string; agentName?: string; agentDescription?: string; capabilities?: string[]; from?: string }) => {
       const projectRoot = process.cwd();
       const scope = (opts.scope ?? "project") as McpScope;
       const report = await runInit(
@@ -179,6 +180,7 @@ export function buildProgram(): Command {
           sseUrl: opts.sseUrl,
           agentName: opts.agentName,
           agentDescription: opts.agentDescription,
+          capabilities: opts.capabilities,
           from: opts.from,
         },
         {

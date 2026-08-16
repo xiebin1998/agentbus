@@ -777,7 +777,16 @@ export class Daemon {
     });
 
     this.ipcServer.registerTool("get_status", async () => {
-      return this.status();
+      const cfg = this.opts.config;
+      return {
+        ...this.status(),
+        // TASK-32：自己的档案信息（本地 config 持久化）
+        client_id: cfg.client_id,
+        ns: cfg.ns,
+        ...(cfg.agent_name ? { name: cfg.agent_name } : {}),
+        ...(cfg.agent_description ? { description: cfg.agent_description } : {}),
+        ...(cfg.capabilities && cfg.capabilities.length > 0 ? { capabilities: cfg.capabilities } : {}),
+      };
     });
 
     this.ipcServer.registerTool("stop_daemon", async () => {

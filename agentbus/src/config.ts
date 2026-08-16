@@ -46,6 +46,12 @@ export interface AgentBusConfig {
   ack: boolean;
   /** TASK-30：OS 级只读隔离（架构 4.7 隔离层）；入站回合恒只读，物理禁写，默认关闭（可选，validate 后恒有值） */
   isolation?: boolean;
+  /** TASK-32：Agent 档案名称（注册上报用，本地持久化） */
+  agent_name?: string;
+  /** TASK-32：Agent 档案描述 */
+  agent_description?: string;
+  /** TASK-32：Agent 能力列表 */
+  capabilities?: string[];
 }
 
 export interface ValidationResult {
@@ -152,6 +158,13 @@ export function validateConfig(raw: unknown): ValidationResult {
     }
   }
 
+  // TASK-32：Agent 档案信息（可选，本地持久化）
+  const agent_name = typeof obj.agent_name === "string" ? obj.agent_name.trim() : undefined;
+  const agent_description = typeof obj.agent_description === "string" ? obj.agent_description.trim() : undefined;
+  const capabilities = Array.isArray(obj.capabilities)
+    ? obj.capabilities.filter((c): c is string => typeof c === "string")
+    : undefined;
+
   if (errors.length > 0) {
     return { ok: false, errors };
   }
@@ -170,6 +183,10 @@ export function validateConfig(raw: unknown): ValidationResult {
       tools,
       ack,
       isolation,
+      // TASK-32：Agent 档案信息
+      ...(agent_name ? { agent_name } : {}),
+      ...(agent_description ? { agent_description } : {}),
+      ...(capabilities && capabilities.length > 0 ? { capabilities } : {}),
     },
   };
 }
