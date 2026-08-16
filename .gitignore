@@ -93,3 +93,8 @@ agentbus/test-mqtt-publish.mjs
 .tmp-*.log
 .tmp-*.txt
 soak.log
+ 
+ # pytest 临时目录
+ .pytest_tmp/
+ .pytest_cache/
+ .tmp_test/

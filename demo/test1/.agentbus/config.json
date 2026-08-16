@@ -1,0 +1,19 @@
+{
+  "client_id": "test1",
+  "ns": "iot",
+  "broker": {
+    "host": "localhost",
+    "port": 18830,
+    "username": "admin",
+    "password": "386_Ia1l6hHJ9mXcpSSnrrRF"
+  },
+  "sse_url": "http://localhost:8000/sse?client_id=test1&ns=iot&token=t25-hub-token",
+  "default_tool": "qoder",
+  "allowed_senders": [],
+  "tools": {
+    "qoder": {}
+  },
+  "ack": true,
+  "inbound_mode": "readonly",
+  "rate_limit": 100
+}
