@@ -60,15 +60,23 @@ vi.mock("../src/daemon/serve-manager.js", () => ({
   },
 }));
 
+// Mock adapter-lock 避免全局目录权限问题
+vi.mock("../src/daemon/adapter-lock.js", () => ({
+  acquireAdapterLock: async () => {},
+  tryAcquireAdapterLock: async () => true,
+  releaseAdapterLock: async () => {},
+}));
+
 let broker: aedes.Aedes;
 let server: Server;
 let port: number;
+let currentClientId = "fe-test";
 
-function makeConfig(overrides: Partial<AgentBusConfig> = {}): AgentBusConfig {
-  return {
-    client_id: "fe-test",
-    ns: "default",
-    broker: { host: "127.0.0.1", port },
+  function makeConfig(overrides: Partial<AgentBusConfig> = {}): AgentBusConfig {
+    return {
+      client_id: currentClientId,
+      ns: "default",
+      broker: { host: "127.0.0.1", port },
     default_tool: "opencode",
     allowed_senders: [],
     hop_limit: 3,
@@ -102,7 +110,7 @@ afterAll(async () => {
 function publishToDaemon(msg: Record<string, unknown>): void {
   broker.publish({
     cmd: "publish",
-    topic: "/agentbus/ai/channel/default/fe-test/message",
+    topic: `/agentbus/ai/channel/default/${currentClientId}/message`,
     payload: JSON.stringify({ type: "text", hop: 0, expect_reply: false, ...msg }),
     qos: 1,
     retain: false,
@@ -113,84 +121,99 @@ function publishToDaemon(msg: Record<string, unknown>): void {
 describe("defaultInject opencode serve 模式接线", { timeout: 30000 }, () => {
   it("serve=true：首条 attachCreateSession、续条 attachInject（注入免冷启动）", async () => {
     calls.length = 0;
-    ensureCalls.length = 0;
-    injectShouldFail = false;
-    const dir = mkdtempSync(join(tmpdir(), "agentbus-serve-wire-"));
-    const daemon = new Daemon({ config: makeConfig({ ack: false }), workDir: dir });
+      ensureCalls.length = 0;
+      injectShouldFail = false;
+      currentClientId = `fe-sw1-${Math.random().toString(36).slice(2, 8)}`;
+      const dir = mkdtempSync(join(tmpdir(), "agentbus-serve-wire-"));
+      const daemon = new Daemon({ config: makeConfig({ ack: false }), workDir: dir, onExit: () => {} });
     expect(daemon.start()).toMatchObject({ started: true });
-    await waitFor(() => daemon.status().connected);
+    try {
+      await waitFor(() => daemon.status().connected);
 
-    publishToDaemon({ id: "s-1", from: "be-svc", to: "fe-test", text: "第一条" });
-    await waitFor(() => calls.length >= 1);
-    expect(calls[0]!.method).toBe("attachCreateSession");
-    expect(ensureCalls.length).toBe(1);
+      publishToDaemon({ id: "s-1", from: "be-svc", to: currentClientId, text: "第一条" });
+      await waitFor(() => calls.length >= 1);
+      expect(calls[0]!.method).toBe("attachCreateSession");
+      expect(ensureCalls.length).toBe(1);
 
-    publishToDaemon({ id: "s-2", from: "be-svc", to: "fe-test", text: "第二条" });
-    await waitFor(() => calls.length >= 2);
-    expect(calls[1]!.method).toBe("attachInject");
-    expect(calls[1]!.args[2]).toBe("ses-attach"); // 续接 serve 回合回写的 session id（args[0]=url）
-
-    await daemon.stop();
-    rmSync(dir, { recursive: true, force: true });
+      publishToDaemon({ id: "s-2", from: "be-svc", to: currentClientId, text: "第二条" });
+      await waitFor(() => calls.length >= 2);
+      expect(calls[1]!.method).toBe("attachInject");
+      expect(calls[1]!.args[2]).toBe("ses-attach"); // 续接 serve 回合回写的 session id（args[0]=url）
+    } finally {
+      await daemon.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("attach 回合失败 → 回退冷启动 inject（可用性优先）", async () => {
-    calls.length = 0;
-    injectShouldFail = true;
-    const dir = mkdtempSync(join(tmpdir(), "agentbus-serve-wire2-"));
-    const daemon = new Daemon({ config: makeConfig({ ack: false }), workDir: dir });
+      calls.length = 0;
+      injectShouldFail = true;
+      currentClientId = `fe-sw2-${Math.random().toString(36).slice(2, 8)}`;
+      const dir = mkdtempSync(join(tmpdir(), "agentbus-serve-wire2-"));
+      const daemon = new Daemon({ config: makeConfig({ ack: false }), workDir: dir, onExit: () => {} });
     daemon.start();
-    await waitFor(() => daemon.status().connected);
+    try {
+      await waitFor(() => daemon.status().connected);
 
-    publishToDaemon({ id: "s-3", from: "be-svc", to: "fe-test", text: "回退验证" });
-    await waitFor(() => calls.length >= 1);
-    publishToDaemon({ id: "s-4", from: "be-svc", to: "fe-test", text: "第二条" });
-    await waitFor(() => calls.length >= 3);
-    expect(calls[1]!.method).toBe("attachInject"); // 先尝试 attach
-    expect(calls[2]!.method).toBe("inject"); // 失败后回退冷启动
+      publishToDaemon({ id: "s-3", from: "be-svc", to: currentClientId, text: "回退验证" });
+      await waitFor(() => calls.length >= 1);
+      publishToDaemon({ id: "s-4", from: "be-svc", to: currentClientId, text: "第二条" });
+      await waitFor(() => calls.length >= 3);
+      expect(calls[1]!.method).toBe("attachInject"); // 先尝试 attach
+      expect(calls[2]!.method).toBe("inject"); // 失败后回退冷启动
 
-    injectShouldFail = false;
-    await daemon.stop();
-    rmSync(dir, { recursive: true, force: true });
+      injectShouldFail = false;
+    } finally {
+      await daemon.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("serve 未启用 → 维持冷启动路径（回归守护）", async () => {
-    calls.length = 0;
-    ensureCalls.length = 0;
-    const dir = mkdtempSync(join(tmpdir(), "agentbus-serve-wire3-"));
-    const daemon = new Daemon({
-      config: makeConfig({ ack: false, tools: { opencode: {} } }),
-      workDir: dir,
-    });
+      calls.length = 0;
+      ensureCalls.length = 0;
+      currentClientId = `fe-sw3-${Math.random().toString(36).slice(2, 8)}`;
+      const dir = mkdtempSync(join(tmpdir(), "agentbus-serve-wire3-"));
+      const daemon = new Daemon({
+        config: makeConfig({ ack: false, tools: { opencode: {} } }),
+        workDir: dir,
+        onExit: () => {},
+      });
     daemon.start();
-    await waitFor(() => daemon.status().connected);
+    try {
+      await waitFor(() => daemon.status().connected);
 
-    publishToDaemon({ id: "s-5", from: "be-svc", to: "fe-test", text: "无 serve" });
-    await waitFor(() => calls.length >= 1);
-    expect(calls[0]!.method).toBe("createSession");
-    expect(ensureCalls.length).toBe(0);
-
-    await daemon.stop();
-    rmSync(dir, { recursive: true, force: true });
+      publishToDaemon({ id: "s-5", from: "be-svc", to: currentClientId, text: "无 serve" });
+      await waitFor(() => calls.length >= 1);
+      expect(calls[0]!.method).toBe("createSession");
+      expect(ensureCalls.length).toBe(0);
+    } finally {
+      await daemon.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("kilo + serve=true：不支持 serve → 忽略配置走冷启动", async () => {
-    calls.length = 0;
-    ensureCalls.length = 0;
-    const dir = mkdtempSync(join(tmpdir(), "agentbus-serve-wire4-"));
-    const daemon = new Daemon({
-      config: makeConfig({ ack: false, default_tool: "kilo", tools: { kilo: { serve: true } } }),
-      workDir: dir,
-    });
+      calls.length = 0;
+      ensureCalls.length = 0;
+      currentClientId = `fe-sw4-${Math.random().toString(36).slice(2, 8)}`;
+      const dir = mkdtempSync(join(tmpdir(), "agentbus-serve-wire4-"));
+      const daemon = new Daemon({
+        config: makeConfig({ ack: false, default_tool: "kilo", tools: { kilo: { serve: true } } }),
+        workDir: dir,
+        onExit: () => {},
+      });
     daemon.start();
-    await waitFor(() => daemon.status().connected);
+    try {
+      await waitFor(() => daemon.status().connected);
 
-    publishToDaemon({ id: "s-6", from: "be-svc", to: "fe-test", text: "kilo 无 serve" });
-    await waitFor(() => calls.length >= 1);
-    expect(calls[0]!.method).toBe("createSession");
-    expect(ensureCalls.length).toBe(0);
-
-    await daemon.stop();
-    rmSync(dir, { recursive: true, force: true });
+      publishToDaemon({ id: "s-6", from: "be-svc", to: currentClientId, text: "kilo 无 serve" });
+      await waitFor(() => calls.length >= 1);
+      expect(calls[0]!.method).toBe("createSession");
+      expect(ensureCalls.length).toBe(0);
+    } finally {
+      await daemon.stop();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
