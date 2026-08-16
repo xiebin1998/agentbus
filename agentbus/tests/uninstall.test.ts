@@ -78,8 +78,8 @@ describe("planMcpUninstall", () => {
     ]);
     const q = planMcpUninstall("qoder", root, home);
     expect(q.files).toEqual([
-      { path: join(root, ".qoder", "settings.json"), sectionKey: "mcpServers" },
-      { path: join(home, ".qoder", "settings.json"), sectionKey: "mcpServers" },
+      { path: join(root, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
+      { path: join(home, ".qoder", "mcp.json"), sectionKey: "mcpServers" },
     ]);
   });
 
@@ -131,7 +131,7 @@ function seedInitProject(daemonPid = process.pid) {
   // MCP 注册：qoder 写到 .qoder/settings.json（与 claude 的 .mcp.json 分开）
   mkdirSync(join(root, ".qoder"), { recursive: true });
   writeFileSync(
-    join(root, ".qoder", "settings.json"),
+    join(root, ".qoder", "mcp.json"),
     JSON.stringify({ mcpServers: { agentbus: { type: "sse", url: "u" }, keepme: { type: "sse" } } }),
     "utf-8",
   );
@@ -170,9 +170,9 @@ describe("runUninstall", () => {
 
     expect(report.ok).toBe(true);
     expect(stopped).toEqual([process.pid]);
-    // 红线 1：只删 agentbus 键（qoder 写到 .qoder/settings.json）
-    const qoderMcpDoc = JSON.parse(readFileSync(join(root, ".qoder", "settings.json"), "utf-8"));
-    expect(qoderMcpDoc.mcpServers).toEqual({ keepme: { type: "sse" } });
+  // 红线 1：只删 agentbus 键（qoder 写到 .qoder/settings.json）
+  const qoderMcpDoc = JSON.parse(readFileSync(join(root, ".qoder", "mcp.json"), "utf-8"));
+  expect(qoderMcpDoc.mcpServers).toEqual({ keepme: { type: "sse" } });
     // kilo.jsonc section 删空后文件仅剩 {}（或整 section 移除）
     const kiloDoc = JSON.parse(readFileSync(join(root, ".kilo", "kilo.jsonc"), "utf-8"));
     expect(kiloDoc.mcp).toBeUndefined();
@@ -220,9 +220,9 @@ describe("runUninstall", () => {
     expect(report.lines.join("\n")).toContain("⚠");
   });
 
-  it(".qoder/settings.json 非法 JSON → 报失败且不覆盖文件", async () => {
+  it(".qoder/mcp.json 非法 JSON → 报失败且不覆盖文件", async () => {
     seedInitProject();
-    writeFileSync(join(root, ".qoder", "settings.json"), "{broken", "utf-8");
+    writeFileSync(join(root, ".qoder", "mcp.json"), "{broken", "utf-8");
     const report = await runUninstall({
       projectRoot: root,
       homeDir: home,
@@ -230,7 +230,7 @@ describe("runUninstall", () => {
       runner: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
     });
     expect(report.ok).toBe(false);
-    expect(readFileSync(join(root, ".qoder", "settings.json"), "utf-8")).toBe("{broken");
+    expect(readFileSync(join(root, ".qoder", "mcp.json"), "utf-8")).toBe("{broken");
     expect(report.lines.join("\n")).toContain("✗");
   });
 

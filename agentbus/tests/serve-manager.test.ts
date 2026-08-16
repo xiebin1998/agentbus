@@ -346,7 +346,7 @@ describe("ServeManager", () => {
     expect(spawn).toHaveBeenCalledWith(
       expect.objectContaining({
         cmd: "opencode",
-        args: ["serve", "--port", "4321", "--hostname", "127.0.0.1"],
+        args: ["serve", "--port", "4321", "--hostname", "127.0.0.1", "--pure"],
         cwd: "/ws",
       }),
     );

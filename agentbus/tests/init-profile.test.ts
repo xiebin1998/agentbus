@@ -235,11 +235,10 @@ describe("交互名称必答与描述可选", () => {
 });
 
 describe("gitignore 托管条目", () => {
-  it("无凭证也写入 .agentbus/agents.json 条目（daemon 快照勿提交）", async () => {
+  it("无凭证也写入 .agentbus/ 条目（凭证勿提交）", async () => {
     const { deps } = fakeDeps();
     await runInit({ yes: true, tools: ["qoder"] }, deps);
     const gi = readFileSync(join(root, ".gitignore"), "utf-8");
     expect(gi).toContain(".agentbus/");
-    expect(gi).toContain(".agentbus/agents.json");
   });
 });

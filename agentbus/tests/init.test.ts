@@ -142,10 +142,10 @@ describe("runInit --yes 全链路（非交互）", () => {
     expect(readFileSync(join(root, ".kilo", "skills", "agentbus", "SKILL.md"), "utf-8")).toBe(loadSkillTemplate());
   });
 
-  it("步骤 4：project scope 注册写入 .qoder/settings.json 与 .kilo/kilo.jsonc", async () => {
-    await init();
-    const qoderMcp = JSON.parse(readFileSync(join(root, ".qoder", "settings.json"), "utf-8"));
-    expect(qoderMcp.mcpServers.agentbus.type).toBe("stdio");
+    it("步骤 4：project scope 注册写入 .qoder/mcp.json 与 .kilo/kilo.jsonc", async () => {
+      await init();
+      const qoderMcp = JSON.parse(readFileSync(join(root, ".qoder", "mcp.json"), "utf-8"));
+      expect(qoderMcp.mcpServers.agentbus.type).toBe("stdio");
     const kiloJson = JSON.parse(readFileSync(join(root, ".kilo", "kilo.jsonc"), "utf-8"));
     expect(kiloJson.mcp.agentbus.type).toBe("stdio");
   });
@@ -171,17 +171,15 @@ describe("runInit --yes 全链路（非交互）", () => {
       { yes: true, tools: ["qoder"], scope: "project", user: "bob", password: "s3cret" },
       { projectRoot: root, homeDir: home, runner: deps.runner, spawnDaemon: deps.spawnDaemon },
     );
-    const gi = readFileSync(join(root, ".gitignore"), "utf-8");
-    expect(gi.split("\n").filter((l) => l.trim() === ".agentbus/").length).toBe(1);
-    expect(gi.split("\n").filter((l) => l.trim() === ".agentbus/agents.json").length).toBe(1);
-  });
+      const gi = readFileSync(join(root, ".gitignore"), "utf-8");
+      expect(gi.split("\n").filter((l) => l.trim() === ".agentbus/").length).toBe(1);
+    });
 
-  it("TASK-32：不传凭证时仍无条件托管 .gitignore 双条目（agents.json 快照勿提交）", async () => {
-    await init();
-    const gi = readFileSync(join(root, ".gitignore"), "utf-8");
-    expect(gi).toContain(".agentbus/");
-    expect(gi).toContain(".agentbus/agents.json");
-  });
+    it("TASK-32：不传凭证时仍无条件托管 .gitignore 条目（.agentbus/ 勿提交）", async () => {
+      await init();
+      const gi = readFileSync(join(root, ".gitignore"), "utf-8");
+      expect(gi).toContain(".agentbus/");
+    });
 
   it("报告包含各步骤结果且 exitCode 为 0", async () => {
     const { report } = await init();
@@ -221,14 +219,14 @@ describe("runInit --yes 全链路（非交互）", () => {
     expect(md).toContain(AGENTBUS_BEGIN);
   });
 
-  it("重复 init 幂等：config 已存在时覆盖更新且不破坏 .qoder/settings.json 其他键", async () => {
-    await init();
-    writeFileSync(join(root, ".qoder", "settings.json"), JSON.stringify({ mcpServers: { keep: { type: "stdio" } } }));
-    await init();
-    const parsed = JSON.parse(readFileSync(join(root, ".qoder", "settings.json"), "utf-8"));
-    expect(parsed.mcpServers.keep).toBeDefined();
-    expect(parsed.mcpServers.agentbus).toBeDefined();
-  });
+    it("重复 init 幂等：config 已存在时覆盖更新且不破坏 .qoder/mcp.json 其他键", async () => {
+      await init();
+      writeFileSync(join(root, ".qoder", "mcp.json"), JSON.stringify({ mcpServers: { keep: { type: "stdio" } } }));
+      await init();
+      const parsed = JSON.parse(readFileSync(join(root, ".qoder", "mcp.json"), "utf-8"));
+      expect(parsed.mcpServers.keep).toBeDefined();
+      expect(parsed.mcpServers.agentbus).toBeDefined();
+    });
 
   it("cli 型注册幂等：add 前先行 remove（重复注册不报错，TASK-22 回归发现）", async () => {
     // 模拟 codex 真实行为：已注册时 mcp add 返回非零；remove 后才可 add 成功

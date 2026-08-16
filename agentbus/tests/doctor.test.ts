@@ -61,7 +61,8 @@ afterEach(() => {
 describe("runDoctor", () => {
   it("全绿场景：所有检查项通过，整体 ok", async () => {
     // 前置：MCP 已注册 + daemon 在跑
-    writeFileSync(join(root, ".mcp.json"), JSON.stringify({
+    mkdirSync(join(root, ".qoder"), { recursive: true });
+    writeFileSync(join(root, ".qoder", "mcp.json"), JSON.stringify({
       mcpServers: { agentbus: { type: "sse", url: CONFIG.sse_url } },
     }));
     writeFileSync(join(workDir, "daemon.pid"), String(process.pid));
@@ -123,7 +124,8 @@ describe("runDoctor", () => {
     expect(missing.checks.find((c) => c.name.includes("MCP"))?.ok).toBe(false);
 
     // 写入正确注册 → 通过
-    writeFileSync(join(root, ".mcp.json"), JSON.stringify({
+    mkdirSync(join(root, ".qoder"), { recursive: true });
+    writeFileSync(join(root, ".qoder", "mcp.json"), JSON.stringify({
       mcpServers: { agentbus: { type: "sse", url: CONFIG.sse_url } },
     }));
     const present = await runDoctor(baseDeps());

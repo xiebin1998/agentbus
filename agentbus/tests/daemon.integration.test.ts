@@ -120,7 +120,7 @@ describe("daemon 端到端：路由 + ack + 会话", () => {
     await waitFor(() => records.length === 1);
     const env = records[0]!.ctx.envelope;
     expect(env.split("\n")[0]).toBe("[AgentBus] id=msg-e2e-1 from=default/be-svc hop=0 expect_reply=true");
-    expect(env).toContain("调用 send_message 回复");
+    expect(env).toContain("无需调用任何工具");
     expect(env.trimEnd().endsWith("你好")).toBe(true);
     expect(records[0]!.ctx.tool).toBe("kilo");
   });

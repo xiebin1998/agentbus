@@ -38,17 +38,20 @@ describe.each([{ binary: "kilo" }, { binary: "opencode" }])(
       new OpenCodeKiloAdapter({ ...cfg, binary }, run);
 
     describe("参数装配", () => {
-      it("createSessionArgs：run --title --format json --dir + 消息收尾", () => {
+      it("createSessionArgs：run --format json --dir + 消息收尾", () => {
         const adapter = makeAdapter();
         const args = adapter.createSessionArgs("第一条消息", "be-svc");
         expect(args[0]).toBe("run");
-        expect(args).toContain("--title");
-        expect(args[args.indexOf("--title") + 1]).toBe("be-svc");
         expect(args).toContain("--format");
         expect(args[args.indexOf("--format") + 1]).toBe("json");
         expect(args).toContain("--dir");
         expect(args[args.indexOf("--dir") + 1]).toBe("/proj");
         expect(args[args.length - 1]).toBe("第一条消息");
+        // kilo 使用 --title，opencode 不使用（非 TTY 环境会挂起）
+        if (binary === "kilo") {
+          expect(args).toContain("--title");
+          expect(args[args.indexOf("--title") + 1]).toBe("be-svc");
+        }
       });
 
       it("injectArgs：-s <session> 续接", () => {
@@ -64,11 +67,16 @@ describe.each([{ binary: "kilo" }, { binary: "opencode" }])(
         expect(adapter.turnArgs("m", "be-svc")).toContain("--auto");
       });
 
-      it("spawn cmd 使用配置的二进制名", async () => {
+      it("spawn cmd 使用配置的二进制名或解析后的路径", async () => {
         const { run, specs } = stubRun({ stdout: "" });
         const adapter = makeAdapter(run);
         await adapter.inject("a", "s1");
-        expect(specs[0]!.cmd).toBe(binary);
+        // opencode 使用 resolveExePath 返回完整 exe 路径；kilo 使用裸名
+        if (binary === "kilo") {
+          expect(specs[0]!.cmd).toBe("kilo");
+        } else {
+          expect(specs[0]!.cmd).toContain("opencode");
+        }
       });
     });
 

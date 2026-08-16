@@ -27,8 +27,8 @@ describe("信封结构", () => {
     );
   });
 
-  it("包含 skill 加载指令（确定性触发静态契约）", () => {
-    expect(buildEnvelope(msg(), { sessionId: "ses" })).toContain("`agentbus` skill");
+  it("包含代回指令（无需调用工具）", () => {
+    expect(buildEnvelope(msg(), { sessionId: "ses" })).toContain("无需调用任何工具");
   });
 
   it("原消息 text 原样置于信封末尾", () => {
@@ -38,11 +38,10 @@ describe("信封结构", () => {
 });
 
 describe("expect_reply 语义", () => {
-  it("expect_reply=true：指示调用 send_message 回复", () => {
+  it("expect_reply=true：指示直接输出回复内容", () => {
     const env = buildEnvelope(msg(), { sessionId: "ses" });
-    expect(env).toContain("调用 send_message 回复");
-    expect(env).toContain("reply_to=msg-abc");
-    expect(env).toContain("to=iot/be-svc");
+    expect(env).toContain("请直接输出你的回复内容");
+    expect(env).toContain("无需调用任何工具");
   });
 
   it("expect_reply=false：告知无需回复，不出现代回指令", () => {

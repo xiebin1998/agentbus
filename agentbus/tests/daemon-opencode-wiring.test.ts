@@ -136,25 +136,20 @@ describe("defaultInject opencode 分发（KILO_FAMILY）", { timeout: 30000 }, (
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("Plan 3 问题 1：会话标题优先用 agents.json 快照名称，未命中回退 client_id", async () => {
+  it("会话标题使用 client_id（不再从本地快照查询）", async () => {
     calls.length = 0;
     const dir = mkdtempSync(join(tmpdir(), "agentbus-opencode-wire3-"));
-    // 快照同步的产物（syncAgentsSnapshot 写入同路径）：client_id → 名称映射
-    writeFileSync(join(dir, "agents.json"), JSON.stringify({
-      generated_at: "2026-08-11T00:00:00Z",
-      agents: [{ client_id: "be-svc", name: "心语大师", online: true }],
-    }), "utf-8");
     const daemon = new Daemon({ config: makeConfig({ ack: false }), workDir: dir });
     daemon.start();
     await waitFor(() => daemon.status().connected);
 
-    // 命中快照：会话名用名称而非裸 client_id
+    // 会话名使用 client_id
     publishToDaemon({ id: "o-4", from: "ns2/be-svc", to: "fe-test", text: "命中快照" });
     await waitFor(() => calls.length >= 1);
     expect(calls[0]!.method).toBe("createSession");
-    expect(calls[0]!.args[1]).toBe("心语大师");
+    expect(calls[0]!.args[1]).toBe("be-svc");
 
-    // 未命中快照：回退 client_id（现状行为不变）
+    // 另一个发件人也使用 client_id
     publishToDaemon({ id: "o-5", from: "ns2/ghost-svc", to: "fe-test", text: "未命中" });
     await waitFor(() => calls.length >= 2);
     expect(calls[1]!.args[1]).toBe("ghost-svc");

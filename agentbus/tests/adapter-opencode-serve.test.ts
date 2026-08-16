@@ -22,22 +22,22 @@ describe("TASK-27 serve 模式参数（opencode 实测契约）", () => {
 
   it("attachCreateSessionArgs：--attach + --title + --auto（full 档）", () => {
     expect(adapter.attachCreateSessionArgs("http://127.0.0.1:4096", "你好", "be-svc")).toEqual([
-      "run", "--attach", "http://127.0.0.1:4096", "--format", "json", "--dir", "/ws",
+      "run", "--attach", "http://127.0.0.1:4096", "--format", "json", "--pure",
       "--title", "be-svc", "--auto", "你好",
     ]);
   });
 
   it("attachInjectArgs：--attach + -s 续接", () => {
     expect(adapter.attachInjectArgs("http://127.0.0.1:4096", "继续", "ses-1")).toEqual([
-      "run", "--attach", "http://127.0.0.1:4096", "--format", "json", "--dir", "/ws",
-      "-s", "ses-1", "继续",
+      "run", "--attach", "http://127.0.0.1:4096", "--format", "json", "--pure",
+      "-s", "ses-1", "--auto", "继续",
     ]);
   });
 
-  it("supportsServe：opencode true / kilo false（实测无 serve 子命令）", () => {
-    expect(adapter.supportsServe()).toBe(true);
+  it("supportsServe：opencode false（实测 pipe 挂起）/ kilo true", () => {
+    expect(adapter.supportsServe()).toBe(false);
     const kilo = new OpenCodeKiloAdapter({ binary: "kilo", workspace: "/ws" });
-    expect(kilo.supportsServe()).toBe(false);
+    expect(kilo.supportsServe()).toBe(true);
   });
 
   it("extractText：attach 实测事件流（文本在 part.text，非顶层 text）", () => {
