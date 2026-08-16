@@ -98,7 +98,7 @@ export interface AgentSnapshotEntry {
  * 这是事实源，本地 agents.json 只是缓存。
  */
 export interface FetchAgentsOptions {
-  sseUrl: string;
+  sseUrl?: string;
   ns: string;
   username?: string;
   password?: string;
@@ -107,7 +107,7 @@ export interface FetchAgentsOptions {
 }
 
 export async function fetchAgentsFromHub(opts: FetchAgentsOptions): Promise<AgentSnapshotEntry[]> {
-  if (!opts.username || !opts.password) return [];
+  if (!opts.username || !opts.password || !opts.sseUrl) return [];
   let hub: string;
   try {
     hub = new URL(opts.sseUrl).origin;
