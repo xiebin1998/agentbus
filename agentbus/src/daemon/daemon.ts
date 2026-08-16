@@ -24,7 +24,7 @@ import { acquirePidLock, releasePidLock } from "./pid.js";
 import { Router, type RouterConfig } from "./router.js";
 import { ServeManager } from "./serve-manager.js";
 import { SessionLock } from "./session-lock.js";
-import { syncAgentsSnapshot, lookupAgentName, fetchAgentsFromHub } from "./snapshot.js";
+import { fetchAgentsFromHub } from "./snapshot.js";
 import { buildEnvelope, type EnvelopeContext } from "./envelope.js";
 import { ChannelManager, type Channel } from "./channel.js";
 import { IpcServer } from "./ipc-server.js";
@@ -195,7 +195,6 @@ export class Daemon {
     // 6. 启动就绪
     this.started = true;
     this.startedAt = new Date().toISOString();
-    void this.syncSnapshot();
 
     this.logger.info(`daemon started: ${this.selfIdentity} 订阅 ${topic}，IPC: ${this.ipcServer.address}`);
     return { started: true, reason: `daemon 已启动（pid ${process.pid}）` };
@@ -317,9 +316,9 @@ export class Daemon {
   private async injectAndDrain(tool: string, initialSessionId: string, msg: BusMessage, isNew: boolean, channel: Channel): Promise<void> {
     const cfg = this.opts.config;
     // 信封（4.6/4.7）：沟通定位入站恒只读，参数层与提示层一致
-    // Plan 3 问题 1：会话标题优先用快照里的 Agent 名称（如“心语大师”），未命中回退 client_id
+    // 会话标题用 client_id（不再从本地查询）
     const senderClientId = msg.from.includes("/") ? msg.from.slice(msg.from.indexOf("/") + 1) : msg.from;
-    const senderName = lookupAgentName(this.opts.workDir, senderClientId) ?? senderClientId;
+    const senderName = senderClientId;
   
     // TASK-30 隔离层（可选）：入站回合在 OS 层物理禁写，参数层被绕过时仍安全（无豁免）
     let isolated = false;
@@ -593,19 +592,6 @@ export class Daemon {
       throw new Error("MQTT 未连接");
     }
     await this.listener.publish(topic, JSON.stringify(msg));
-  }
-
-  private async syncSnapshot(): Promise<void> {
-    if (!this.started) return;
-    const cfg = this.opts.config;
-    if (!cfg.sse_url) return;
-    await syncAgentsSnapshot({
-      workDir: this.opts.workDir,
-      sseUrl: cfg.sse_url,
-      ns: cfg.ns,
-      username: cfg.broker.username,
-      password: cfg.broker.password,
-    });
   }
 
   /** 异步停止：resolve 于 MQTT 关闭完成后（期间仍有 offline 日志），resolve 后 workDir 可安全删除 */

@@ -127,8 +127,8 @@ const defaultSpawnDaemon = (cmd: string, args: string[]) => {
 };
 
 /** 幂等追加托管条目到项目 .gitignore（不存在则创建）：
- * .agentbus/（凭证）+ .agentbus/agents.json（TASK-32 daemon 同伴快照，勿提交） */
-const GITIGNORE_ENTRIES = [".agentbus/", ".agentbus/agents.json"];
+ * .agentbus/（凭证，勿提交） */
+const GITIGNORE_ENTRIES = [".agentbus/"];
 
 function ensureGitignoreEntry(projectRoot: string): void {
   const giPath = join(projectRoot, ".gitignore");
@@ -286,7 +286,7 @@ export async function runInit(opts: InitCliOptions, deps: InitDeps): Promise<Ini
   writeFileSync(configPath, `${JSON.stringify(configWithAgent, null, 2)}\n`, "utf-8");
   lines.push(`✓ 已写入 .agentbus/config.json（身份 ${raw.ns}/${raw.client_id}）`);
 
-  // TASK-32：托管条目无条件入 .gitignore（凭证 + daemon 同伴快照 agents.json，幂等）
+  // TASK-32：托管条目无条件入 .gitignore（凭证，幂等）
   ensureGitignoreEntry(projectRoot);
   if (raw.broker.password) {
     lines.push("✓ 已保障 .agentbus/ 入 .gitignore（config.json 含接入凭证，勿提交）");
