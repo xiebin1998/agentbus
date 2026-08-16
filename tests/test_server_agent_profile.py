@@ -770,9 +770,8 @@ def test_build_agent_detail_db_rows_join_union():
     """纯函数：DB 行并入 key 并集（仅有档案无指标/会话的也要可见）"""
     import server
     db = {"ag-db": {"name": "档案者", "description": "d", "capabilities": ["c"],
-                    "tools": ["t"], "owner": "alice", "created_at": "2026-08-11 00:00:00",
-                    "updated_at": "2026-08-11 00:00:00"}}
-    rows = server.build_agent_detail("iot", {}, {}, {}, db)
+                    "tools": ["t"], "owner": "alice", "registered_at": "2026-08-11 00:00:00"}}
+    rows = server.build_agent_detail("iot", {}, {}, db_agents=db)
     assert [r["client_id"] for r in rows] == ["ag-db"]
     r = rows[0]
     assert r["name"] == "档案者" and r["registered"] is True

@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS agents(
   name TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   capabilities TEXT NOT NULL DEFAULT '[]',
+  tools TEXT NOT NULL DEFAULT '[]',
+  owner TEXT NOT NULL DEFAULT '',
   registered_at TEXT,
   PRIMARY KEY(ns, client_id));
 """
@@ -59,8 +61,15 @@ def _migrate(conn) -> None:
   name TEXT NOT NULL DEFAULT '',
   description TEXT NOT NULL DEFAULT '',
   capabilities TEXT NOT NULL DEFAULT '[]',
+  tools TEXT NOT NULL DEFAULT '[]',
+  owner TEXT NOT NULL DEFAULT '',
   registered_at TEXT,
   PRIMARY KEY(ns, client_id))""")
+    elif agent_cols:
+        if "tools" not in agent_cols:
+            conn.execute("ALTER TABLE agents ADD COLUMN tools TEXT NOT NULL DEFAULT '[]'")
+        if "owner" not in agent_cols:
+            conn.execute("ALTER TABLE agents ADD COLUMN owner TEXT NOT NULL DEFAULT ''")
 
 
 def create_user(conn, username, password_hash, role, display_name="") -> None:
@@ -172,44 +181,92 @@ def delete_session(conn, token) -> None:
 
 # ─── Agent 档案持久化 ────────────────────────────────────────────────────────
 
-def upsert_agent(conn, ns, client_id, name="", description="", capabilities=None, registered_at=None) -> None:
-    """插入或更新 Agent 档案（UPSERT）"""
+def upsert_agent(conn, ns, client_id, name="", description="", capabilities=None,
+                 tools=None, owner="", fill=False, registered_at=None) -> None:
+    """写入 Agent 档案：默认全字段覆盖；fill=True 时仅补空字段不覆盖已有值。"""
     caps_json = json.dumps(capabilities or [], ensure_ascii=False)
-    conn.execute(
-        "INSERT INTO agents(ns,client_id,name,description,capabilities,registered_at) "
-        "VALUES(?,?,?,?,?,?) "
-        "ON CONFLICT(ns,client_id) DO UPDATE SET name=excluded.name, description=excluded.description, "
-        "capabilities=excluded.capabilities, registered_at=COALESCE(excluded.registered_at, agents.registered_at)",
-        (ns, client_id, name, description, caps_json, registered_at),
-    )
+    tools_json = json.dumps(tools or [], ensure_ascii=False)
+    # 如果没有提供 registered_at，使用当前时间
+    if registered_at is None:
+        from datetime import datetime, timezone
+        registered_at = datetime.now(timezone.utc).isoformat()
+    if not fill:
+        conn.execute(
+            "INSERT INTO agents(ns,client_id,name,description,capabilities,tools,owner,registered_at) "
+            "VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(ns,client_id) DO UPDATE SET name=excluded.name, description=excluded.description, "
+            "capabilities=excluded.capabilities, tools=excluded.tools, owner=excluded.owner, "
+            "registered_at=COALESCE(excluded.registered_at, agents.registered_at)",
+            (ns, client_id, name, description, caps_json, tools_json, owner, registered_at),
+        )
+    else:
+        row = conn.execute("SELECT 1 FROM agents WHERE ns=? AND client_id=?", (ns, client_id)).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO agents(ns,client_id,name,description,capabilities,tools,owner,registered_at) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (ns, client_id, name, description, caps_json, tools_json, owner, registered_at),
+            )
+        else:
+            # 只补空字段：文本看空串，列表看 '[]'，owner 空串可被后续注册补齐；
+            # 占位行的 name==client_id 视为空槽，可被真身注册覆盖
+            conn.execute("""UPDATE agents SET
+                            name=CASE WHEN name='' OR name=client_id THEN ? ELSE name END,
+                            description=CASE WHEN description='' THEN ? ELSE description END,
+                            capabilities=CASE WHEN capabilities='[]' THEN ? ELSE capabilities END,
+                            tools=CASE WHEN tools='[]' THEN ? ELSE tools END,
+                            owner=CASE WHEN owner='' THEN ? ELSE owner END
+                          WHERE ns=? AND client_id=?""",
+                       (name, description, caps_json, tools_json, owner, ns, client_id))
     conn.commit()
 
 
 def get_agent(conn, ns, client_id) -> dict | None:
     row = conn.execute(
-        "SELECT ns,client_id,name,description,capabilities,registered_at FROM agents WHERE ns=? AND client_id=?",
+        "SELECT ns,client_id,name,description,capabilities,tools,owner,registered_at FROM agents WHERE ns=? AND client_id=?",
         (ns, client_id),
     ).fetchone()
     if not row:
         return None
     return {"ns": row[0], "client_id": row[1], "name": row[2], "description": row[3],
-            "capabilities": json.loads(row[4]), "registered_at": row[5]}
+            "capabilities": json.loads(row[4]), "tools": json.loads(row[5]),
+            "owner": row[6], "registered_at": row[7]}
 
 
 def list_agents(conn, ns=None) -> list[dict]:
     if ns:
         rows = conn.execute(
-            "SELECT ns,client_id,name,description,capabilities,registered_at FROM agents WHERE ns=? ORDER BY client_id",
+            "SELECT ns,client_id,name,description,capabilities,tools,owner,registered_at FROM agents WHERE ns=? ORDER BY client_id",
             (ns,),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT ns,client_id,name,description,capabilities,registered_at FROM agents ORDER BY ns, client_id",
+            "SELECT ns,client_id,name,description,capabilities,tools,owner,registered_at FROM agents ORDER BY ns, client_id",
         ).fetchall()
     return [{"ns": r[0], "client_id": r[1], "name": r[2], "description": r[3],
-             "capabilities": json.loads(r[4]), "registered_at": r[5]} for r in rows]
+             "capabilities": json.loads(r[4]), "tools": json.loads(r[5]),
+             "owner": r[6], "registered_at": r[7]} for r in rows]
 
 
 def delete_agent(conn, ns, client_id) -> None:
     conn.execute("DELETE FROM agents WHERE ns=? AND client_id=?", (ns, client_id))
     conn.commit()
+
+
+def update_agent(conn, ns, client_id, name=None, description=None, capabilities=None, tools=None) -> bool:
+    """部分更新 Agent 档案（仅更新传入的非 None 字段）"""
+    updates, params = [], []
+    if name is not None:
+        updates.append("name=?"); params.append(name)
+    if description is not None:
+        updates.append("description=?"); params.append(description)
+    if capabilities is not None:
+        updates.append("capabilities=?"); params.append(json.dumps(capabilities, ensure_ascii=False))
+    if tools is not None:
+        updates.append("tools=?"); params.append(json.dumps(tools, ensure_ascii=False))
+    if not updates:
+        return False
+    params.extend([ns, client_id])
+    conn.execute(f"UPDATE agents SET {', '.join(updates)} WHERE ns=? AND client_id=?", params)
+    conn.commit()
+    return True

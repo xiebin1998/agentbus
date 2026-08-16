@@ -86,6 +86,8 @@ TOPIC_MESSAGE = "/agentbus/ai/channel/{client_id}/message"
 # TASK-33：daemon 在线态通道（LWT 遗嘱 + retained online/offline）
 TOPIC_STATUS_PREFIX = "/agentbus/ai/status/"
 TOPIC_STATUS_WILDCARD = "/agentbus/ai/status/#"
+TOPIC_METRIC_PREFIX = "/agentbus/ai/metric/"
+TOPIC_METRIC_WILDCARD = "/agentbus/ai/metric/#"
 
 # 四期：共享连接通配订阅（flat 兼容已删除，仅 ns 形态）
 TOPIC_MESSAGE_PREFIX = "/agentbus/ai/channel/"
@@ -266,6 +268,16 @@ def parse_status_topic(topic: str) -> Optional[str]:
     return f"{parts[0]}/{parts[1]}"
 
 
+
+def parse_metric_topic(topic: str) -> Optional[str]:
+    """/agentbus/ai/metric/<ns>/<cid> -> <ns>/<cid>; invalid returns None"""
+    if not topic.startswith(TOPIC_METRIC_PREFIX):
+        return None
+    parts = topic[len(TOPIC_METRIC_PREFIX):].split("/")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
 def parse_message_topic(topic: str) -> Optional[tuple]:
     """TASK-24：message topic → (ns, client_id)。共享连接按 topic 路由的第一步：
     ns /agentbus/ai/channel/<ns>/<cid>/message → (ns, cid)；
@@ -286,6 +298,33 @@ def route_message_key(topic: str) -> Optional[str]:
         return None
     ns, cid = parsed
     return session_key(cid, ns)
+
+
+class MetricsStore:
+    """TASK-19：各 daemon 最新指标汇总（指标以最近一次上报为准，报告次数累加）"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._data: Dict[str, dict] = {}
+
+    def update(self, identity: str, metrics: Any, timestamp: Optional[str]) -> None:
+        if not isinstance(metrics, dict):
+            return
+        with self._lock:
+            entry = self._data.get(identity, {"report_count": 0})
+            entry["metrics"] = metrics
+            entry["last_seen"] = timestamp
+            entry["report_count"] += 1
+            self._data[identity] = entry
+
+    def snapshot(self) -> Dict[str, dict]:
+        with self._lock:
+            return {k: dict(v) for k, v in self._data.items()}
+
+    def remove(self, identity: str) -> None:
+        """清除单条身份指标条目（Agent 明细删除时连带执行）"""
+        with self._lock:
+            self._data.pop(identity, None)
 
 
 class PresenceStore:
@@ -347,17 +386,36 @@ PRESENCE_HEARTBEAT_WINDOW_S = 60
 
 
 def agent_online(key: str, presence: Dict[str, dict],
-                 now: datetime, heartbeat_s: int = PRESENCE_HEARTBEAT_WINDOW_S) -> bool:
-    """统一在线判定（0.2.10 收敛）：presence 唯一真源——条目 state=online 且心跳
-    （presence ts / 指标 last_seen 取新）在窗口内才算在线；无条目/offline/心跳超期
-    一律离线。旧客户端 90s 指标回退已删：daemon stop 即翻离线，不再假在线。"""
+                 metrics: Optional[Dict[str, dict]] = None,
+                 now: Optional[datetime] = None,
+                 heartbeat_s: int = PRESENCE_HEARTBEAT_WINDOW_S) -> bool:
+    """Unified online judgment (0.2.10): presence is the primary source.
+    If presence ts is stale (>60s), fall back to metrics last_seen.
+    Signature: agent_online(key, presence, [metrics], [now], [heartbeat_s])
+    For backward compat, if 3rd arg is datetime, treat as now (no metrics)."""
+    # Handle backward compat: if metrics is actually a datetime, shift args
+    if isinstance(metrics, datetime):
+        now = metrics
+        metrics = None
+    if now is None:
+        now = datetime.now(timezone.utc)
     p = presence.get(key)
     if p is None or p.get("state") != "online":
         return False
     ts = _parse_iso(p.get("ts"))
     if ts is None:
         return False
-    return (now - ts).total_seconds() <= heartbeat_s
+    # If presence ts is fresh, return True
+    if (now - ts).total_seconds() <= heartbeat_s:
+        return True
+    # Presence ts is stale, fall back to metrics last_seen
+    if metrics:
+        m = metrics.get(key)
+        if isinstance(m, dict):
+            m_ts = _parse_iso(m.get("last_seen"))
+            if m_ts is not None:
+                return (now - m_ts).total_seconds() <= heartbeat_s
+    return False
 
 
 # ─── ns 接入与内存治理（TASK-02） ────────────────────────────────────────
@@ -365,6 +423,46 @@ def agent_online(key: str, presence: Dict[str, dict],
 # 消息存储容量与保留时长（架构 11.8 缺陷 1）
 MESSAGE_STORE_MAX = 10000
 MESSAGE_TTL_SECONDS = 24 * 3600
+
+
+def store_message(store: dict, msg_id: str, payload: dict, max_len: int = MESSAGE_STORE_MAX) -> None:
+    """Store a message in the message store with capacity limit."""
+    from datetime import datetime, timezone
+    payload["_stored_at"] = datetime.now(timezone.utc).isoformat()
+    store[msg_id] = payload
+    # Evict oldest if over capacity
+    if len(store) > max_len:
+        oldest_key = min(store.keys(), key=lambda k: store[k].get("_stored_at", ""))
+        del store[oldest_key]
+
+
+def sweep_messages(store: dict, now: datetime = None, ttl_seconds: int = MESSAGE_TTL_SECONDS) -> int:
+    """Remove expired messages from the store. Returns count of removed messages."""
+    from datetime import datetime, timezone
+    if now is None:
+        now = datetime.now(timezone.utc)
+    removed = 0
+    to_remove = []
+    for msg_id, payload in store.items():
+        stored_at = payload.get("_stored_at")
+        if stored_at:
+            try:
+                # Handle both datetime objects and ISO strings
+                if isinstance(stored_at, datetime):
+                    stored_dt = stored_at
+                else:
+                    stored_dt = datetime.fromisoformat(str(stored_at).replace("Z", "+00:00"))
+                if stored_dt.tzinfo is None:
+                    stored_dt = stored_dt.replace(tzinfo=timezone.utc)
+                if (now - stored_dt).total_seconds() > ttl_seconds:
+                    to_remove.append(msg_id)
+            except (ValueError, TypeError):
+                pass
+    for msg_id in to_remove:
+        del store[msg_id]
+        removed += 1
+    return removed
+
 
 
 def normalize_ns(raw: Optional[str]) -> Optional[str]:
@@ -439,8 +537,10 @@ class AgentInfo:
         self.last_active = datetime.now(timezone.utc)
     
     def to_dict(self) -> dict:
+        # client_id 可能存储完整 key（ns/cid），提取纯 client_id 部分
+        cid = self.client_id.split("/", 1)[1] if "/" in self.client_id else self.client_id
         return {
-            "client_id": self.client_id,
+            "client_id": cid,
             "name": self.name,
             "description": self.description,
             "capabilities": self.capabilities,
@@ -476,11 +576,22 @@ def _save_agent_db(key: str) -> None:
     if not ns:
         return  # 无 ns 的旧格式不持久化
     try:
+        # 保留现有的 owner 和 tools（如果存在）
+        owner = ""
+        tools = []
+        if DB_CONN is not None:
+            existing = hub_store.get_agent(DB_CONN, ns, cid)
+            if existing:
+                owner = existing.get("owner", "")
+                tools = existing.get("tools", [])
+        
         hub_store.upsert_agent(
             DB_CONN, ns, cid,
             name=info.name or "",
             description=info.description or "",
             capabilities=info.capabilities,
+            tools=tools,
+            owner=owner,
             registered_at=info.registered_at.isoformat() if info.registered_at else None,
         )
     except Exception as e:
@@ -523,6 +634,9 @@ def _load_agents_from_db() -> None:
 # LWT 在线态（TASK-33）：status topic 事件流维护，send_message/明细页/list_agents 统一口径
 _presence_store = PresenceStore()
 
+# TASK-19：daemon 指标汇总
+_metrics_store = MetricsStore()
+
 # TASK-24：hub 唯一 MQTT 共享连接（架构 11.8 演进方案 2：线程数 N→1）
 _shared_client: Optional[mqtt.Client] = None
 _shared_ready = threading.Event()
@@ -552,6 +666,40 @@ def _handle_presence_message(msg) -> None:
     _presence_store.update(identity, state, payload.get("ts"), str(payload.get("reason") or ""))
 
 
+def _handle_metric_message(msg) -> None:
+    """TASK-19 metric 消息入库"""
+    try:
+        payload = json.loads(msg.payload.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+    if not isinstance(payload, dict) or payload.get("type") != "metric":
+        return
+    identity = parse_metric_topic(msg.topic)
+    if not identity:
+        return
+    from_id = payload.get("from")
+    if isinstance(from_id, str) and from_id.strip():
+        identity = from_id.strip()
+    _ensure_agent_row(identity, payload)
+    _metrics_store.update(identity, payload.get("metrics"), payload.get("timestamp"))
+
+
+def _ensure_agent_row(identity: str, payload: dict) -> None:
+    """TASK-32 指标占位行：未知 ns/cid 先建占位档案"""
+    if DB_CONN is None or "/" not in identity:
+        return
+    ns, _, cid = identity.partition("/")
+    tools = payload.get("tools")
+    tools = [str(t) for t in tools] if isinstance(tools, list) else None
+    try:
+        if hub_store.get_agent(DB_CONN, ns, cid) is None:
+            hub_store.upsert_agent(DB_CONN, ns, cid, name=cid, owner="", tools=tools)
+        elif tools is not None:
+            hub_store.update_agent(DB_CONN, ns, cid, tools=tools)
+    except Exception as e:
+        logger.error(f"[agent-profile] 占位行写入失败 {identity}: {e}")
+
+
 def start_shared_client() -> None:
     """TASK-24：hub 唯一 MQTT 连接（架构 11.8 演进方案 2）——通配订阅 flat/ns 两条
     message topic 与 metric topic，按 topic 解析目标身份路由到对应会话；
@@ -573,10 +721,11 @@ def start_shared_client() -> None:
             c.subscribe([
                 (TOPIC_MESSAGE_WILDCARD_NS, 2),
                 (TOPIC_STATUS_WILDCARD, 1),
+                (TOPIC_METRIC_WILDCARD, 1),
                 (hub_dynsec.RESPONSE_TOPIC, 1),
             ])
             _shared_ready.set()
-            logger.info(f"[hub-shared] subscribed to {TOPIC_MESSAGE_WILDCARD_NS}, {TOPIC_STATUS_WILDCARD}, {hub_dynsec.RESPONSE_TOPIC}")
+            logger.info(f"[hub-shared] subscribed to {TOPIC_MESSAGE_WILDCARD_NS}, {TOPIC_STATUS_WILDCARD}, {TOPIC_METRIC_WILDCARD}, {hub_dynsec.RESPONSE_TOPIC}")
         else:
             logger.error(f"[hub-shared] connect failed: rc={rc}")
 
@@ -592,6 +741,9 @@ def start_shared_client() -> None:
             return
         if msg.topic.startswith(TOPIC_STATUS_PREFIX):
             _handle_presence_message(msg)
+            return
+        if msg.topic.startswith(TOPIC_METRIC_PREFIX):
+            _handle_metric_message(msg)
             return
         key = route_message_key(msg.topic)
         if key is None:
@@ -990,7 +1142,7 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
                 targets = split_targets(to)
             except ValueError as e:
                 return [TextContent(type="text", text=json.dumps({"error": str(e)}, ensure_ascii=False, indent=2))]
-            
+
             # 目标键解析（无前缀继承发件人 ns）；投递前统一在线判定（TASK-33：presence 唯一真源 + 60s 心跳兜底）
             target_keys = []
             for t in targets:
@@ -998,19 +1150,34 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
                 target_keys.append(session_key(cid, t_ns if t_ns is not None else session.ns))
             presence = _presence_store.snapshot()
             offline = [k for k in target_keys if not agent_online(k, presence, datetime.now(timezone.utc))]
+            # TASK-32: any offline target -> reject ALL (atomic send)
             if offline:
+                # detect no-profile targets (never reported metrics, not in DB)
+                no_profile_targets = []
+                metric_snap = _metrics_store.snapshot()
+                for k in offline:
+                    in_metrics = k in metric_snap
+                    in_db = False
+                    if DB_CONN is not None:
+                        ns_part, cid_part = _split_key(k)
+                        if ns_part and cid_part:
+                            in_db = hub_store.get_agent(DB_CONN, ns_part, cid_part) is not None
+                    if not in_metrics and not in_db:
+                        no_profile_targets.append(k)
                 err = {
-                    "error": "目标离线，已拒发（仅向在线 Agent 投递）",
+                    "error": "存在离线目标，已拒发送，不会向任何 Agent 投递。",
                     "offline_targets": offline,
-                    "hint": "可稍后重试或先确认对方 daemon 在运行",
+                    "hint": "请稍后重试或确认对方 daemon 已启动。",
                 }
-                no_profile = []  # no longer tracking metrics
-                if no_profile:
-                    err["no_profile_hint"] = ("未找到档案，等待 daemon 上线自动建占位或运行 agentbus init："
-                                              + ", ".join(no_profile))
+                if no_profile_targets:
+                    err["no_profile_hint"] = (
+                        "未找到档案：" + ", ".join(no_profile_targets) + "。"
+                        "目标需先运行 agentbus init 注册后才能接收消息。"
+                    )
                 return [TextContent(type="text", text=json.dumps(err, ensure_ascii=False, indent=2))]
+            online_targets = target_keys
 
-            delivered, unknown = plan_send_targets(target_keys, set(_sessions.keys()))
+            delivered, unknown = plan_send_targets(online_targets, set(_sessions.keys()))
             
             # 就绪门控（TASK-13 冒烟缺陷）：等自身收件 topic 订阅完成再发，防早到回复丢失
             ready = await asyncio.to_thread(session.wait_ready, 5.0)
@@ -1037,24 +1204,86 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
             if unknown:
                 result["unconfirmed"] = unknown
                 result["note"] = "以下目标未保持 SSE 会话（可能是纯 MQTT 直连），已尽力发布，在线状态未知"
+            if offline:
+                result["offline_targets"] = offline
+                result["offline_hint"] = "以上目标离线，未投递；可稍后重试"
             return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
         
         elif name == "list_agents":
             agents = []
             presence = _presence_store.snapshot()
-            for cid, sess in _sessions.items():
-                info = sess.info.to_dict()
-                info["mqtt_connected"] = agent_online(sess.key, presence, datetime.now(timezone.utc))
-                agents.append(info)
+            now = datetime.now(timezone.utc)
+            # Include agents from _agent_info, _sessions, and DB
+            seen_keys = set()
+            # From _agent_info (registered agents)
+            for key, info in _agent_info.items():
+                if not info.registered and key not in _sessions:
+                    continue
+                seen_keys.add(key)
+                agent_dict = info.to_dict()
+                # Use full key (ns/cid) as client_id for consistency
+                agent_dict["client_id"] = key
+                agent_dict["mqtt_connected"] = agent_online(key, presence, now)
+                agents.append(agent_dict)
+            # From _sessions (active sessions, even if not registered in _agent_info)
+            for key in _sessions:
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                ns_part, cid_part = _split_key(key)
+                info = _agent_info.get(key)
+                if info:
+                    agent_dict = info.to_dict()
+                    # Use full key as client_id for consistency
+                    agent_dict["client_id"] = key
+                else:
+                    # Try DB
+                    db_agent = None
+                    if DB_CONN is not None and ns_part and cid_part:
+                        db_agent = hub_store.get_agent(DB_CONN, ns_part, cid_part)
+                    if db_agent:
+                        agent_dict = {
+                            "client_id": key,
+                            "name": db_agent.get("name"),
+                            "description": db_agent.get("description"),
+                            "capabilities": db_agent.get("capabilities", []),
+                            "registered": True,
+                        }
+                    else:
+                        agent_dict = {
+                            "client_id": key,
+                            "name": None,
+                            "description": None,
+                            "capabilities": [],
+                            "registered": False,
+                        }
+                agent_dict["mqtt_connected"] = agent_online(key, presence, now)
+                agents.append(agent_dict)
             return [TextContent(type="text", text=json.dumps(agents, ensure_ascii=False, indent=2))]
         
         elif name == "get_agent_info":
             target = resolve_agent_key(arguments["client_id"], session.ns)
-            if target in _agent_info:
-                info = _agent_info[target].to_dict()
-                if target in _sessions:
-                    info["mqtt_connected"] = agent_online(target, _presence_store.snapshot(), datetime.now(timezone.utc))
-                return [TextContent(type="text", text=json.dumps(info, ensure_ascii=False, indent=2))]
+            # 查询所有已注册 Agent（包括离线的）
+            info = _agent_info.get(target)
+            if info is None:
+                # 尝试从数据库加载
+                ns, cid = _split_key(target)
+                if ns and cid:
+                    db_agent = hub_store.get_agent(DB_CONN, ns, cid)
+                    if db_agent:
+                        info = AgentInfo(db_agent["client_id"])
+                        info.name = db_agent.get("name")
+                        info.description = db_agent.get("description")
+                        info.capabilities = db_agent.get("capabilities", [])
+                        info.registered = True
+                        info.registered_at = db_agent.get("registered_at")
+                        _agent_info[target] = info
+            
+            if info:
+                result = info.to_dict()
+                presence = _presence_store.snapshot()
+                result["mqtt_connected"] = agent_online(target, presence, datetime.now(timezone.utc))
+                return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
             return [TextContent(type="text", text=json.dumps({"error": "Agent not found"}, indent=2))]
         
         elif name == "find_agents_by_capability":
@@ -1071,17 +1300,31 @@ def create_mcp_server(client_id: str, ns: Optional[str] = None) -> Server:
         
         elif name == "get_status":
             presence = _presence_store.snapshot()
+            is_online = agent_online(session.key, presence, datetime.now(timezone.utc))
             status = {
-                "client_id": client_id,
+                "client_id": session.key,  # Use full key (ns/cid) as client_id
                 "registered": session.is_registered(),
-                "mqtt_connected": agent_online(session.key, presence, datetime.now(timezone.utc)),
+                "mqtt_connected": is_online,
+                "online": is_online,
                 "presence_state": (presence.get(session.key) or {}).get("state"),
                 "sub_topic": session.sub_topic,
                 "mqtt_broker": f"{MQTT_BROKER_HOST}:{MQTT_BROKER_PORT}",
-                **session.info.to_dict(),
             }
-            # Agent 档案只存内存，不读 DB
-            status["online"] = agent_online(session.key, presence, datetime.now(timezone.utc))
+            # Merge DB profile (name/description/capabilities) if available
+            if DB_CONN is not None and session.ns:
+                db_agent = hub_store.get_agent(DB_CONN, session.ns, client_id)
+                if db_agent:
+                    status["name"] = db_agent.get("name")
+                    status["description"] = db_agent.get("description")
+                    status["capabilities"] = db_agent.get("capabilities") or []
+                else:
+                    info_dict = session.info.to_dict()
+                    info_dict.pop("client_id", None)  # Don't overwrite full key
+                    status.update(info_dict)
+            else:
+                info_dict = session.info.to_dict()
+                info_dict.pop("client_id", None)  # Don't overwrite full key
+                status.update(info_dict)
             return [TextContent(type="text", text=json.dumps(status, ensure_ascii=False, indent=2))]
         
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -1141,6 +1384,7 @@ def init_hub_state() -> None:
         hub_store.create_user(DB_CONN, admin_user, hub_auth.hash_password(admin_password), "super_admin")
 
     # Agent 档案从 DB 恢复
+    _agent_info.clear()
     _load_agents_from_db()
 
     def _resolve(token):
@@ -1246,7 +1490,15 @@ async def api_ns_delete(request: Request):
     user = hub_auth.current_user(request)
     if user["role"] != "super_admin":
         return _json_error("forbidden", 403)
-    hub_accounts.delete_namespace(DB_CONN, DYNSEC_CLIENT, request.path_params["ns"])
+    ns_id = request.path_params["ns"]
+    if hub_store.get_namespace(DB_CONN, ns_id) is None:
+        return _json_error("ns 不存在", 404)
+    try:
+        hub_accounts.delete_namespace(DB_CONN, DYNSEC_CLIENT, ns_id)
+    except hub_dynsec.DynsecError as e:
+        return _json_error(f"broker 侧失败: {e}", 502)
+    except Exception as e:
+        return _json_error(f"删除失败: {e}", 500)
     return JSONResponse({"ok": True})
 
 
@@ -1330,7 +1582,15 @@ async def api_account_delete(request: Request):
     target = request.path_params["username"]
     if user["role"] != "super_admin":
         return _json_error("forbidden", 403)
-    hub_accounts.delete_account(DB_CONN, DYNSEC_CLIENT, target)
+    # 防止超管删除自己导致系统无管理员
+    if target == user["username"]:
+        return _json_error("不能删除当前登录账号", 400)
+    if hub_store.get_user(DB_CONN, target) is None:
+        return _json_error("账号不存在", 404)
+    try:
+        hub_accounts.delete_account(DB_CONN, DYNSEC_CLIENT, target)
+    except hub_dynsec.DynsecError as e:
+        return _json_error(f"broker 侧失败: {e}", 502)
     return JSONResponse({"ok": True})
 
 
@@ -1473,6 +1733,9 @@ async def api_metrics(request: Request):
     prefix = f"{ns}/"
     presence = _presence_store.snapshot()
     now = datetime.now(timezone.utc)
+    # Collect daemons for this ns from metrics store
+    metric_snap = _metrics_store.snapshot()
+    daemons = [k for k in metric_snap if k.startswith(prefix)]
     return JSONResponse({
         "overview": {
             # TASK-33 DoD-4：统计卡与行内 Badge 同口径（agent_online，非 SSE 会话表）
@@ -1480,18 +1743,35 @@ async def api_metrics(request: Request):
             "registered_agents": [k for k, info in _agent_info.items()
                                   if info.registered and k.startswith(prefix)],
         },
+        "daemons": daemons,
     })
 
 
-# api_metrics_summary 已废弃：metrics 已移除
+async def api_metrics_summary(request: Request):
+    """Metrics summary endpoint: aggregated daemon stats for a namespace."""
+    user = hub_auth.current_user(request)
+    ns = (request.query_params.get("ns") or "").strip()
+    if not ns:
+        return _json_error("missing ns parameter")
+    if not _ns_visible(user, ns):
+        return _json_error("forbidden", 403)
+    prefix = f"{ns}/"
+    metric_snap = _metrics_store.snapshot()
+    # Filter to this namespace
+    ns_metrics = {k: v for k, v in metric_snap.items() if k.startswith(prefix)}
+    summary = build_metric_summary(ns_metrics)
+    return JSONResponse(summary)
+
+
 
 
 # ─── TASK-31：Agent 明细（注册信息 × 在线状态 × daemon 指标 三源合并）───────
 
 def build_agent_detail(ns: str, agent_info: Dict[str, Any], sessions: Dict[str, Any],
-                       db_agents: Optional[Dict[str, dict]] = None,
+                       metrics_snap: Optional[Dict[str, dict]] = None,
                        now: Optional[datetime] = None,
-                       presence: Optional[Dict[str, dict]] = None) -> List[dict]:
+                       presence: Optional[Dict[str, dict]] = None,
+                       db_agents: Optional[Dict[str, dict]] = None) -> List[dict]:
     """纯函数多源合并（便于单测）：key 取并集按 ns 前缀过滤，字典序稳定输出。
 
     - agent_info（_agent_info）→ name/description/capabilities/registered
@@ -1502,31 +1782,76 @@ def build_agent_detail(ns: str, agent_info: Dict[str, Any], sessions: Dict[str, 
     """
     db_agents = db_agents or {}
     presence = presence or {}
+    db_agents = db_agents or {}
+    presence = presence or {}
+    metrics_snap = metrics_snap or {}
     prefix = f"{ns}/"
-    keys = sorted({k for k in list(agent_info) + list(sessions)
-                   if k.startswith(prefix)}
-                  | {f"{prefix}{cid}" for cid in db_agents})
+    all_keys = {k for k in list(agent_info) + list(sessions) if k.startswith(prefix)}
+    all_keys |= {f"{prefix}{cid}" for cid in db_agents}
+    # Also include keys from metrics and presence stores
+    for k in list(metrics_snap.keys()) + list(presence.keys()):
+        if k.startswith(prefix):
+            all_keys.add(k)
+    keys = sorted(all_keys)
     now = now or datetime.now(timezone.utc)
     out: List[dict] = []
     for k in keys:
         info = agent_info.get(k)
         row = db_agents.get(k[len(prefix):])
-        out.append({
+        metric_entry = metrics_snap.get(k, {})
+        result = {
             "client_id": k[len(prefix):],
             "name": row["name"] if row else (info.name if info else None),
             "description": row["description"] if row else (info.description if info else None),
             "capabilities": (list(row["capabilities"]) if row
                              else (list(info.capabilities) if info else [])),
             "registered": bool(row) or bool(info and info.registered),
-            "online": agent_online(k, presence, now),
+            "online": agent_online(k, presence, metrics_snap, now),
             "sse_connected": k in sessions,
             "tools": list(row["tools"]) if row else [],
-            "registered_at": row["created_at"] if row else (
+            "registered_at": row["registered_at"] if row else (
                 info.registered_at.isoformat() if info and info.registered_at else None),
             "owner": row["owner"] if row else "",
             "placeholder": bool(row) and not row["owner"] and row["name"] == row["client_id"],
-        })
+        }
+        # Add metrics fields if available
+        if metric_entry:
+            result["metrics"] = metric_entry.get("metrics", {})
+            result["report_count"] = metric_entry.get("report_count", 0)
+        out.append(result)
     return out
+
+
+def build_metric_summary(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """聚合所有 daemon 的指标快照，返回汇总统计。"""
+    daemon_count = 0
+    totals = {
+        "injected_ok": 0,
+        "injected_fail": 0,
+        "dropped": 0,
+        "deduped": 0,
+        "queued": 0,
+    }
+    total_senders = 0
+    
+    for key, data in snapshot.items():
+        if not isinstance(data, dict):
+            continue
+        metrics = data.get("metrics")
+        if not isinstance(metrics, dict):
+            continue
+        
+        daemon_count += 1
+        total_senders += metrics.get("senders", 0)
+        
+        for metric_name in totals:
+            totals[metric_name] += metrics.get(metric_name, 0)
+    
+    return {
+        "daemon_count": daemon_count,
+        "totals": totals,
+        "total_senders": total_senders,
+    }
 
 
 def _owner_display_names(owners) -> Dict[str, str]:
@@ -1542,17 +1867,30 @@ def _owner_display_names(owners) -> Dict[str, str]:
 
 
 async def api_console_agents(request: Request):
-    """Agent 明细页：该 ns 下内存中的 Agent 信息（?ns= 必填，未授权 403）"""
+    """Agent 明细页：该 ns 下 Agent 信息（?ns= 必填，未授权 403）"""
     user = hub_auth.current_user(request)
     ns = (request.query_params.get("ns") or "").strip()
     if not ns:
         return _json_error("缺少 ns 参数")
     if not _ns_visible(user, ns):
         return _json_error("forbidden", 403)
-    rows = build_agent_detail(ns, _agent_info, _sessions, None,
-                              presence=_presence_store.snapshot())
+    
+    # 从数据库查询该 ns 下的所有 agents
+    db_agents = {}
+    if DB_CONN is not None:
+        for row in hub_store.list_agents(DB_CONN, ns):
+            db_agents[row["client_id"]] = row
+    
+    rows = build_agent_detail(ns, _agent_info, _sessions,
+                              metrics_snap=_metrics_store.snapshot(),
+                              presence=_presence_store.snapshot(),
+                              db_agents=db_agents)
+    # 添加 owner_display_name
     for r in rows:
-        r.pop("owner", None)  # 不再需要 owner_display_name
+        if r.get("owner") and DB_CONN:
+            user_row = hub_store.get_user(DB_CONN, r["owner"])
+            if user_row:
+                r["owner_display_name"] = user_row.get("display_name", "")
     return JSONResponse({"agents": rows})
 
 
@@ -1579,7 +1917,10 @@ async def api_console_agent_patch(request: Request):
     key = f"{ns}/{cid}"
     info = _agent_info.get(key)
     if info is None:
-        # Agent 未注册，自动创建
+        # 检查数据库中是否存在
+        if DB_CONN is None or hub_store.get_agent(DB_CONN, ns, cid) is None:
+            return _json_error("agent not found", 404)
+        # 数据库中存在但内存中没有，加载到内存
         info = AgentInfo(key)
         _agent_info[key] = info
     
@@ -1614,6 +1955,7 @@ async def api_console_agent_delete(request: Request):
     _delete_agent_db(key)
     _agent_info.pop(key, None)
     _presence_store.remove(key)
+    _metrics_store.remove(key)
     session = _sessions.get(key)
     if session is not None:
         session.close()  # close 内部已从 _sessions/路由表摘除
@@ -1691,47 +2033,88 @@ async def api_agent_register(request: Request):
     # Agent 档案存内存（_agent_info），Web 控制台 build_agent_detail 由此读取
     key = session_key(cid, ns)
     info = _agent_info.get(key)
+    is_new = info is None
     if info is None:
         info = AgentInfo(cid)
         _agent_info[key] = info
     description = str(body.get("description") or "").strip()
     capabilities = _strlist(body.get("capabilities"))
-    info.register(name, description, capabilities)
-    _save_agent_db(key)
+    tools = _strlist(body.get("tools"))
+    # 幂等：只在字段为空时补充，不覆盖已有值
+    if is_new:
+        info.register(name, description, capabilities)
+    else:
+        if not info.name and name:
+            info.name = name
+        if not info.description and description:
+            info.description = description
+        if not info.capabilities and capabilities:
+            info.capabilities = capabilities
+        info.registered = True
+    # 直接写入数据库（包含 tools 和 owner）
+    if DB_CONN is not None:
+        hub_store.upsert_agent(DB_CONN, ns, cid, name=name, description=description,
+                               capabilities=capabilities, tools=tools, owner=owner or "", fill=True)
     logger.info(f"[agent-profile] registered {ns}/{cid} name={name!r} owner={owner or '(token)'}")
     return JSONResponse({"status": "registered", "client_id": cid})
 
 
 async def api_agent_snapshot(request: Request):
-    """TASK-32：ns 内全量 Agent 档案快照（daemon 轮询同步 agents.json 用）。
-    鉴权同注册端点；online=agent_online 统一口径（presence 唯一真源 + 60s 心跳兜底）。"""
+    """TASK-32: ns-scoped full Agent snapshot, merged from DB + online state.
+    online = presence-only (TASK-33). Includes tools/owner/owner_display_name."""
     owner = _agent_basic_auth(request)
     if owner is None:
         expected = os.getenv("MCP_API_TOKEN") or ""
         if not (expected and extract_token(request.scope) == expected):
-            return _json_error("unauthorized（需 Basic auth 或 token）", 401)
+            return _json_error("unauthorized: need Basic auth or token.", 401)
     ns = (request.query_params.get("ns") or "").strip()
     if not ns:
-        return _json_error("缺少 ns 参数")
-    # 从内存读取 Agent 列表（不读 DB）
-    # TASK-33：遍历 _agent_info（所有已注册 Agent），而非 _sessions（仅 SSE 连接）
+        return _json_error("missing ns parameter")
     presence = _presence_store.snapshot()
     now = datetime.now(timezone.utc)
     agents = []
+    seen_cids = set()
+    # From DB (authoritative source for registered agents)
+    if DB_CONN is not None:
+        for row in hub_store.list_agents(DB_CONN, ns):
+            cid = row["client_id"]
+            seen_cids.add(cid)
+            key = f"{ns}/{cid}"
+            agent = {
+                "client_id": cid,
+                "name": row.get("name"),
+                "description": row.get("description"),
+                "capabilities": row.get("capabilities") or [],
+                "tools": row.get("tools") or [],
+                "online": agent_online(key, presence, now),
+            }
+            # Add owner_display_name if owner exists
+            owner_name = row.get("owner")
+            if owner_name and DB_CONN:
+                user_row = hub_store.get_user(DB_CONN, owner_name)
+                if user_row:
+                    agent["owner_display_name"] = user_row.get("display_name", "")
+            agents.append(agent)
+    # From _agent_info (may include agents not yet persisted)
     for key, info in list(_agent_info.items()):
         if not key.startswith(f"{ns}/"):
             continue
+        cid = key[len(ns)+1:]
+        if cid in seen_cids:
+            continue
+        seen_cids.add(cid)
         agents.append({
-            "client_id": info.client_id,
+            "client_id": cid,
             "name": info.name,
             "description": info.description,
             "capabilities": info.capabilities or [],
+            "tools": [],
             "online": agent_online(key, presence, now),
         })
     return JSONResponse({"generated_at": now.isoformat(), "agents": agents})
 
 
-# TASK-28：一键安装脚本托管（架构 6.6 / PLAN T24：中心节点静态服务，干净机器一条命令接入的下载源）
+# TASK-28: one-click install script serving (PLAN T24)
 INSTALL_SCRIPTS = {
     "/install.ps1": (Path(__file__).resolve().parent / "scripts" / "install.ps1", "text/plain; charset=utf-8"),
     "/install.sh": (Path(__file__).resolve().parent / "scripts" / "install.sh", "text/plain; charset=utf-8"),
@@ -1826,6 +2209,7 @@ app = Starlette(
         Route("/api/console/accounts/{username}/password", hub_auth.session_guard(api_account_password), methods=["POST"]),
         Route("/api/console/connect-command", hub_auth.session_guard(api_connect_command), methods=["GET"]),
         Route("/api/console/metrics", hub_auth.session_guard(api_metrics), methods=["GET"]),
+        Route("/api/console/metrics/summary", hub_auth.session_guard(api_metrics_summary), methods=["GET"]),
         Route("/api/console/agents", hub_auth.session_guard(api_console_agents), methods=["GET"]),
         Route("/api/console/agents/{cid}", hub_auth.session_guard(api_console_agent_patch), methods=["PATCH"]),
         Route("/api/console/agents/{cid}", hub_auth.session_guard(api_console_agent_delete), methods=["DELETE"]),
@@ -1907,6 +2291,77 @@ class TokenAuthMiddleware:
 
 
 app_with_auth = TokenAuthMiddleware(app)
+
+
+# ─── 限流中间件（防滥用） ─────────────────────────────────────────────────────
+
+class RateLimitMiddleware:
+    """简单的 IP 限流：每分钟 60 次请求（滑动窗口）"""
+    
+    def __init__(self, inner, max_requests: int = 60, window_seconds: int = 60):
+        self.inner = inner
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self._requests: Dict[str, List[float]] = {}
+        self._lock = threading.Lock()
+    
+    def _get_client_ip(self, scope: dict) -> str:
+        """从 ASGI scope 提取客户端 IP"""
+        # 优先从 X-Forwarded-For 提取（代理场景）
+        for key, value in scope.get("headers") or []:
+            if key.lower() == b"x-forwarded-for":
+                return value.decode("latin-1").split(",")[0].strip()
+        # 回退到直连 IP
+        client = scope.get("client")
+        return client[0] if client else "unknown"
+    
+    def _is_rate_limited(self, client_ip: str) -> bool:
+        """检查是否超过限流阈值"""
+        now = time.time()
+        with self._lock:
+            # 清理过期记录
+            if client_ip in self._requests:
+                self._requests[client_ip] = [
+                    t for t in self._requests[client_ip]
+                    if now - t < self.window_seconds
+                ]
+            else:
+                self._requests[client_ip] = []
+            
+            # 检查是否超限
+            if len(self._requests[client_ip]) >= self.max_requests:
+                return True
+            
+            # 记录本次请求
+            self._requests[client_ip].append(now)
+            return False
+    
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.inner(scope, receive, send)
+            return
+        
+        path = scope.get("path", "")
+        # 健康检查和安装脚本不限流
+        if path.startswith("/health") or path.startswith("/install."):
+            await self.inner(scope, receive, send)
+            return
+        
+        client_ip = self._get_client_ip(scope)
+        if self._is_rate_limited(client_ip):
+            body = json.dumps({
+                "error": "rate_limit_exceeded",
+                "detail": f"超过限流阈值（{self.max_requests} 次/{self.window_seconds} 秒）",
+            }).encode("utf-8")
+            await send({"type": "http.response.start", "status": 429,
+                        "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": body})
+            return
+        
+        await self.inner(scope, receive, send)
+
+
+app_with_auth = RateLimitMiddleware(TokenAuthMiddleware(app))
 
 
 async def run_stdio(client_id: str):
